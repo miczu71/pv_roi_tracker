@@ -1,16 +1,17 @@
 name: PV ROI Tracker
-version: "0.2.0"
+version: "0.2.1"
 slug: pv_roi_tracker
 description: >-
   Tracks the ROI of a residential PV solar system.
   Imports historic data once from Google Sheets, then uses live HA sensors
   for ongoing monthly tracking. Publishes ROI sensors via MQTT discovery.
-url: ""
+url: "https://github.com/miczu71/pv_roi_tracker"
 arch:
   - aarch64
   - amd64
   - armv7
 init: false
+homeassistant_api: true
 options:
   csv_url: "https://docs.google.com/spreadsheets/d/e/2PACX-1vT_3gmj8s_2JPJzPijb9T27oh0FS3JhlQ3cB1HkKPbBa2yi8GyudqJb5ZeyM20QQ9IKbfB3SnbKZukC/pub?output=csv"
   force_reimport: false
