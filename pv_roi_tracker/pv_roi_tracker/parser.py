@@ -32,7 +32,7 @@ def _norm(s: str) -> str:
     return unicodedata.normalize('NFC', s.strip()).lower()
 
 
-# ── Month name lookup (Polish + English abbreviations) ────────────────────────────────────────────
+# ── Month name lookup (Polish + English abbreviations) ────────────────────────
 MONTH_MAP: dict[str, int] = {_norm(k): v for k, v in {
     # Polish abbreviations
     'Sty': 1, 'Lut': 2, 'Mar': 3, 'Kwi': 4, 'Maj': 5, 'Cze': 6,
@@ -48,7 +48,7 @@ MONTH_MAP: dict[str, int] = {_norm(k): v for k, v in {
 
 SUMA_LABELS = {'suma', 'sum', 'razem', 'total'}
 
-# ── Polish metric label → internal field name ─────────────────────────────────────────────────
+# ── Polish metric label → internal field name ─────────────────────────────────
 LABEL_MAP: dict[str, str] = {_norm(k): v for k, v in {
     'wyprodukowane':                'produced_kwh',
     'kWh/kWp':                      'specific_yield',
@@ -56,7 +56,7 @@ LABEL_MAP: dict[str, str] = {_norm(k): v for k, v in {
     'kupione':                      'purchased_kwh',
     'autokonsumpcja':               'self_consumed_kwh',
     'autokonsumpcja oszczędności':  'self_consumed_savings_pln',
-    'autokonsumpcja oszczędność':   'self_consumed_savings_pln',  # actual label in the spreadsheet
+    'autokonsumpcja oszczedność':   'self_consumed_savings_pln',  # actual label in the spreadsheet
     'sprzedane':                    'exported_kwh',
     'koszt zakupu':                 'buy_price_pln_kwh',
     'suma zakupu':                  'purchase_cost_pln',
@@ -77,11 +77,11 @@ def _parse_float(s: str) -> Optional[float]:
     if not s:
         return None
     # Strip trailing currency suffix ("zł") plus any surrounding whitespace/NBSP
-    s = re.sub(r'[\s\xa0]*zł[\s\xa0]*$', '', s, flags=re.IGNORECASE).strip()
+    s = re.sub(r'[\s ]*zł[\s ]*$', '', s, flags=re.IGNORECASE).strip()
     if not s:
         return None
     # Normalise NBSP thousands separator to a regular space
-    s = s.replace('\xa0', ' ')
+    s = s.replace(' ', ' ')
     if ',' in s and '.' in s:
         # "1.234,56" — dot is thousands sep, comma is decimal
         s = s.replace('.', '').replace(',', '.').replace(' ', '')
@@ -127,7 +127,7 @@ def parse_csv(csv_text: str) -> list[MonthlyRecord]:
 
         first = row[0].strip() if row[0] else ''
 
-        # ── Year header? ──────────────────────────────────────────────────────────────────────────────
+        # ── Year header? ──────────────────────────────────────────────────────
         if YEAR_RE.match(first):
             current_year = int(first)
             # Month labels may sit on the same row as the year (e.g. "2023,Jan,Feb,...")
@@ -136,17 +136,17 @@ def parse_csv(csv_text: str) -> list[MonthlyRecord]:
                 col_to_month = month_cols
             continue
 
-        # ── Month column header row? ───────────────────────────────────────────────────────────────────
+        # ── Month column header row? ──────────────────────────────────────────
         month_cols = _detect_month_columns(row)
         if month_cols is not None:
             col_to_month = month_cols
             continue
 
-        # ── Wait until both year and column mapping are established ───────────────────────────────────────
+        # ── Wait until both year and column mapping are established ───────────
         if current_year is None or not col_to_month:
             continue
 
-        # ── Metric row ─────────────────────────────────────────────────────────────────────────────
+        # ── Metric row ────────────────────────────────────────────────────────
         first_norm = _norm(first)
         if not first_norm:
             continue
