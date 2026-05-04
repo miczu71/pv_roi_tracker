@@ -1,5 +1,5 @@
 name: PV ROI Tracker
-version: "0.3.3"
+version: "0.4.0"
 slug: pv_roi_tracker
 description: >-
   Tracks the ROI of a residential PV solar system.
