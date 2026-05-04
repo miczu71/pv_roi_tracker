@@ -35,6 +35,7 @@ class RoiResult:
     specific_yield_lifetime: float
     gross_investment: float
     subsidy: float
+    net_profit: float
 
 
 def calculate(
@@ -113,4 +114,5 @@ def calculate(
         specific_yield_lifetime=round(specific_yield_lifetime, 1),
         gross_investment=gross_investment,
         subsidy=subsidy,
+        net_profit=round(max(0.0, total_return - gross_investment), 2),
     )

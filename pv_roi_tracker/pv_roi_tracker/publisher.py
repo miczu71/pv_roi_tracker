@@ -47,6 +47,7 @@ _SENSORS: list[_Sensor] = [
     _Sensor('total_exported_kwh',       'PV Total Exported',           'total_exported_kwh',        'kWh',     'energy',   'total_increasing', 'mdi:transmission-tower'),
     _Sensor('specific_yield',           'PV Specific Yield',           'specific_yield_lifetime',   'kWh/kWp', None,       'total_increasing', 'mdi:chart-bar'),
     _Sensor('rcem_current_month',       'RCEm Current Month',          None,                        'PLN/kWh', None,       'measurement',      'mdi:currency-eur'),
+    _Sensor('net_profit',              'PV Net Profit',               'net_profit',                'PLN',     'monetary', 'total_increasing', 'mdi:cash-multiple'),
 ]
 
 
@@ -89,7 +90,7 @@ class MQTTPublisher:
         self._client.on_connect    = self._on_connect
         self._client.on_disconnect = self._on_disconnect
 
-    # ── Connection lifecycle ──────────────────────────────────────────────────────────────────────────────────
+    # ── Connection lifecycle ──────────────────────────────────────────────────
 
     def connect(self) -> None:
         self._client.connect_async(self._host, self._port, keepalive=60)
@@ -114,7 +115,7 @@ class MQTTPublisher:
         if rc != 0:
             logger.warning('MQTT unexpectedly disconnected (rc=%d) — paho will reconnect', rc)
 
-    # ── Discovery ───────────────────────────────────────────────────────────────────────────────────────────
+    # ── Discovery ─────────────────────────────────────────────────────────────
 
     def _publish_discovery(self) -> None:
         device = {
@@ -139,7 +140,7 @@ class MQTTPublisher:
             self._client.publish(_disc_topic(s.slug), json.dumps(payload), retain=True)
         logger.info('MQTT discovery published for %d sensors', len(_SENSORS))
 
-    # ── State publishing ──────────────────────────────────────────────────────────────────────────────────
+    # ── State publishing ──────────────────────────────────────────────────────
 
     def publish_roi(self, result: RoiResult, rcem_price: Optional[float] = None) -> None:
         if not self._connected:

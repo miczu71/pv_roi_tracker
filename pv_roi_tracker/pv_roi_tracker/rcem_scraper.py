@@ -25,7 +25,7 @@ _HISTORY_MAX_ENTRIES = 36
 _MAX_PLN_MWH = 2000.0
 
 
-# ── History helpers ────────────────────────────────────────────────────────────────────────────────────
+# ── History helpers ───────────────────────────────────────────────────────────
 
 def _load_history(path: Path = DEFAULT_HISTORY_PATH) -> dict:
     if not path.exists():
@@ -45,7 +45,7 @@ def _save_history(history: dict, path: Path = DEFAULT_HISTORY_PATH) -> None:
     tmp.rename(path)
 
 
-# ── Number parsing ─────────────────────────────────────────────────────────────────────────────────────
+# ── Number parsing ────────────────────────────────────────────────────────────
 
 def _parse_pln_mwh(text: str) -> Optional[float]:
     """Parse a Polish-formatted PLN/MWh value like '376,52' → 376.52."""
@@ -58,7 +58,7 @@ def _parse_pln_mwh(text: str) -> Optional[float]:
         return None
 
 
-# ── Month matching ──────────────────────────────────────────────────────────────────────────────────────
+# ── Month matching ────────────────────────────────────────────────────────────
 
 _PL_MONTHS = {
     'styczeń': 1, 'stycznia': 1, 'sty': 1,
@@ -93,7 +93,7 @@ def _row_matches(cell_text: str, year: int, month: int) -> bool:
     return False
 
 
-# ── Core scrape ───────────────────────────────────────────────────────────────────────────────────────
+# ── Core scrape ───────────────────────────────────────────────────────────────
 
 def scrape_rcem(target_month: Optional[str] = None) -> Optional[float]:
     """
@@ -135,7 +135,7 @@ def scrape_rcem(target_month: Optional[str] = None) -> Optional[float]:
     return None
 
 
-# ── Scheduled entry points ──────────────────────────────────────────────────────────────────────────────────
+# ── Scheduled entry points ────────────────────────────────────────────────────
 
 def get_current_month_rcem(path: Path = DEFAULT_HISTORY_PATH) -> Optional[float]:
     """Return the RCEm price for the current calendar month if already known."""
