@@ -80,8 +80,14 @@ def api_data():
     cumulative = result.subsidy
     records_out = []
     for r in sorted(records, key=lambda x: (x.year, x.month)):
+        if (r.year, r.month) > current_ym:
+            continue  # skip empty future months imported from the CSV
         month_savings = (r.self_consumed_savings_pln or 0.0) + (r.feedin_revenue_pln or 0.0)
         cumulative += month_savings
+        # A month can't be 'confirmed' if its feed-in price is still unknown
+        rcem_status = r.rcem_status
+        if rcem_status == 'confirmed' and r.feedin_price_pln_kwh is None:
+            rcem_status = 'pending'
         records_out.append({
             'month_label': _month_label(r.year, r.month),
             'is_current': (r.year, r.month) == current_ym,
@@ -95,7 +101,7 @@ def api_data():
             'month_savings': round(month_savings, 2),
             'cumulative_return': round(cumulative, 2),
             'roi_pct': round(cumulative / result.gross_investment * 100, 2),
-            'rcem_status': r.rcem_status,
+            'rcem_status': rcem_status,
         })
 
     return jsonify({
