@@ -4,6 +4,7 @@ The SUPERVISOR_TOKEN env var is injected automatically by HA into every add-on.
 """
 from __future__ import annotations
 
+import calendar
 import logging
 import os
 from datetime import date
@@ -35,6 +36,32 @@ def _get_state(entity_id: str) -> Optional[float]:
         return None
 
 
+def _solcast_month_projection(today: date, produced_so_far: float) -> Optional[float]:
+    """Estimate full-month production using Solcast 7-day forecast."""
+    days_in_month = calendar.monthrange(today.year, today.month)[1]
+    days_remaining_incl_today = days_in_month - today.day + 1
+
+    solcast_days_raw = [
+        _get_state('sensor.solcast_pv_forecast_forecast_remaining_today'),
+        _get_state('sensor.solcast_pv_forecast_forecast_tomorrow'),
+        _get_state('sensor.solcast_pv_forecast_forecast_day_3'),
+        _get_state('sensor.solcast_pv_forecast_forecast_day_4'),
+        _get_state('sensor.solcast_pv_forecast_forecast_day_5'),
+        _get_state('sensor.solcast_pv_forecast_forecast_day_6'),
+        _get_state('sensor.solcast_pv_forecast_forecast_day_7'),
+    ]
+    # Trim to actual remaining days in month and drop None entries
+    solcast_vals = [v for v in solcast_days_raw[:days_remaining_incl_today] if v is not None]
+    if not solcast_vals:
+        return None
+
+    solcast_sum = sum(solcast_vals)
+    avg_daily = solcast_sum / len(solcast_vals)
+    days_beyond = max(0, days_remaining_incl_today - len(solcast_vals))
+    projected_remaining = solcast_sum + avg_daily * days_beyond
+    return round(produced_so_far + projected_remaining, 1)
+
+
 def read_current_month(rcem_price: Optional[float] = None) -> Optional[MonthlyRecord]:
     """
     Build a MonthlyRecord for the current calendar month from live HA values.
@@ -61,6 +88,7 @@ def read_current_month(rcem_price: Optional[float] = None) -> Optional[MonthlyRe
     purchase_cost_pln         = round(purchased * buy_price, 2)         if (purchased      is not None and buy_price is not None) else None
     feedin_revenue_pln        = round((exported or 0.0) * rcem_price, 2) if (exported is not None and rcem_price is not None) else None
     specific_yield            = round(produced / _SYSTEM_KWP, 1)         if _SYSTEM_KWP else None
+    projected_month_kwh       = _solcast_month_projection(today, produced)
 
     return MonthlyRecord(
         year=year, month=month,
@@ -76,4 +104,5 @@ def read_current_month(rcem_price: Optional[float] = None) -> Optional[MonthlyRe
         feedin_revenue_pln=feedin_revenue_pln,
         specific_yield=specific_yield,
         rcem_status='confirmed' if rcem_price is not None else 'pending',
+        projected_month_kwh=projected_month_kwh,
     )
