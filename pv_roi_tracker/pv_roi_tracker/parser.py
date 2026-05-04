@@ -169,9 +169,10 @@ def parse_csv(csv_text: str) -> list[MonthlyRecord]:
                 records[key] = {'year': current_year, 'month': month_num, 'rcem_status': 'confirmed'}
             records[key][internal_key] = val
 
-    result = [
-        MonthlyRecord.from_dict(d)
-        for d in sorted(records.values(), key=lambda r: (r['year'], r['month']))
-    ]
+    sorted_dicts = sorted(records.values(), key=lambda r: (r['year'], r['month']))
+    for d in sorted_dicts:
+        if 'feedin_price_pln_kwh' not in d:
+            d['rcem_status'] = 'pending'
+    result = [MonthlyRecord.from_dict(d) for d in sorted_dicts]
     logger.info("Parsed %d monthly records from CSV", len(result))
     return result
