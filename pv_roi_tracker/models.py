@@ -20,6 +20,7 @@ class MonthlyRecord:
     feedin_revenue_pln: Optional[float] = None
     specific_yield: Optional[float] = None
     rcem_status: str = 'confirmed'  # 'confirmed' | 'pending' | 'missing'
+    projected_month_kwh: Optional[float] = None  # Solcast-based projection, current month only
 
     def key(self) -> tuple[int, int]:
         return (self.year, self.month)
