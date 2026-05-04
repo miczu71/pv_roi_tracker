@@ -19,7 +19,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ── Config from env (set by run.sh via bashio) ────────────────────────────────────────────────────────
+# ── Config from env (set by run.sh via bashio) ────────────────────────────────
 
 HISTORIC_PATH      = Path(os.environ.get('HISTORIC_PATH', '/data/historic.json'))
 RCEM_HISTORY_PATH  = Path(os.environ.get('RCEM_HISTORY_PATH', '/data/rcem_history.json'))
@@ -74,10 +74,13 @@ def main() -> None:
 
     _ensure_historic()
 
+    from . import web as _web
+    _web.start_server(port=8099)
+
     pub = MQTTPublisher(MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASSWORD, version=__version__)
     pub.connect()
 
-    # ── Startup RCEm catch-up ───────────────────────────────────────────────────────────────────────────
+    # ── Startup RCEm catch-up ─────────────────────────────────────────────────
     # If today >= 11th and last month's RCEm is missing, try immediately.
     from datetime import date
     today = date.today()
@@ -99,6 +102,7 @@ def main() -> None:
                                    subsidy=SUBSIDY,
                                    system_kwp=SYSTEM_KWP)
             pub.publish_roi(result, rcem_price=rcem_price)
+            _web.update_state(result, all_records, rcem_price)
             logger.info('Poll complete — ROI %.2f%%, remaining %.0f PLN, payback %s',
                         result.roi_pct, result.remaining_to_recover,
                         result.payback_date or 'unknown')
@@ -119,7 +123,7 @@ def main() -> None:
         except Exception:
             logger.exception('Month-close error')
 
-    # ── Scheduler setup ───────────────────────────────────────────────────────────────────────────────────
+    # ── Scheduler setup ───────────────────────────────────────────────────────
     scheduler = BlockingScheduler()
 
     # Poll every N minutes
