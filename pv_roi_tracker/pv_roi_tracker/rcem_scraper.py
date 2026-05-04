@@ -127,7 +127,7 @@ def scrape_rcem(target_month: Optional[str] = None) -> Optional[float]:
                 for cell in cells[1:]:
                     val = _parse_pln_mwh(cell)
                     if val is not None:
-                        price_kwh = round(val / 1000.0, 6)
+                        price_kwh = round(val / 1000.0 * 1.23, 6)  # PSE publishes net; add 23% VAT
                         logger.info('RCEm %s = %.4f zł/kWh (%.2f zł/MWh)', target_month, price_kwh, val)
                         return price_kwh
 
