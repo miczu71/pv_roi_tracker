@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import threading
 from datetime import date, datetime
+from math import ceil
 from typing import Optional
 
 from dateutil.relativedelta import relativedelta
@@ -51,7 +52,6 @@ def _build_predictions(result: RoiResult) -> list[dict]:
     rows: list[dict] = []
 
     if result.remaining_to_recover <= 0:
-        # Post-payback: show 24 months of projected ongoing earnings
         cumulative_profit = result.net_profit
         total_return = result.total_return
         for _ in range(24):
@@ -83,6 +83,26 @@ def _build_predictions(result: RoiResult) -> list[dict]:
     return rows
 
 
+def _build_sensitivity(result: RoiResult) -> dict:
+    avg = result.monthly_avg_savings
+    if not avg or avg <= 0:
+        return {}
+    today = date.today()
+    out: dict = {}
+    for label, factor in [('pessimistic', 0.85), ('base', 1.0), ('optimistic', 1.15)]:
+        adj = avg * factor
+        if result.remaining_to_recover <= 0:
+            out[label] = {'avg': round(adj, 2), 'months': 0, 'payback_date': None}
+        else:
+            months = result.remaining_to_recover / adj
+            out[label] = {
+                'avg': round(adj, 2),
+                'months': round(months, 1),
+                'payback_date': (today + relativedelta(months=ceil(months))).isoformat(),
+            }
+    return out
+
+
 @app.route('/api/data')
 def api_data():
     with _lock:
@@ -98,7 +118,6 @@ def api_data():
     today = date.today()
     current_ym = (today.year, today.month)
 
-    # Best / worst month (complete months only, non-zero savings)
     complete = [
         r for r in records
         if (r.year, r.month) != current_ym
@@ -115,22 +134,43 @@ def api_data():
         best_month = {'label': _month_label(best.year, best.month), 'savings': round(_msav(best), 2)}
         worst_month = {'label': _month_label(worst.year, worst.month), 'savings': round(_msav(worst), 2)}
 
+    # Lifetime self-sufficiency (autarkia)
+    sc_total = sum(r.self_consumed_kwh or 0 for r in records if (r.year, r.month) <= current_ym)
+    consumed_total = sum(r.consumed_kwh or 0 for r in records if (r.year, r.month) <= current_ym)
+    self_sufficiency_avg = round(sc_total / consumed_total * 100, 1) if consumed_total > 0 else None
+
+    # Net grid cost total: what was paid to the grid after netting feed-in revenue
+    net_grid_cost_total = round(sum(
+        (r.purchased_kwh or 0) * (r.buy_price_pln_kwh or 0) - (r.feedin_revenue_pln or 0)
+        for r in records if (r.year, r.month) <= current_ym
+    ), 2)
+
     cumulative = result.subsidy
     records_out = []
     for r in sorted(records, key=lambda x: (x.year, x.month)):
         if (r.year, r.month) > current_ym:
-            continue  # skip empty future months from CSV
+            continue
         month_savings = (r.self_consumed_savings_pln or 0.0) + (r.feedin_revenue_pln or 0.0)
         cumulative += month_savings
         rcem_status = r.rcem_status
         if rcem_status == 'confirmed' and r.feedin_price_pln_kwh is None:
             rcem_status = 'pending'
+        purchased = r.purchased_kwh or 0.0
+        buy_px = r.buy_price_pln_kwh or 0.0
+        feedin_rev = r.feedin_revenue_pln or 0.0
+        purchase_cost = round(purchased * buy_px, 2)
+        net_grid = round(purchase_cost - feedin_rev, 2)
+        consumed = r.consumed_kwh or 0.0
+        sc_kwh = r.self_consumed_kwh or 0.0
+        self_suff = round(sc_kwh / consumed * 100, 1) if consumed > 0 else None
         records_out.append({
             'month_label': _month_label(r.year, r.month),
             'is_current': (r.year, r.month) == current_ym,
             'produced_kwh': r.produced_kwh,
             'exported_kwh': r.exported_kwh,
             'self_consumed_kwh': r.self_consumed_kwh,
+            'consumed_kwh': r.consumed_kwh,
+            'purchased_kwh': r.purchased_kwh,
             'buy_price': r.buy_price_pln_kwh,
             'feedin_price': r.feedin_price_pln_kwh,
             'self_savings': r.self_consumed_savings_pln,
@@ -140,6 +180,9 @@ def api_data():
             'roi_pct': round(cumulative / result.gross_investment * 100, 2),
             'rcem_status': rcem_status,
             'projected_month_kwh': r.projected_month_kwh if (r.year, r.month) == current_ym else None,
+            'purchase_cost_pln': purchase_cost,
+            'net_grid_cost': net_grid,
+            'self_sufficiency_pct': self_suff,
         })
 
     current_rec = next((r for r in records if (r.year, r.month) == current_ym), None)
@@ -172,9 +215,12 @@ def api_data():
             'month_closed': month_closed,
             'solcast_projected_kwh': solcast_projected_kwh,
             'net_profit': result.net_profit,
+            'self_sufficiency_avg': self_sufficiency_avg,
+            'net_grid_cost_total': net_grid_cost_total,
         },
         'records': records_out,
         'predictions': _build_predictions(result),
+        'sensitivity': _build_sensitivity(result),
     })
 
 
@@ -222,7 +268,7 @@ header h1 { font-size: 17px; font-weight: 700; }
 main { max-width: 1600px; margin: 0 auto; padding: 18px 16px; }
 .loading { text-align: center; padding: 60px 0; color: var(--muted); font-size: 15px; }
 
-/* ── Summary cards ── */
+/* -- Summary cards -- */
 .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); gap: 10px; margin-bottom: 18px; }
 .card { background: var(--card); border-radius: var(--radius); padding: 14px 16px; box-shadow: var(--shadow); }
 .card .lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; margin-bottom: 5px; }
@@ -231,13 +277,15 @@ main { max-width: 1600px; margin: 0 auto; padding: 18px 16px; }
 .c-blue  .val { color: var(--accent); }
 .c-green .val { color: var(--green); }
 
-/* ── Charts ── */
-.charts { display: grid; grid-template-columns: 3fr 2fr; gap: 12px; margin-bottom: 18px; }
+/* -- Charts -- */
+.charts  { display: grid; grid-template-columns: 3fr 2fr; gap: 12px; margin-bottom: 12px; }
+.charts2 { display: grid; grid-template-columns: 1fr; gap: 12px; margin-bottom: 18px; }
 @media (max-width: 900px) { .charts { grid-template-columns: 1fr; } }
-.chart-wrap { background: var(--card); border-radius: var(--radius); padding: 16px; box-shadow: var(--shadow); height: 280px; position: relative; }
+.chart-wrap    { background: var(--card); border-radius: var(--radius); padding: 16px; box-shadow: var(--shadow); height: 280px; position: relative; }
+.chart-wrap.sm { height: 200px; }
 .chart-wrap h3 { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 8px; }
 
-/* ── Tabs ── */
+/* -- Tabs -- */
 .tabs { display: flex; gap: 3px; }
 .tab-btn {
   padding: 8px 18px; border: none; cursor: pointer; font-size: 12px; font-weight: 600;
@@ -247,7 +295,7 @@ main { max-width: 1600px; margin: 0 auto; padding: 18px 16px; }
 .tab-btn.active { background: var(--card); color: var(--text); box-shadow: 0 -1px 3px rgba(0,0,0,.08); }
 .tab-panel { background: var(--card); border-radius: 0 var(--radius) var(--radius) var(--radius); box-shadow: var(--shadow); overflow: hidden; }
 
-/* ── Tables ── */
+/* -- Tables -- */
 .tbl-wrap { overflow-x: auto; max-height: 540px; overflow-y: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 thead th {
@@ -269,7 +317,13 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
                   border-top: 2px solid #cbd5e0; border-bottom: 2px solid #cbd5e0; }
 .tbl-foot { padding: 10px 14px; font-size: 11px; color: var(--muted); border-top: 1px solid var(--border); }
 
-/* ── Badges ── */
+/* -- Sensitivity table -- */
+.sensi-wrap { border-top: 2px solid var(--border); margin-top: 2px; }
+.sensi-wrap table { font-size: 12px; }
+.sensi-wrap caption { font-size: 10px; color: var(--muted); padding: 8px 11px; text-align: left; font-weight: 600; letter-spacing: .4px; text-transform: uppercase; }
+.sensi-wrap tr.base td { font-weight: 700; }
+
+/* -- Badges -- */
 .badge { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 10px; font-weight: 700; }
 .badge-ok      { background: #dcfce7; color: var(--green); }
 .badge-pending { background: #fef3c7; color: var(--yellow); }
@@ -277,14 +331,14 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
 .badge-live    { background: #fef3c7; color: var(--yellow); }
 .badge-snap    { background: #dcfce7; color: var(--green); }
 
-/* ── Projected hint ── */
+/* -- Projected hint -- */
 .proj-hint { font-size: 10px; color: var(--muted); font-weight: 400; }
 </style>
 </head>
 <body>
 <header>
   <h1>&#9728;&#65039; PV ROI Tracker</h1>
-  <span id="updated">Ładowanie&hellip;</span>
+  <span id="updated">Ladowanie&hellip;</span>
 </header>
 <main>
   <div id="loading" class="loading">Pobieranie danych&hellip;</div>
@@ -292,17 +346,24 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
     <div class="cards" id="cards"></div>
     <div class="charts">
       <div class="chart-wrap">
-        <h3>Łączny zwrot kumulatywny</h3>
+        <h3>Laczny zwrot kumulatywny</h3>
         <canvas id="lineChart"></canvas>
       </div>
       <div class="chart-wrap">
-        <h3>Miesięczne oszczędności (ostatnie 24 mies.)</h3>
+        <h3>Miesieczne oszczednosci (ostatnie 24 mies.)</h3>
         <canvas id="barChart"></canvas>
       </div>
     </div>
+    <div class="charts2">
+      <div class="chart-wrap sm">
+        <h3>Historia ceny RCEm (zl/kWh)</h3>
+        <canvas id="rcemChart"></canvas>
+      </div>
+    </div>
     <div class="tabs">
-      <button class="tab-btn active" onclick="showTab('hist')">Historia miesięczna</button>
-      <button class="tab-btn"        onclick="showTab('pred')">Prognoza spłaty</button>
+      <button class="tab-btn active" onclick="showTab('hist')">Historia miesieczna</button>
+      <button class="tab-btn"        onclick="showTab('pred')">Prognoza splaty</button>
+      <button class="tab-btn"        onclick="showTab('years')">Podsumowanie roczne</button>
     </div>
     <div class="tab-panel">
       <div id="tab-hist">
@@ -312,52 +373,61 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
       <div id="tab-pred" style="display:none">
         <div class="tbl-wrap"><table id="predTbl"></table></div>
         <div class="tbl-foot" id="predFoot"></div>
+        <div class="sensi-wrap" id="sensiWrap">
+          <div class="tbl-wrap"><table id="sensiTbl"></table></div>
+        </div>
+      </div>
+      <div id="tab-years" style="display:none">
+        <div class="tbl-wrap"><table id="yearsTbl"></table></div>
+        <div class="tbl-foot" id="yearsFoot"></div>
       </div>
     </div>
   </div>
 </main>
 <script>
 'use strict';
-let _lineChart = null, _barChart = null;
+let _lineChart = null, _barChart = null, _rcemChart = null;
 
-/* ── Formatters ── */
+/* -- Formatters -- */
 function fmt(v, dp, sfx) {
   if (v == null) return '—';
   let s = Number(v).toLocaleString('pl-PL', {minimumFractionDigits: dp, maximumFractionDigits: dp});
   return sfx ? s + ' ' + sfx : s;
 }
-const pln   = (v, dp=0) => fmt(v, dp, 'zł');
+const pln   = (v, dp=0) => fmt(v, dp, 'zl');
 const pct   = (v)       => fmt(v, 2, '%');
 const kwh   = (v)       => fmt(v, 1, 'kWh');
-const price = (v)       => fmt(v, 4, 'zł/kWh');
+const price = (v)       => fmt(v, 4, 'zl/kWh');
 const num   = (v, dp=1) => fmt(v, dp);
 
-/* ── Tab switching ── */
+/* -- Tab switching -- */
 function showTab(name) {
-  ['hist','pred'].forEach(t => {
+  ['hist','pred','years'].forEach(t => {
     document.getElementById('tab-' + t).style.display = (t === name) ? '' : 'none';
   });
   document.querySelectorAll('.tab-btn').forEach((b, i) =>
-    b.classList.toggle('active', (i === 0) === (name === 'hist'))
+    b.classList.toggle('active', ['hist','pred','years'][i] === name)
   );
 }
 
-/* ── Summary cards ── */
+/* -- Summary cards -- */
 function renderCards(s) {
   const roi = s.roi_pct;
   const cards = [
     { lbl: 'ROI',               val: pct(roi),                    cls: roi >= 100 ? 'c-green' : 'c-blue' },
-    { lbl: 'Łączny zwrot',      val: pln(s.total_return),         sub: 'subsydium ' + pln(s.subsidy) + ' + oszcz. ' + pln(s.total_savings) },
-    { lbl: 'Oszczędności',      val: pln(s.total_savings),        sub: 'autokons. ' + pln(s.self_consumption_savings) + ' / sprzedaż ' + pln(s.feedin_revenue) },
-    { lbl: 'Pozostało',         val: pln(s.remaining_to_recover), sub: 'inwestycja brutto ' + pln(s.gross_investment) },
-    { lbl: 'Średnia mies.',     val: pln(s.monthly_avg_savings),  sub: 'ost. ' + s.avg_window + ' mies.' },
-    { lbl: 'Spłata',            val: s.payback_date || '—',       sub: s.years_to_payback != null ? 'za ' + num(s.years_to_payback, 1) + ' lat' : '' },
-    { lbl: 'Produkcja łącznie', val: kwh(s.total_produced_kwh),   sub: 'uzysk ' + num(s.specific_yield, 0) + ' kWh/kWp' },
-    { lbl: 'RCEm bieżący',      val: s.rcem_price != null ? price(s.rcem_price) : '—' },
-    s.best_month  ? { lbl: 'Najlepszy miesiąc',  val: pln(s.best_month.savings),  sub: s.best_month.label,  cls: 'c-green' } : null,
-    s.worst_month ? { lbl: 'Najsłabszy miesiąc', val: pln(s.worst_month.savings), sub: s.worst_month.label } : null,
-    s.solcast_projected_kwh != null ? { lbl: 'Prognoza miesiąca', val: kwh(s.solcast_projected_kwh), sub: 'produkcja + Solcast 7 dni' } : null,
-    { lbl: 'Zysk netto', val: pln(s.net_profit || 0), cls: (s.net_profit || 0) > 0 ? 'c-green' : '', sub: (s.net_profit || 0) > 0 ? 'ponad inwestycję brutto' : 'przed spłatą' },
+    { lbl: 'Laczny zwrot',      val: pln(s.total_return),         sub: 'subsydium ' + pln(s.subsidy) + ' + oszcz. ' + pln(s.total_savings) },
+    { lbl: 'Oszczednosci',      val: pln(s.total_savings),        sub: 'autokons. ' + pln(s.self_consumption_savings) + ' / sprzedaz ' + pln(s.feedin_revenue) },
+    { lbl: 'Pozostalo',         val: pln(s.remaining_to_recover), sub: 'inwestycja brutto ' + pln(s.gross_investment) },
+    { lbl: 'Srednia mies.',     val: pln(s.monthly_avg_savings),  sub: 'ost. ' + s.avg_window + ' mies.' },
+    { lbl: 'Splata',            val: s.payback_date || '—',  sub: s.years_to_payback != null ? 'za ' + num(s.years_to_payback, 1) + ' lat' : '' },
+    { lbl: 'Produkcja lacznie', val: kwh(s.total_produced_kwh),   sub: 'uzysk ' + num(s.specific_yield, 0) + ' kWh/kWp' },
+    { lbl: 'RCEm biezacy',      val: s.rcem_price != null ? price(s.rcem_price) : '—' },
+    s.best_month  ? { lbl: 'Najlepszy miesiac',  val: pln(s.best_month.savings),  sub: s.best_month.label,  cls: 'c-green' } : null,
+    s.worst_month ? { lbl: 'Najslabszy miesiac', val: pln(s.worst_month.savings), sub: s.worst_month.label } : null,
+    s.solcast_projected_kwh != null ? { lbl: 'Prognoza miesiaca', val: kwh(s.solcast_projected_kwh), sub: 'produkcja + Solcast 7 dni' } : null,
+    { lbl: 'Zysk netto', val: pln(s.net_profit || 0), cls: (s.net_profit || 0) > 0 ? 'c-green' : '', sub: (s.net_profit || 0) > 0 ? 'ponad inwestycje brutto' : 'przed splata' },
+    s.self_sufficiency_avg != null ? { lbl: 'Autarkia', val: pct(s.self_sufficiency_avg), sub: 'udzial autokonsumpcji' } : null,
+    { lbl: 'Koszt netto sieci', val: pln(s.net_grid_cost_total), sub: 'zakup − sprzedaz lacznie' },
   ].filter(Boolean);
 
   document.getElementById('cards').innerHTML = cards.map(c =>
@@ -369,12 +439,12 @@ function renderCards(s) {
   ).join('');
 }
 
-/* ── Line chart (cumulative) ── */
+/* -- Line chart (cumulative) -- */
 function renderLineChart(records, predictions, gross) {
   const histLbls = records.map(r => r.month_label);
   const histVals = records.map(r => r.cumulative_return);
   const predLbls = predictions.map(p => p.month_label);
-  const predVals = predictions.map(p => p.cumulative_return);
+  const predVals = predictions.map(p => p.cumulative_return || (p.net_profit != null ? gross + p.net_profit : null));
 
   const allLbls = [...histLbls, ...predLbls];
   const target  = allLbls.map(() => gross);
@@ -402,17 +472,17 @@ function renderLineChart(records, predictions, gross) {
       interaction: { mode: 'index', intersect: false },
       plugins: {
         legend: { position: 'top', labels: { boxWidth: 12, font: { size: 11 } } },
-        tooltip: { callbacks: { label: c => c.raw == null ? null : c.dataset.label + ': ' + Number(c.raw).toLocaleString('pl-PL', {maximumFractionDigits: 0}) + ' zł' } }
+        tooltip: { callbacks: { label: c => c.raw == null ? null : c.dataset.label + ': ' + Number(c.raw).toLocaleString('pl-PL', {maximumFractionDigits: 0}) + ' zl' } }
       },
       scales: {
         x: { ticks: { maxTicksLimit: 24, font: { size: 10 }, maxRotation: 45 } },
-        y: { ticks: { callback: v => (v/1000).toFixed(0) + 'k zł', font: { size: 10 } } },
+        y: { ticks: { callback: v => (v/1000).toFixed(0) + 'k zl', font: { size: 10 } } },
       },
     },
   });
 }
 
-/* ── Bar chart (monthly breakdown) ── */
+/* -- Bar chart (monthly breakdown) -- */
 function renderBarChart(records) {
   const nonEmpty = records.filter(r => (r.self_savings || 0) + (r.feedin_revenue || 0) > 0);
   const recent   = nonEmpty.slice(-24);
@@ -428,63 +498,96 @@ function renderBarChart(records) {
       labels,
       datasets: [
         { label: 'Autokonsumpcja', data: autokons, backgroundColor: 'rgba(37,99,235,0.75)',  borderColor: '#2563eb', borderWidth: 1 },
-        { label: 'Sprzedaż',  data: sprzedaz, backgroundColor: 'rgba(22,163,74,0.75)',  borderColor: '#16a34a', borderWidth: 1 },
+        { label: 'Sprzedaz',  data: sprzedaz, backgroundColor: 'rgba(22,163,74,0.75)',  borderColor: '#16a34a', borderWidth: 1 },
       ],
     },
     options: {
       responsive: true, maintainAspectRatio: false,
       plugins: {
         legend: { position: 'top', labels: { boxWidth: 12, font: { size: 11 } } },
-        tooltip: { callbacks: { label: c => c.dataset.label + ': ' + Number(c.raw).toLocaleString('pl-PL', {maximumFractionDigits: 0}) + ' zł' } }
+        tooltip: { callbacks: { label: c => c.dataset.label + ': ' + Number(c.raw).toLocaleString('pl-PL', {maximumFractionDigits: 0}) + ' zl' } }
       },
       scales: {
         x: { ticks: { maxTicksLimit: 24, font: { size: 9 }, maxRotation: 45 } },
-        y: { ticks: { callback: v => v.toLocaleString('pl-PL', {maximumFractionDigits: 0}) + ' zł', font: { size: 10 } } },
+        y: { ticks: { callback: v => v.toLocaleString('pl-PL', {maximumFractionDigits: 0}) + ' zl', font: { size: 10 } } },
       },
     },
   });
 }
 
-/* ── History table ── */
+/* -- RCEm price history chart -- */
+function renderRcemChart(records) {
+  const withPrice = records.filter(r => r.feedin_price != null);
+  const labels = withPrice.map(r => r.month_label);
+  const prices = withPrice.map(r => r.feedin_price);
+  const ctx = document.getElementById('rcemChart').getContext('2d');
+  if (_rcemChart) _rcemChart.destroy();
+  _rcemChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{ label: 'RCEm (zl/kWh)', data: prices, borderColor: '#b45309', backgroundColor: 'rgba(180,83,9,.07)', fill: true, tension: 0.3, pointRadius: 3, pointHoverRadius: 5 }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: c => 'RCEm: ' + Number(c.raw).toLocaleString('pl-PL', {minimumFractionDigits: 4}) + ' zl/kWh' } }
+      },
+      scales: {
+        x: { ticks: { maxTicksLimit: 30, font: { size: 9 }, maxRotation: 45 } },
+        y: { ticks: { callback: v => v.toFixed(4) + ' zl', font: { size: 10 } }, beginAtZero: false },
+      },
+    },
+  });
+}
+
+/* -- History table -- */
 function renderHistTable(records, monthClosed) {
   const head = '<thead><tr>' +
-    '<th>Miesiąc</th>' +
+    '<th>Miesiac</th>' +
     '<th title="kWh wyprodukowane">Produkcja</th>' +
     '<th title="kWh sprzedane">Sprzedane</th>' +
     '<th title="kWh autokonsumpcja">Autokons.</th>' +
     '<th title="PLN/kWh cena zakupu">Cena zakupu</th>' +
     '<th title="PLN/kWh RCEm">RCEm</th>' +
-    '<th title="PLN oszczędności autokonsumpcji">Oszcz. autokons.</th>' +
-    '<th title="PLN przychód ze sprzedaży">Przych. sprzedaży</th>' +
-    '<th title="PLN łącznie w miesiącu">Łącznie mies.</th>' +
+    '<th title="PLN oszczednosci autokonsumpcji">Oszcz. autokons.</th>' +
+    '<th title="PLN przychod ze sprzedazy">Przych. sprzedazy</th>' +
+    '<th title="PLN lacznie w miesiacu">Lacznie mies.</th>' +
     '<th title="PLN kumulatywnie">Kumulatywnie</th>' +
     '<th>ROI</th>' +
+    '<th title="udzial autokonsumpcji w zuzyciu">Autarkia</th>' +
+    '<th title="koszt zakupu minus przychod sprzedazy">Koszt netto sieci</th>' +
     '<th>RCEm status</th>' +
   '</tr></thead>';
 
   const badgeMap = { ok: 'badge-ok', pending: 'badge-pending', missing: 'badge-missing', confirmed: 'badge-ok' };
   const closedBadge = monthClosed
-    ? '<span class="badge badge-snap" title="Wartości zapisane w migawce">migawka</span>'
-    : '<span class="badge badge-live" title="Dane z czujników na żywo">na żywo</span>';
+    ? '<span class="badge badge-snap" title="Wartosci zapisane w migawce">migawka</span>'
+    : '<span class="badge badge-live" title="Dane z czujnikow na zywo">na zywo</span>';
 
-  // Pre-compute year totals (records are reversed: newest first)
   const yearTotals = {};
   for (const r of records) {
     const y = r.month_label.substring(0, 4);
-    if (!yearTotals[y]) yearTotals[y] = {produced: 0, exported: 0, sc: 0, self_sav: 0, feedin: 0, total: 0};
+    if (!yearTotals[y]) yearTotals[y] = {produced: 0, exported: 0, sc: 0, self_sav: 0, feedin: 0, total: 0, purchase: 0, net_grid: 0, consumed: 0};
     const t = yearTotals[y];
-    t.produced += r.produced_kwh  || 0;
-    t.exported += r.exported_kwh  || 0;
-    t.sc       += r.self_consumed_kwh || 0;
-    t.self_sav += r.self_savings  || 0;
-    t.feedin   += r.feedin_revenue || 0;
-    t.total    += r.month_savings  || 0;
+    t.produced  += r.produced_kwh       || 0;
+    t.exported  += r.exported_kwh       || 0;
+    t.sc        += r.self_consumed_kwh  || 0;
+    t.self_sav  += r.self_savings       || 0;
+    t.feedin    += r.feedin_revenue     || 0;
+    t.total     += r.month_savings      || 0;
+    t.purchase  += r.purchase_cost_pln  || 0;
+    t.net_grid  += r.net_grid_cost      || 0;
+    t.consumed  += r.consumed_kwh       || 0;
   }
 
   function yearSummaryRow(y) {
     const t = yearTotals[y];
+    const suff = t.consumed > 0 ? pct(t.sc / t.consumed * 100) : '—';
     return '<tr class="yr">' +
-      '<td>' + y + ' – suma</td>' +
+      '<td>' + y + ' – suma</td>' +
       '<td>' + kwh(t.produced) + '</td>' +
       '<td>' + kwh(t.exported) + '</td>' +
       '<td>' + kwh(t.sc)       + '</td>' +
@@ -492,7 +595,10 @@ function renderHistTable(records, monthClosed) {
       '<td>' + pln(t.self_sav, 0) + '</td>' +
       '<td>' + pln(t.feedin,   0) + '</td>' +
       '<td>' + pln(t.total,    0) + '</td>' +
-      '<td colspan="3">—</td>' +
+      '<td colspan="2">—</td>' +
+      '<td>' + suff + '</td>' +
+      '<td>' + pln(t.net_grid, 0) + '</td>' +
+      '<td>—</td>' +
     '</tr>';
   }
 
@@ -510,12 +616,14 @@ function renderHistTable(records, monthClosed) {
     const st  = r.rcem_status || 'ok';
 
     const monthLabel = r.is_current
-      ? r.month_label + ' ' + closedBadge
+      ? r.month_label + ' ' + closedBadge
       : r.month_label;
 
     const producedCell = r.is_current && r.projected_month_kwh != null
-      ? kwh(r.produced_kwh) + '<br><span class="proj-hint">→ ' + kwh(r.projected_month_kwh) + ' proj.</span>'
+      ? kwh(r.produced_kwh) + '<br><span class="proj-hint">→ ' + kwh(r.projected_month_kwh) + ' proj.</span>'
       : kwh(r.produced_kwh);
+
+    const autarkia = r.self_sufficiency_pct != null ? pct(r.self_sufficiency_pct) : '—';
 
     html += '<tr' + cls + '>' +
       '<td>' + monthLabel + '</td>' +
@@ -529,59 +637,158 @@ function renderHistTable(records, monthClosed) {
       '<td>' + pln(r.month_savings, 2) + '</td>' +
       '<td>' + pln(r.cumulative_return) + '</td>' +
       '<td>' + pct(r.roi_pct) + '</td>' +
+      '<td>' + autarkia + '</td>' +
+      '<td>' + pln(r.net_grid_cost, 2) + '</td>' +
       '<td><span class="badge ' + (badgeMap[st]||'badge-ok') + '">' + st + '</span></td>' +
     '</tr>';
   }
-  // Summary row for the oldest (last) year
   if (lastYear !== null) html += yearSummaryRow(lastYear);
 
   document.getElementById('histTbl').innerHTML  = head + '<tbody>' + html + '</tbody>';
-  document.getElementById('histFoot').textContent = records.length + ' miesięcy danych';
+  document.getElementById('histFoot').textContent = records.length + ' miesiecy danych';
 }
 
-/* ── Predictions table ── */
-function renderPredTable(predictions, window) {
+/* -- Predictions table -- */
+function renderPredTable(predictions, sensitivity, window) {
   if (!predictions.length) {
     document.getElementById('predTbl').innerHTML =
       '<tbody><tr><td colspan="5" style="padding:24px;text-align:center;color:#718096">Brak danych do prognozy.</td></tr></tbody>';
     document.getElementById('predFoot').textContent = '';
-    return;
-  }
-  const postPb = predictions[0].post_payback === true;
-  const head = '<thead><tr>' +
-    '<th>Miesiąc</th>' +
-    '<th>Proj. oszczędności</th>' +
-    (postPb ? '<th>Zysk netto</th>' : '<th>Kumulatywnie</th><th>Pozostało</th>') +
-    '<th>ROI</th>' +
-  '</tr></thead>';
+  } else {
+    const postPb = predictions[0].post_payback === true;
+    const head = '<thead><tr>' +
+      '<th>Miesiac</th>' +
+      '<th>Proj. oszczednosci</th>' +
+      (postPb ? '<th>Zysk netto</th>' : '<th>Kumulatywnie</th><th>Pozostalo</th>') +
+      '<th>ROI</th>' +
+    '</tr></thead>';
 
-  const rows = predictions.map((p, i) => {
-    if (postPb) {
-      return '<tr>' +
-        '<td>' + p.month_label + '</td>' +
+    const rows = predictions.map((p, i) => {
+      if (postPb) {
+        return '<tr>' +
+          '<td>' + p.month_label + '</td>' +
+          '<td>' + pln(p.projected_savings, 2) + '</td>' +
+          '<td>' + pln(p.net_profit) + '</td>' +
+          '<td>' + pct(p.roi_pct) + '</td>' +
+        '</tr>';
+      }
+      const isPb = p.remaining <= 0 && (i === 0 || predictions[i-1].remaining > 0);
+      const cls  = isPb ? ' class="pb"' : '';
+      return '<tr' + cls + '>' +
+        '<td>' + p.month_label + (isPb ? ' 🎉' : '') + '</td>' +
         '<td>' + pln(p.projected_savings, 2) + '</td>' +
-        '<td>' + pln(p.net_profit) + '</td>' +
+        '<td>' + pln(p.cumulative_return) + '</td>' +
+        '<td>' + pln(Math.max(0, p.remaining)) + '</td>' +
         '<td>' + pct(p.roi_pct) + '</td>' +
       '</tr>';
-    }
-    const isPb = p.remaining <= 0 && (i === 0 || predictions[i-1].remaining > 0);
-    const cls  = isPb ? ' class="pb"' : '';
+    }).join('');
+
+    document.getElementById('predTbl').innerHTML  = head + '<tbody>' + rows + '</tbody>';
+    document.getElementById('predFoot').textContent = postPb
+      ? 'Prognoza zysku po splacie – srednia z ost. ' + window + ' mies.'
+      : 'Prognoza oparta na sredniej z ostatnich ' + window + ' pelnych miesiecy';
+  }
+
+  /* Sensitivity table */
+  const sw = document.getElementById('sensiWrap');
+  if (!sensitivity || !sensitivity.base) {
+    sw.style.display = 'none';
+    return;
+  }
+  sw.style.display = '';
+  const sHead = '<caption>Analiza wrazliwosci splaty</caption>' +
+    '<thead><tr><th>Scenariusz</th><th>Srednia mies.</th><th>Mies. do splaty</th><th>Prognozowana data splaty</th></tr></thead>';
+  const sRows = [
+    ['Pesymistyczny (−15%)', sensitivity.pessimistic, ''],
+    ['Bazowy', sensitivity.base, 'base'],
+    ['Optymistyczny (+15%)', sensitivity.optimistic, ''],
+  ].map(([label, v, rowCls]) => {
+    if (!v) return '';
+    const cls = rowCls ? ' class="' + rowCls + '"' : '';
     return '<tr' + cls + '>' +
-      '<td>' + p.month_label + (isPb ? ' 🎉' : '') + '</td>' +
-      '<td>' + pln(p.projected_savings, 2) + '</td>' +
-      '<td>' + pln(p.cumulative_return) + '</td>' +
-      '<td>' + pln(Math.max(0, p.remaining)) + '</td>' +
-      '<td>' + pct(p.roi_pct) + '</td>' +
+      '<td>' + label + '</td>' +
+      '<td>' + pln(v.avg, 2) + '</td>' +
+      '<td>' + (v.months ? num(v.months, 1) : '—') + '</td>' +
+      '<td>' + (v.payback_date || 'juz splacone') + '</td>' +
+    '</tr>';
+  }).join('');
+  document.getElementById('sensiTbl').innerHTML = sHead + '<tbody>' + sRows + '</tbody>';
+}
+
+/* -- Year-over-year table -- */
+function renderYearsTable(records, systemKwp) {
+  const yearMap = {};
+  for (const r of records) {
+    const y = r.month_label.substring(0, 4);
+    if (!yearMap[y]) yearMap[y] = { produced: 0, exported: 0, sc: 0, consumed: 0, purchased: 0,
+                                    self_sav: 0, feedin: 0, purchase_cost: 0, net_grid: 0, months: 0 };
+    const t = yearMap[y];
+    t.produced      += r.produced_kwh      || 0;
+    t.exported      += r.exported_kwh      || 0;
+    t.sc            += r.self_consumed_kwh || 0;
+    t.consumed      += r.consumed_kwh      || 0;
+    t.self_sav      += r.self_savings      || 0;
+    t.feedin        += r.feedin_revenue    || 0;
+    t.purchase_cost += r.purchase_cost_pln || 0;
+    t.net_grid      += r.net_grid_cost     || 0;
+    t.months        += 1;
+  }
+
+  const years = Object.keys(yearMap).sort();
+
+  // Find best/worst production years (full years only)
+  const fullYears = years.filter(y => yearMap[y].months === 12);
+  let bestY = null, worstY = null;
+  if (fullYears.length > 1) {
+    bestY  = fullYears.reduce((a, b) => yearMap[a].produced > yearMap[b].produced ? a : b);
+    worstY = fullYears.reduce((a, b) => yearMap[a].produced < yearMap[b].produced ? a : b);
+  }
+
+  const head = '<thead><tr>' +
+    '<th>Rok</th>' +
+    '<th>Produkcja</th>' +
+    '<th>Uzysk (kWh/kWp)</th>' +
+    '<th>Autokons.</th>' +
+    '<th>Sprzedane</th>' +
+    '<th>Autarkia %</th>' +
+    '<th>Oszcz. autokons.</th>' +
+    '<th>Przych. sprzedazy</th>' +
+    '<th>Lacznie oszcz.</th>' +
+    '<th>Zakup energii</th>' +
+    '<th>Koszt netto sieci</th>' +
+    '<th>Mies.</th>' +
+  '</tr></thead>';
+
+  const rows = years.map(y => {
+    const t = yearMap[y];
+    const kwhKwp = systemKwp > 0 ? Math.round(t.produced / systemKwp) : '—';
+    const suff   = t.consumed > 0 ? pct(t.sc / t.consumed * 100) : '—';
+    let note = '';
+    if (y === bestY)  note = ' ⬆️';
+    if (y === worstY) note = ' ⬇️';
+    const partial = t.months < 12 ? ' <span style="font-size:10px;color:var(--muted)">(' + t.months + ' mies.)</span>' : '';
+    return '<tr>' +
+      '<td>' + y + note + partial + '</td>' +
+      '<td>' + kwh(t.produced) + '</td>' +
+      '<td>' + kwhKwp + '</td>' +
+      '<td>' + kwh(t.sc) + '</td>' +
+      '<td>' + kwh(t.exported) + '</td>' +
+      '<td>' + suff + '</td>' +
+      '<td>' + pln(t.self_sav, 0) + '</td>' +
+      '<td>' + pln(t.feedin, 0) + '</td>' +
+      '<td>' + pln(t.self_sav + t.feedin, 0) + '</td>' +
+      '<td>' + pln(t.purchase_cost, 0) + '</td>' +
+      '<td>' + pln(t.net_grid, 0) + '</td>' +
+      '<td style="color:var(--muted)">' + t.months + '</td>' +
     '</tr>';
   }).join('');
 
-  document.getElementById('predTbl').innerHTML  = head + '<tbody>' + rows + '</tbody>';
-  document.getElementById('predFoot').textContent = postPb
-    ? 'Prognoza zysku po spłacie – średnia z ost. ' + window + ' mies.'
-    : 'Prognoza oparta na średniej z ostatnich ' + window + ' pełnych miesięcy';
+  document.getElementById('yearsTbl').innerHTML = head + '<tbody>' + rows + '</tbody>';
+  document.getElementById('yearsFoot').textContent =
+    years.length + ' lat danych' + (fullYears.length > 1 ? '; strzalki = najlepsza/najgorsza produkcja (pelne lata)' : '');
 }
 
-/* ── Main data load ── */
+/* -- Main data load -- */
 async function loadData() {
   try {
     const resp = await fetch('api/data');
@@ -597,13 +804,19 @@ async function loadData() {
     document.getElementById('content').style.display = '';
     document.getElementById('updated').textContent = 'Aktualizacja: ' + (d.updated_at || '—');
 
+    const systemKwp = d.summary.specific_yield > 0
+      ? d.summary.total_produced_kwh / d.summary.specific_yield
+      : 6.72;
+
     renderCards(d.summary);
     renderLineChart(d.records, d.predictions, d.summary.gross_investment);
     renderBarChart(d.records);
+    renderRcemChart(d.records);
     renderHistTable([...d.records].reverse(), d.summary.month_closed);
-    renderPredTable(d.predictions, d.summary.avg_window);
+    renderPredTable(d.predictions, d.sensitivity, d.summary.avg_window);
+    renderYearsTable(d.records, systemKwp);
   } catch (e) {
-    document.getElementById('updated').textContent = 'Błąd połączenia';
+    document.getElementById('updated').textContent = 'Blad polaczenia';
     console.error(e);
   }
 }
