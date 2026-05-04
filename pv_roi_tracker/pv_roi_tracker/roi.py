@@ -25,6 +25,7 @@ class RoiResult:
     roi_pct: float                    # total_return / gross_investment × 100
     months_with_data: int
     monthly_avg_savings: Optional[float]
+    monthly_avg_window: int           # how many complete months the avg is based on (max 12)
     remaining_to_recover: float       # gross_investment − total_return (floored at 0)
     months_to_payback: Optional[float]
     years_to_payback: Optional[float]
@@ -59,10 +60,25 @@ def calculate(
         if (r.self_consumed_savings_pln or 0.0) > 0 or (r.feedin_revenue_pln or 0.0) > 0
     )
 
-    if months_with_data > 0:
-        monthly_avg_savings = total_savings / months_with_data
+    # Monthly avg from last 12 complete months — current month excluded (still in progress)
+    current_ym = (today.year, today.month)
+    complete = sorted(
+        [r for r in records if (r.year, r.month) != current_ym],
+        key=lambda r: (r.year, r.month),
+    )
+    window = [
+        r for r in complete
+        if (r.self_consumed_savings_pln or 0.0) > 0 or (r.feedin_revenue_pln or 0.0) > 0
+    ][-12:]
+    if window:
+        monthly_avg_savings: Optional[float] = sum(
+            (r.self_consumed_savings_pln or 0.0) + (r.feedin_revenue_pln or 0.0)
+            for r in window
+        ) / len(window)
+        monthly_avg_window = len(window)
     else:
         monthly_avg_savings = None
+        monthly_avg_window = 0
 
     remaining_to_recover = max(0.0, gross_investment - total_return)
 
@@ -87,6 +103,7 @@ def calculate(
         roi_pct=round(roi_pct, 2),
         months_with_data=months_with_data,
         monthly_avg_savings=round(monthly_avg_savings, 2) if monthly_avg_savings is not None else None,
+        monthly_avg_window=monthly_avg_window,
         remaining_to_recover=round(remaining_to_recover, 2),
         months_to_payback=round(months_to_payback, 1) if months_to_payback is not None else None,
         years_to_payback=years_to_payback,
