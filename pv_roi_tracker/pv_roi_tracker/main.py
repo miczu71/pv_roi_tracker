@@ -101,8 +101,10 @@ def main() -> None:
                                    gross_investment=GROSS_INVESTMENT,
                                    subsidy=SUBSIDY,
                                    system_kwp=SYSTEM_KWP)
+            _now = date.today()
+            month_closed = any(r.year == _now.year and r.month == _now.month for r in historic)
             pub.publish_roi(result, rcem_price=rcem_price)
-            _web.update_state(result, all_records, rcem_price)
+            _web.update_state(result, all_records, rcem_price, month_closed=month_closed)
             logger.info('Poll complete — ROI %.2f%%, remaining %.0f PLN, payback %s',
                         result.roi_pct, result.remaining_to_recover,
                         result.payback_date or 'unknown')
