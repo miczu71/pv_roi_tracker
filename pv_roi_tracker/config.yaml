@@ -1,5 +1,5 @@
 name: PV ROI Tracker
-version: "0.2.4"
+version: "0.3.0"
 slug: pv_roi_tracker
 description: >-
   Tracks the ROI of a residential PV solar system.
@@ -12,6 +12,9 @@ arch:
   - armv7
 init: false
 homeassistant_api: true
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:solar-power-variant
 options:
   csv_url: "https://docs.google.com/spreadsheets/d/e/2PACX-1vT_3gmj8s_2JPJzPijb9T27oh0FS3JhlQ3cB1HkKPbBa2yi8GyudqJb5ZeyM20QQ9IKbfB3SnbKZukC/pub?output=csv"
   force_reimport: false
