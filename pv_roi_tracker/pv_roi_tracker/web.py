@@ -417,7 +417,7 @@ function renderPredTable(predictions, window) {
   </tr></thead>`;
 
   const rows = predictions.map((p, i) => {
-    const isPb = p.remaining <= 0;
+    const isPb = p.remaining <= 0 && (i === 0 || predictions[i-1].remaining > 0);
     const cls  = isPb ? ' class="pb"' : '';
     return `<tr${cls}>
       <td>${p.month_label}${isPb ? ' 🎉' : ''}</td>
@@ -452,7 +452,7 @@ async function loadData() {
     renderCards(d.summary);
     renderChart(d.records, d.predictions, d.summary.gross_investment);
     renderHistTable([...d.records].reverse());
-    renderPredTable([...d.predictions].reverse(), d.summary.avg_window);
+    renderPredTable(d.predictions, d.summary.avg_window);
   } catch (e) {
     document.getElementById('updated').textContent = 'Błąd połączenia';
     console.error(e);
