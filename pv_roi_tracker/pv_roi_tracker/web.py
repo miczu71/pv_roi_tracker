@@ -444,7 +444,7 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
 .proj-hint { font-size: 10px; color: var(--muted); font-weight: 400; }
 
 /* -- RCEm override form -- */
-.override-wrap { background: var(--card); border-radius: var(--radius); padding: 14px 16px; box-shadow: var(--shadow); margin-bottom: 18px; }
+.override-wrap { background: var(--card); border-radius: var(--radius); padding: 14px 16px; box-shadow: var(--shadow); }
 .override-wrap h3 { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 10px; }
 .override-form { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .override-form label { font-size: 12px; color: var(--muted); }
@@ -481,15 +481,6 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
         <canvas id="rcemChart"></canvas>
       </div>
     </div>
-    <div class="override-wrap">
-      <h3>Reczne nadpisanie ceny RCEm</h3>
-      <div class="override-form">
-        <label>Miesiac: <input type="month" id="ovMonth"></label>
-        <label>Cena (zl/kWh): <input type="number" id="ovPrice" step="0.0001" min="0.0001" max="2" placeholder="0.0000" style="width:100px"></label>
-        <button onclick="submitOverride()">Zapisz</button>
-        <span id="ovMsg"></span>
-      </div>
-    </div>
     <div class="tabs">
       <button class="tab-btn active" onclick="showTab('hist')">Historia miesieczna</button>
       <button class="tab-btn"        onclick="showTab('pred')">Prognoza splaty</button>
@@ -510,6 +501,15 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
       <div id="tab-years" style="display:none">
         <div class="tbl-wrap"><table id="yearsTbl"></table></div>
         <div class="tbl-foot" id="yearsFoot"></div>
+      </div>
+    </div>
+    <div class="override-wrap" style="margin-top:18px">
+      <h3>Reczne nadpisanie ceny RCEm</h3>
+      <div class="override-form">
+        <label>Miesiac: <input type="month" id="ovMonth"></label>
+        <label>Cena (zl/kWh): <input type="number" id="ovPrice" step="0.0001" min="0.0001" max="2" placeholder="0.0000" style="width:100px"></label>
+        <button onclick="submitOverride()">Zapisz</button>
+        <span id="ovMsg"></span>
       </div>
     </div>
   </div>
