@@ -102,6 +102,17 @@ def main() -> None:
             on_success=lambda p: logger.info('Startup RCEm catch-up: found %.4f PLN/kWh', p),
         )
 
+    def _rcem_scrape_status(now: date) -> str:
+        y, m = (now.year - 1, 12) if now.month == 1 else (now.year, now.month - 1)
+        prev = f'{y}-{m:02d}'
+        if prev in rcem_scraper._load_history(RCEM_HISTORY_PATH):
+            return 'ok'
+        if now.day < 11:
+            return 'pending'
+        if now.day <= 20:
+            return 'retrying'
+        return 'error'
+
     def poll_and_publish() -> None:
         try:
             historic = historic_store.load(HISTORIC_PATH)
@@ -118,7 +129,10 @@ def main() -> None:
                 (current.self_consumed_savings_pln or 0.0) + (current.feedin_revenue_pln or 0.0)
                 if current else None
             )
-            pub.publish_roi(result, rcem_price=rcem_price, current_month_savings=current_month_savings)
+            scrape_status = _rcem_scrape_status(_now)
+            pub.publish_roi(result, rcem_price=rcem_price,
+                            current_month_savings=current_month_savings,
+                            rcem_scrape_status=scrape_status)
             _web.update_state(result, all_records, rcem_price, month_closed=month_closed)
             logger.info('Poll complete — ROI %.2f%%, remaining %.0f PLN, payback %s',
                         result.roi_pct, result.remaining_to_recover,

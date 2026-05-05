@@ -1,6 +1,9 @@
 """Flask web UI — serves the ROI dashboard on the add-on ingress port."""
 from __future__ import annotations
 
+import calendar
+import csv
+import io
 import logging
 import re
 import threading
@@ -199,6 +202,25 @@ def api_data():
     current_rec = next((r for r in records if (r.year, r.month) == current_ym), None)
     solcast_projected_kwh = current_rec.projected_month_kwh if current_rec else None
 
+    # Month progress
+    days_in_month = calendar.monthrange(today.year, today.month)[1]
+    days_elapsed  = today.day
+    curr_sav = 0.0
+    if current_rec:
+        curr_sav = (current_rec.self_consumed_savings_pln or 0.0) + (current_rec.feedin_revenue_pln or 0.0)
+    _avg = result.monthly_avg_savings
+    pace_proj     = round(curr_sav / days_elapsed * days_in_month, 2) if days_elapsed > 0 and curr_sav > 0 else None
+    vs_avg_pct    = round(curr_sav / _avg * 100, 1)    if _avg and _avg > 0 else None
+    pace_vs_avg   = round(pace_proj / _avg * 100, 1)   if pace_proj and _avg and _avg > 0 else None
+    month_progress = {
+        'days_elapsed': days_elapsed,
+        'days_in_month': days_in_month,
+        'savings_so_far': round(curr_sav, 2),
+        'pace_projected': pace_proj,
+        'vs_avg_pct': vs_avg_pct,
+        'pace_vs_avg_pct': pace_vs_avg,
+    }
+
     return jsonify({
         'status': 'ok',
         'updated_at': updated_at,
@@ -228,6 +250,7 @@ def api_data():
             'net_profit': result.net_profit,
             'self_sufficiency_avg': self_sufficiency_avg,
             'net_grid_cost_total': net_grid_cost_total,
+            'month_progress': month_progress,
         },
         'records': records_out,
         'predictions': _build_predictions(result),
@@ -256,6 +279,54 @@ def rcem_override():
     except Exception as exc:
         log.exception('RCEm override failed')
         return jsonify({'ok': False, 'error': str(exc)}), 500
+
+
+@app.route('/api/export/csv')
+def export_csv():
+    with _lock:
+        records = list(_state['records'])
+        result  = _state['result']
+    if result is None:
+        return Response('Brak danych', status=202)
+
+    today = date.today()
+    current_ym = (today.year, today.month)
+
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow([
+        'Rok', 'Miesiac',
+        'Wyprodukowane kWh', 'Sprzedane kWh', 'Autokons. kWh', 'Zuzycie kWh',
+        'Zakup lacznie kWh', 'Zakup szczyt kWh', 'Zakup poza szczytem kWh',
+        'Cena zakupu PLN/kWh', 'RCEm PLN/kWh',
+        'Oszcz. autokons. PLN', 'Przychod sprzedazy PLN', 'Oszczednosci lacznie PLN',
+        'Autarkia %', 'Koszt netto sieci PLN', 'Status RCEm',
+    ])
+    for r in sorted(records, key=lambda x: (x.year, x.month)):
+        if (r.year, r.month) > current_ym:
+            continue
+        consumed = r.consumed_kwh or 0.0
+        sc       = r.self_consumed_kwh or 0.0
+        suff     = round(sc / consumed * 100, 1) if consumed > 0 else ''
+        purchased = r.purchased_kwh or 0.0
+        buy_px    = r.buy_price_pln_kwh or 0.0
+        net_grid  = round(purchased * buy_px - (r.feedin_revenue_pln or 0.0), 2)
+        savings   = round((r.self_consumed_savings_pln or 0.0) + (r.feedin_revenue_pln or 0.0), 2)
+        w.writerow([
+            r.year, r.month,
+            r.produced_kwh, r.exported_kwh, r.self_consumed_kwh, r.consumed_kwh,
+            r.purchased_kwh, r.purchased_kwh_peak, r.purchased_kwh_offpeak,
+            r.buy_price_pln_kwh, r.feedin_price_pln_kwh,
+            r.self_consumed_savings_pln, r.feedin_revenue_pln, savings,
+            suff, net_grid, r.rcem_status,
+        ])
+
+    filename = f'pv_roi_{today.strftime("%Y%m%d")}.csv'
+    return Response(
+        '﻿' + buf.getvalue(),
+        mimetype='text/csv; charset=utf-8',
+        headers={'Content-Disposition': f'attachment; filename={filename}'},
+    )
 
 
 @app.route('/')
@@ -294,10 +365,14 @@ body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg);
 header {
   background: linear-gradient(135deg, #1e3a5f 0%, #2563eb 100%);
   color: #fff; padding: 14px 24px;
-  display: flex; align-items: center; justify-content: space-between;
+  display: flex; align-items: center; gap: 16px;
 }
-header h1 { font-size: 17px; font-weight: 700; }
+header h1 { font-size: 17px; font-weight: 700; flex: 1; }
 #updated { font-size: 11px; opacity: .75; }
+.csv-btn { font-size: 11px; font-weight: 600; color: rgba(255,255,255,.85); text-decoration: none;
+           border: 1px solid rgba(255,255,255,.35); border-radius: 4px; padding: 3px 10px;
+           white-space: nowrap; }
+.csv-btn:hover { background: rgba(255,255,255,.12); }
 
 main { max-width: 1600px; margin: 0 auto; padding: 18px 16px; }
 .loading { text-align: center; padding: 60px 0; color: var(--muted); font-size: 15px; }
@@ -383,6 +458,7 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
 <body>
 <header>
   <h1>&#9728;&#65039; PV ROI Tracker</h1>
+  <a href="api/export/csv" class="csv-btn" download>&#8595; Eksportuj CSV</a>
   <span id="updated">Ladowanie&hellip;</span>
 </header>
 <main>
@@ -482,6 +558,16 @@ function renderCards(s) {
     { lbl: 'Zysk netto', val: pln(s.net_profit || 0), cls: (s.net_profit || 0) > 0 ? 'c-green' : '', sub: (s.net_profit || 0) > 0 ? 'ponad inwestycje brutto' : 'przed splata' },
     s.self_sufficiency_avg != null ? { lbl: 'Autarkia', val: pct(s.self_sufficiency_avg), sub: 'udzial autokonsumpcji' } : null,
     { lbl: 'Koszt netto sieci', val: pln(s.net_grid_cost_total), sub: 'zakup − sprzedaz lacznie' },
+    (() => {
+      const mp = s.month_progress;
+      if (!mp || !s.monthly_avg_savings) return null;
+      const pace = mp.pace_projected != null ? pln(mp.pace_projected) + ' proj.' : null;
+      const sub = mp.days_elapsed + '/' + mp.days_in_month + ' dni'
+        + (pace ? '  •  ' + pace : '')
+        + (mp.pace_vs_avg_pct != null ? '  •  ' + pct(mp.pace_vs_avg_pct) + ' sr.' : '');
+      const cls = mp.pace_vs_avg_pct != null && mp.pace_vs_avg_pct >= 100 ? 'c-green' : '';
+      return { lbl: 'Postep miesiaca', val: pln(mp.savings_so_far), sub, cls };
+    })(),
   ].filter(Boolean);
 
   document.getElementById('cards').innerHTML = cards.map(c =>
