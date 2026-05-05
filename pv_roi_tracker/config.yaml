@@ -1,5 +1,5 @@
 name: PV ROI Tracker
-version: "0.4.5"
+version: "0.4.6"
 slug: pv_roi_tracker
 description: >-
   Tracks the ROI of a residential PV solar system.
@@ -37,5 +37,5 @@ schema:
   mqtt_host: str
   mqtt_port: int
   mqtt_user: str
-  mqtt_password: str
+  mqtt_password: password
   log_level: "list(debug|info|warning|error)?"
