@@ -80,6 +80,17 @@ def main() -> None:
     pub = MQTTPublisher(MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASSWORD, version=__version__)
     pub.connect()
 
+    def _rcem_override(month_str: str, price: float) -> None:
+        history = rcem_scraper._load_history(RCEM_HISTORY_PATH)
+        history[month_str] = price
+        rcem_scraper._save_history(history, RCEM_HISTORY_PATH)
+        year, mon = int(month_str[:4]), int(month_str[5:])
+        historic_store.backfill_rcem(year, mon, price, HISTORIC_PATH)
+        logger.info('RCEm override: %s = %.4f PLN/kWh', month_str, price)
+        poll_and_publish()
+
+    _web.set_rcem_override_callback(_rcem_override)
+
     # ── Startup RCEm catch-up ─────────────────────────────────────────────────
     # If today >= 11th and last month's RCEm is missing, try immediately.
     from datetime import date
@@ -103,7 +114,11 @@ def main() -> None:
                                    system_kwp=SYSTEM_KWP)
             _now = date.today()
             month_closed = any(r.year == _now.year and r.month == _now.month for r in historic)
-            pub.publish_roi(result, rcem_price=rcem_price)
+            current_month_savings = (
+                (current.self_consumed_savings_pln or 0.0) + (current.feedin_revenue_pln or 0.0)
+                if current else None
+            )
+            pub.publish_roi(result, rcem_price=rcem_price, current_month_savings=current_month_savings)
             _web.update_state(result, all_records, rcem_price, month_closed=month_closed)
             logger.info('Poll complete — ROI %.2f%%, remaining %.0f PLN, payback %s',
                         result.roi_pct, result.remaining_to_recover,

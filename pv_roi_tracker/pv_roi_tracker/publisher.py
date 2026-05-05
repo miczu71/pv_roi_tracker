@@ -48,6 +48,7 @@ _SENSORS: list[_Sensor] = [
     _Sensor('specific_yield',           'PV Specific Yield',           'specific_yield_lifetime',   'kWh/kWp', None,       'total_increasing', 'mdi:chart-bar'),
     _Sensor('rcem_current_month',       'RCEm Current Month',          None,                        'PLN/kWh', None,       'measurement',      'mdi:currency-eur'),
     _Sensor('net_profit',              'PV Net Profit',               'net_profit',                'PLN',     'monetary', 'total_increasing', 'mdi:cash-multiple'),
+    _Sensor('current_month_savings',   'PV Savings This Month',       None,                        'PLN',     'monetary', 'measurement',      'mdi:calendar-today'),
 ]
 
 
@@ -59,11 +60,14 @@ def _disc_topic(slug: str) -> str:
     return f'{_DISC_PREFIX}/sensor/{_DEVICE_ID}/{slug}/config'
 
 
-def _render_value(sensor: _Sensor, result: RoiResult, rcem_price: Optional[float]) -> str:
+def _render_value(sensor: _Sensor, result: RoiResult, rcem_price: Optional[float],
+                  current_month_savings: Optional[float] = None) -> str:
     if sensor.slug == 'net_investment':
         v: Any = round(result.gross_investment - result.subsidy, 2)
     elif sensor.slug == 'rcem_current_month':
         v = rcem_price
+    elif sensor.slug == 'current_month_savings':
+        v = current_month_savings
     else:
         v = getattr(result, sensor.attr) if sensor.attr else None
 
@@ -142,11 +146,12 @@ class MQTTPublisher:
 
     # ── State publishing ──────────────────────────────────────────────────────
 
-    def publish_roi(self, result: RoiResult, rcem_price: Optional[float] = None) -> None:
+    def publish_roi(self, result: RoiResult, rcem_price: Optional[float] = None,
+                    current_month_savings: Optional[float] = None) -> None:
         if not self._connected:
             logger.debug('MQTT not connected — skipping publish')
             return
         for s in _SENSORS:
-            payload = _render_value(s, result, rcem_price)
+            payload = _render_value(s, result, rcem_price, current_month_savings)
             self._client.publish(_state_topic(s.slug), payload, retain=True)
         logger.debug('Published ROI state to MQTT (roi_pct=%.2f%%)', result.roi_pct)

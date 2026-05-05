@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from datetime import date, datetime
 from math import ceil
 from typing import Optional
 
 from dateutil.relativedelta import relativedelta
-from flask import Flask, Response, jsonify
+from flask import Flask, Response, jsonify, request
 
 from .models import MonthlyRecord
 from .roi import RoiResult
@@ -17,6 +18,14 @@ app = Flask(__name__)
 log = logging.getLogger(__name__)
 
 _lock = threading.Lock()
+_rcem_override_callback = None
+
+
+def set_rcem_override_callback(fn) -> None:
+    global _rcem_override_callback
+    _rcem_override_callback = fn
+
+
 _state: dict = {
     'result': None,
     'records': [],
@@ -183,6 +192,8 @@ def api_data():
             'purchase_cost_pln': purchase_cost,
             'net_grid_cost': net_grid,
             'self_sufficiency_pct': self_suff,
+            'purchased_kwh_peak': r.purchased_kwh_peak,
+            'purchased_kwh_offpeak': r.purchased_kwh_offpeak,
         })
 
     current_rec = next((r for r in records if (r.year, r.month) == current_ym), None)
@@ -222,6 +233,29 @@ def api_data():
         'predictions': _build_predictions(result),
         'sensitivity': _build_sensitivity(result),
     })
+
+
+@app.route('/api/rcem/override', methods=['POST'])
+def rcem_override():
+    if _rcem_override_callback is None:
+        return jsonify({'ok': False, 'error': 'not initialized'}), 503
+    data = request.get_json(silent=True) or {}
+    month = str(data.get('month', ''))
+    price = data.get('price')
+    if not re.match(r'^\d{4}-\d{2}$', month):
+        return jsonify({'ok': False, 'error': 'invalid month (YYYY-MM)'}), 400
+    try:
+        price = float(price)
+    except (TypeError, ValueError):
+        return jsonify({'ok': False, 'error': 'invalid price'}), 400
+    if not (0 < price <= 2.0):
+        return jsonify({'ok': False, 'error': 'price out of range (0, 2.0]'}), 400
+    try:
+        _rcem_override_callback(month, price)
+        return jsonify({'ok': True, 'month': month, 'price': price})
+    except Exception as exc:
+        log.exception('RCEm override failed')
+        return jsonify({'ok': False, 'error': str(exc)}), 500
 
 
 @app.route('/')
@@ -333,6 +367,17 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
 
 /* -- Projected hint -- */
 .proj-hint { font-size: 10px; color: var(--muted); font-weight: 400; }
+
+/* -- RCEm override form -- */
+.override-wrap { background: var(--card); border-radius: var(--radius); padding: 14px 16px; box-shadow: var(--shadow); margin-bottom: 18px; }
+.override-wrap h3 { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 10px; }
+.override-form { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.override-form label { font-size: 12px; color: var(--muted); }
+.override-form input { font-size: 13px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg); color: var(--text); }
+.override-form button { padding: 6px 16px; background: var(--accent); color: #fff; border: none; border-radius: 5px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.override-form button:hover { background: #1d4ed8; }
+#ovMsg.ok  { color: var(--green); }
+#ovMsg.err { color: var(--red); }
 </style>
 </head>
 <body>
@@ -358,6 +403,15 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
       <div class="chart-wrap sm">
         <h3>Historia ceny RCEm (zl/kWh)</h3>
         <canvas id="rcemChart"></canvas>
+      </div>
+    </div>
+    <div class="override-wrap">
+      <h3>Reczne nadpisanie ceny RCEm</h3>
+      <div class="override-form">
+        <label>Miesiac: <input type="month" id="ovMonth"></label>
+        <label>Cena (zl/kWh): <input type="number" id="ovPrice" step="0.0001" min="0.0001" max="2" placeholder="0.0000" style="width:100px"></label>
+        <button onclick="submitOverride()">Zapisz</button>
+        <span id="ovMsg"></span>
       </div>
     </div>
     <div class="tabs">
@@ -550,6 +604,8 @@ function renderHistTable(records, monthClosed) {
     '<th title="kWh wyprodukowane">Produkcja</th>' +
     '<th title="kWh sprzedane">Sprzedane</th>' +
     '<th title="kWh autokonsumpcja">Autokons.</th>' +
+    '<th title="kWh zakupione w szczycie">Zakup szczyt</th>' +
+    '<th title="kWh zakupione poza szczytem">Zakup poza</th>' +
     '<th title="PLN/kWh cena zakupu">Cena zakupu</th>' +
     '<th title="PLN/kWh RCEm">RCEm</th>' +
     '<th title="PLN oszczednosci autokonsumpcji">Oszcz. autokons.</th>' +
@@ -570,27 +626,33 @@ function renderHistTable(records, monthClosed) {
   const yearTotals = {};
   for (const r of records) {
     const y = r.month_label.substring(0, 4);
-    if (!yearTotals[y]) yearTotals[y] = {produced: 0, exported: 0, sc: 0, self_sav: 0, feedin: 0, total: 0, purchase: 0, net_grid: 0, consumed: 0};
+    if (!yearTotals[y]) yearTotals[y] = {produced: 0, exported: 0, sc: 0, self_sav: 0, feedin: 0, total: 0, purchase: 0, net_grid: 0, consumed: 0, peak_kw: 0, offpeak_kw: 0, peak_kw_count: 0};
     const t = yearTotals[y];
-    t.produced  += r.produced_kwh       || 0;
-    t.exported  += r.exported_kwh       || 0;
-    t.sc        += r.self_consumed_kwh  || 0;
-    t.self_sav  += r.self_savings       || 0;
-    t.feedin    += r.feedin_revenue     || 0;
-    t.total     += r.month_savings      || 0;
-    t.purchase  += r.purchase_cost_pln  || 0;
-    t.net_grid  += r.net_grid_cost      || 0;
-    t.consumed  += r.consumed_kwh       || 0;
+    t.produced    += r.produced_kwh          || 0;
+    t.exported    += r.exported_kwh          || 0;
+    t.sc          += r.self_consumed_kwh     || 0;
+    t.self_sav    += r.self_savings          || 0;
+    t.feedin      += r.feedin_revenue        || 0;
+    t.total       += r.month_savings         || 0;
+    t.purchase    += r.purchase_cost_pln     || 0;
+    t.net_grid    += r.net_grid_cost         || 0;
+    t.consumed    += r.consumed_kwh          || 0;
+    if (r.purchased_kwh_peak != null) { t.peak_kw += r.purchased_kwh_peak; t.peak_kw_count++; }
+    if (r.purchased_kwh_offpeak != null) t.offpeak_kw += r.purchased_kwh_offpeak;
   }
 
   function yearSummaryRow(y) {
     const t = yearTotals[y];
     const suff = t.consumed > 0 ? pct(t.sc / t.consumed * 100) : '—';
+    const pkCell  = t.peak_kw_count > 0 ? kwh(t.peak_kw)    : '—';
+    const opkCell = t.peak_kw_count > 0 ? kwh(t.offpeak_kw) : '—';
     return '<tr class="yr">' +
       '<td>' + y + ' – suma</td>' +
       '<td>' + kwh(t.produced) + '</td>' +
       '<td>' + kwh(t.exported) + '</td>' +
       '<td>' + kwh(t.sc)       + '</td>' +
+      '<td>' + pkCell  + '</td>' +
+      '<td>' + opkCell + '</td>' +
       '<td colspan="2">—</td>' +
       '<td>' + pln(t.self_sav, 0) + '</td>' +
       '<td>' + pln(t.feedin,   0) + '</td>' +
@@ -625,11 +687,16 @@ function renderHistTable(records, monthClosed) {
 
     const autarkia = r.self_sufficiency_pct != null ? pct(r.self_sufficiency_pct) : '—';
 
+    const pkCell  = r.purchased_kwh_peak    != null ? kwh(r.purchased_kwh_peak)    : '—';
+    const opkCell = r.purchased_kwh_offpeak != null ? kwh(r.purchased_kwh_offpeak) : '—';
+
     html += '<tr' + cls + '>' +
       '<td>' + monthLabel + '</td>' +
       '<td>' + producedCell + '</td>' +
       '<td>' + kwh(r.exported_kwh) + '</td>' +
       '<td>' + kwh(r.self_consumed_kwh) + '</td>' +
+      '<td>' + pkCell + '</td>' +
+      '<td>' + opkCell + '</td>' +
       '<td>' + price(r.buy_price) + '</td>' +
       '<td>' + price(r.feedin_price) + '</td>' +
       '<td>' + pln(r.self_savings, 2) + '</td>' +
@@ -788,6 +855,35 @@ function renderYearsTable(records, systemKwp) {
     years.length + ' lat danych' + (fullYears.length > 1 ? '; strzalki = najlepsza/najgorsza produkcja (pelne lata)' : '');
 }
 
+/* -- RCEm manual override -- */
+async function submitOverride() {
+  const month = document.getElementById('ovMonth').value;
+  const price = parseFloat(document.getElementById('ovPrice').value);
+  const msg   = document.getElementById('ovMsg');
+  msg.className = '';
+  msg.textContent = 'Zapisywanie…';
+  if (!month || isNaN(price) || price <= 0 || price > 2) {
+    msg.className = 'err'; msg.textContent = 'Podaj poprawny miesiac i cene (0–2 zl/kWh)'; return;
+  }
+  try {
+    const r = await fetch('api/rcem/override', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({month, price}),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      msg.className = 'ok';
+      msg.textContent = 'Zapisano ' + month + ' = ' + price.toFixed(4) + ' zl/kWh';
+      setTimeout(loadData, 2000);
+    } else {
+      msg.className = 'err'; msg.textContent = 'Blad: ' + (d.error || 'nieznany');
+    }
+  } catch(e) {
+    msg.className = 'err'; msg.textContent = 'Blad polaczenia';
+  }
+}
+
 /* -- Main data load -- */
 async function loadData() {
   try {
@@ -820,6 +916,14 @@ async function loadData() {
     console.error(e);
   }
 }
+
+/* -- Pre-fill override month to last month -- */
+(function() {
+  const d = new Date(); d.setMonth(d.getMonth() - 1);
+  const m = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+  document.getElementById('ovMonth').value = m;
+  document.getElementById('ovMonth').max   = m;
+})();
 
 loadData();
 setInterval(loadData, 60000);

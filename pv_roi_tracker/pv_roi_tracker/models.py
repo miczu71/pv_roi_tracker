@@ -11,6 +11,8 @@ class MonthlyRecord:
     produced_kwh: Optional[float] = None
     consumed_kwh: Optional[float] = None
     purchased_kwh: Optional[float] = None
+    purchased_kwh_peak: Optional[float] = None
+    purchased_kwh_offpeak: Optional[float] = None
     exported_kwh: Optional[float] = None
     self_consumed_kwh: Optional[float] = None
     buy_price_pln_kwh: Optional[float] = None
