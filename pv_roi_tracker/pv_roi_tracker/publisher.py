@@ -145,8 +145,6 @@ class MQTTPublisher:
             if s.device_class: payload['device_class']        = s.device_class
             if s.state_class:  payload['state_class']         = s.state_class
             if s.icon:         payload['icon']                 = s.icon
-            if s.slug == 'rcem_scrape_status':
-                payload['object_id'] = 'pv_rcem_scrape_status'
             self._client.publish(_disc_topic(s.slug), json.dumps(payload), retain=True)
         logger.info('MQTT discovery published for %d sensors', len(_SENSORS))
 
