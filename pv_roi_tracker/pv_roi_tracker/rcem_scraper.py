@@ -2,7 +2,7 @@
 RCEm (Rynkowa Cena Energii Miesięczna) scraper.
 
 Fetches the previous month's feed-in price from the PSE website on the 11th
-of each month at 20:00 UTC, with daily retries through the 20th.
+of each month at 09:00, 12:00 and 20:00 local time, with retries through the 20th.
 Stores results in /data/rcem_history.json (keyed YYYY-MM, values in PLN/kWh).
 """
 from __future__ import annotations

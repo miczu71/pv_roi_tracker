@@ -165,8 +165,8 @@ def main() -> None:
     scheduler.add_job(month_close_job, CronTrigger(day='last', hour=23, minute=55),
                       id='month_close', name='Month-close snapshot')
 
-    # RCEm: days 11–20 at 20:00 UTC (no-op if already cached for this cycle)
-    scheduler.add_job(rcem_job, CronTrigger(day='11-20', hour=20, minute=0, timezone='UTC'),
+    # RCEm: days 11–20 at 09:00, 12:00, 20:00 local time (no-op if already cached)
+    scheduler.add_job(rcem_job, CronTrigger(day='11-20', hour='9,12,20', minute=0),
                       id='rcem_scrape', name='RCEm price scrape')
 
     logger.info('PV ROI Tracker v%s started — poll every %d min', __version__, POLL_INTERVAL)
