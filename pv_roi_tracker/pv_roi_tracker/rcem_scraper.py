@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 PSE_URL = 'https://www.pse.pl/oire/rcem-rynkowa-miesieczna-cena-energii-elektrycznej'
 DEFAULT_HISTORY_PATH     = Path('/data/rcem_history.json')
 DEFAULT_CORRECTIONS_PATH = Path('/data/rcem_corrections.json')
-_HISTORY_MAX_ENTRIES = 36
+_HISTORY_MAX_ENTRIES = 60
 _MAX_PLN_MWH = 2000.0
 
 
@@ -290,7 +290,7 @@ def run_scheduled_scrape(
         _save_history(history, history_path)
         for key in updated:
             year, month = int(key[:4]), int(key[5:])
-            historic_store.backfill_rcem(year, month, history[key], historic_json_path)
+            historic_store.backfill_rcem(year, month, scraped[key], historic_json_path)
             logger.info('Backfilled historic.json for %s', key)
         if callback:
             callback()
