@@ -29,15 +29,6 @@ def set_rcem_override_callback(fn) -> None:
     _rcem_override_callback = fn
 
 
-_gdrive_client_id: str = ''
-_gdrive_client_secret: str = ''
-
-
-def set_gdrive_config(client_id: str, client_secret: str) -> None:
-    global _gdrive_client_id, _gdrive_client_secret
-    _gdrive_client_id = client_id
-    _gdrive_client_secret = client_secret
-
 
 _state: dict = {
     'result': None,
@@ -346,49 +337,6 @@ def export_csv():
     )
 
 
-@app.route('/api/gdrive/status')
-def gdrive_status():
-    from . import gdrive_backup
-    state = gdrive_backup.get_state()
-    state['authorized'] = gdrive_backup.is_authorized()
-    return jsonify(state)
-
-
-@app.route('/api/gdrive/authorize', methods=['POST'])
-def gdrive_authorize():
-    if not _gdrive_client_id:
-        return jsonify({'ok': False, 'error': 'Brak Client ID w konfiguracji dodatku'}), 400
-    from . import gdrive_backup
-    gdrive_backup.start_device_flow(_gdrive_client_id)
-    return jsonify({'ok': True})
-
-
-@app.route('/api/gdrive/revoke', methods=['POST'])
-def gdrive_revoke():
-    from . import gdrive_backup
-    gdrive_backup.revoke()
-    return jsonify({'ok': True})
-
-
-@app.route('/api/gdrive/backup', methods=['POST'])
-def gdrive_backup_now():
-    import os
-    from pathlib import Path
-    if not (_gdrive_client_id and _gdrive_client_secret):
-        return jsonify({'ok': False, 'error': 'Brak konfiguracji Google Drive (Client ID/Secret)'}), 400
-    folder_id = os.environ.get('GDRIVE_FOLDER_ID', '')
-    if not folder_id:
-        return jsonify({'ok': False, 'error': 'Brak gdrive_folder_id w konfiguracji'}), 400
-    from . import gdrive_backup
-    files = [
-        Path('/data/historic.json'),
-        Path('/data/rcem_history.json'),
-        Path('/data/rcem_corrections.json'),
-    ]
-    ok = gdrive_backup.upload_files(files, folder_id, _gdrive_client_id, _gdrive_client_secret)
-    return jsonify({'ok': ok, 'error': None if ok else 'Upload nieudany — sprawdź logi'})
-
-
 @app.route('/')
 def index():
     return Response(_HTML, mimetype='text/html; charset=utf-8')
@@ -543,20 +491,6 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
 #ovMsg.ok  { color: var(--green); }
 #ovMsg.err { color: var(--red); }
 
-/* -- Google Drive card -- */
-.gdrive-wrap { background: var(--card); border-radius: var(--radius); padding: 14px 16px; box-shadow: var(--shadow); }
-.gdrive-wrap h3 { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 10px; }
-.gdrive-status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
-.gdrive-code-block { background: #1e3a5f; color: #93c5fd; font-family: monospace; font-size: 24px; font-weight: 700; letter-spacing: 4px; padding: 8px 18px; border-radius: 6px; display: inline-block; }
-.gdrive-btns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
-.gdrive-btn { padding: 6px 14px; border: none; border-radius: 5px; font-size: 12px; font-weight: 600; cursor: pointer; }
-.gdrive-btn-primary   { background: var(--accent); color: #fff; }
-.gdrive-btn-primary:hover   { background: #1d4ed8; }
-.gdrive-btn-danger    { background: #fee2e2; color: var(--red); }
-.gdrive-btn-danger:hover    { background: #fecaca; }
-.gdrive-btn-secondary { background: #f1f5f9; color: var(--text); }
-.gdrive-btn-secondary:hover { background: #e2e8f0; }
-.gdrive-btn:disabled  { opacity: .6; cursor: default; }
 </style>
 </head>
 <body>
@@ -616,10 +550,7 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
         <span id="ovMsg"></span>
       </div>
     </div>
-    <div class="gdrive-wrap" style="margin-top:18px">
-      <h3>&#9729; Google Drive Backup</h3>
-      <div id="gdriveContent" style="color:var(--muted);font-size:12px">Ladowanie stanu&hellip;</div>
-    </div>
+
   </div>
 </main>
 <script>
@@ -1142,93 +1073,6 @@ async function loadData() {
 loadData();
 setInterval(loadData, 60000);
 
-/* -- Google Drive -- */
-let _gdrivePollTimer = null;
-
-function renderGdrive(s) {
-  const el = document.getElementById('gdriveContent');
-  if (!el) return;
-  let html = '';
-  if (s.flow === 'pending') {
-    html =
-      '<div style="margin-bottom:10px;font-size:13px;color:var(--green);font-weight:600">&#10003; Strona autoryzacji Google zostala otwarta w nowej karcie.</div>' +
-      '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">Zaloguj sie na konto Google i kliknij <strong>Zezwol</strong>. Mozesz zamknac karte po akceptacji.</div>' +
-      '<div style="font-size:12px;color:var(--muted)">Jesli karta sie nie otworzy, uzyj kodu: <strong>' + s.user_code + '</strong> na ' +
-        '<a href="' + s.verification_url + '" target="_blank" style="color:var(--accent)">' + s.verification_url + '</a></div>' +
-      '<div style="margin-top:10px;font-size:11px;color:var(--muted)">Oczekiwanie na autoryzacje&hellip;</div>';
-  } else if (s.authorized) {
-    html =
-      '<div class="gdrive-status"><span class="badge badge-ok">&#10003; Polaczono z Google Drive</span></div>' +
-      '<div class="gdrive-btns">' +
-        '<button class="gdrive-btn gdrive-btn-secondary" onclick="gdriveBackupNow(event)">&#9729; Backup teraz</button>' +
-        '<button class="gdrive-btn gdrive-btn-danger" onclick="gdriveRevoke()">Roz&#322;&#261;cz</button>' +
-      '</div>';
-  } else if (s.flow === 'error') {
-    html =
-      '<div class="gdrive-status"><span class="badge badge-missing">blad</span> <span style="font-size:12px;color:var(--red)">' + (s.error || '') + '</span></div>' +
-      '<div class="gdrive-btns"><button class="gdrive-btn gdrive-btn-primary" onclick="gdriveAuthorize()">Polacz z Google Drive</button></div>';
-  } else {
-    const busy = s.flow === 'starting';
-    html =
-      '<div class="gdrive-btns"><button class="gdrive-btn gdrive-btn-primary" onclick="gdriveAuthorize()" ' + (busy ? 'disabled' : '') + '>' +
-        (busy ? 'Uruchamianie&hellip;' : '&#9729; Polacz z Google Drive') +
-      '</button></div>';
-  }
-  el.innerHTML = html;
-}
-
-async function loadGdriveStatus() {
-  try {
-    const r = await fetch('api/gdrive/status');
-    const s = await r.json();
-    renderGdrive(s);
-    if (s.flow === 'pending' || s.flow === 'starting') {
-      if (!_gdrivePollTimer) _gdrivePollTimer = setInterval(loadGdriveStatus, 3000);
-    } else {
-      clearInterval(_gdrivePollTimer); _gdrivePollTimer = null;
-    }
-  } catch(e) { /* ignore */ }
-}
-
-async function gdriveAuthorize() {
-  try {
-    const r = await fetch('api/gdrive/authorize', {method: 'POST'});
-    const d = await r.json();
-    if (!d.ok) { alert('Blad: ' + (d.error || 'nieznany')); return; }
-    // Poll once to get the auth URL, then open it
-    const sr = await fetch('api/gdrive/status');
-    const s = await sr.json();
-    if (s.verification_url_complete) {
-      window.open(s.verification_url_complete, '_blank', 'noopener');
-    }
-    renderGdrive(s);
-    if (!_gdrivePollTimer) _gdrivePollTimer = setInterval(loadGdriveStatus, 3000);
-  } catch(e) { alert('Blad polaczenia'); }
-}
-
-async function gdriveRevoke() {
-  if (!confirm('Rozłączyć Google Drive?')) return;
-  try {
-    await fetch('api/gdrive/revoke', {method: 'POST'});
-    loadGdriveStatus();
-  } catch(e) {}
-}
-
-async function gdriveBackupNow(event) {
-  const btn = event.target;
-  btn.textContent = 'Wykonywanie…'; btn.disabled = true;
-  try {
-    const r = await fetch('api/gdrive/backup', {method: 'POST'});
-    const d = await r.json();
-    btn.textContent = d.ok ? '✓ Gotowe' : '✗ Blad: ' + (d.error || '');
-    setTimeout(() => { btn.textContent = '☁ Backup teraz'; btn.disabled = false; }, 3000);
-  } catch(e) {
-    btn.textContent = '✗ Blad polaczenia'; btn.disabled = false;
-  }
-}
-
-loadGdriveStatus();
-setInterval(loadGdriveStatus, 30000);
 </script>
 </body>
 </html>"""

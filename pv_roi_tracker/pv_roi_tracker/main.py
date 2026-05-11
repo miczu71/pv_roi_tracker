@@ -26,10 +26,7 @@ logger = logging.getLogger(__name__)
 HISTORIC_PATH          = Path(os.environ.get('HISTORIC_PATH', '/data/historic.json'))
 RCEM_HISTORY_PATH      = Path(os.environ.get('RCEM_HISTORY_PATH', '/data/rcem_history.json'))
 RCEM_CORRECTIONS_PATH  = Path(os.environ.get('RCEM_CORRECTIONS_PATH', '/data/rcem_corrections.json'))
-BACKUP_SHARE         = Path(os.environ.get('BACKUP_SHARE', '/share/pv_roi_tracker'))
-GDRIVE_FOLDER_ID     = os.environ.get('GDRIVE_FOLDER_ID', '')
-GDRIVE_CLIENT_ID     = os.environ.get('GDRIVE_CLIENT_ID', '')
-GDRIVE_CLIENT_SECRET = os.environ.get('GDRIVE_CLIENT_SECRET', '')
+BACKUP_SHARE       = Path(os.environ.get('BACKUP_SHARE', '/share/pv_roi_tracker'))
 GROSS_INVESTMENT   = float(os.environ.get('GROSS_INVESTMENT', '51900.0'))
 SUBSIDY            = float(os.environ.get('SUBSIDY', '28714.0'))
 SYSTEM_KWP         = float(os.environ.get('SYSTEM_KWP', '6.72'))
@@ -42,18 +39,14 @@ MQTT_PASSWORD      = os.environ.get('MQTT_PASSWORD', '')
 
 def _backup_data() -> None:
     import shutil
-    files = [HISTORIC_PATH, RCEM_HISTORY_PATH, RCEM_CORRECTIONS_PATH]
     try:
         BACKUP_SHARE.mkdir(parents=True, exist_ok=True)
-        for src in files:
+        for src in [HISTORIC_PATH, RCEM_HISTORY_PATH, RCEM_CORRECTIONS_PATH]:
             if src.exists():
                 shutil.copy2(src, BACKUP_SHARE / src.name)
         logger.info('Data backed up to %s', BACKUP_SHARE)
     except Exception:
-        logger.exception('Local backup failed')
-    if GDRIVE_FOLDER_ID and GDRIVE_CLIENT_ID and GDRIVE_CLIENT_SECRET:
-        from . import gdrive_backup
-        gdrive_backup.upload_files(files, GDRIVE_FOLDER_ID, GDRIVE_CLIENT_ID, GDRIVE_CLIENT_SECRET)
+        logger.exception('Backup failed')
 
 
 def main() -> None:
@@ -81,7 +74,6 @@ def main() -> None:
         poll_and_publish()
 
     _web.set_rcem_override_callback(_rcem_override)
-    _web.set_gdrive_config(GDRIVE_CLIENT_ID, GDRIVE_CLIENT_SECRET)
 
     from datetime import date
 
