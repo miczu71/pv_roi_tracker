@@ -21,6 +21,7 @@ class MonthlyRecord:
     purchase_cost_pln: Optional[float] = None
     feedin_revenue_pln: Optional[float] = None
     specific_yield: Optional[float] = None
+    battery_arbitrage_savings_pln: Optional[float] = None  # grid-charged off-peak × 0.50 PLN/kWh
     rcem_status: str = 'confirmed'  # 'confirmed' | 'pending' | 'missing'
     projected_month_kwh: Optional[float] = None  # Solcast-based projection, current month only
 

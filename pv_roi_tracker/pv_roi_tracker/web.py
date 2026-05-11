@@ -170,7 +170,7 @@ def api_data():
     for r in sorted(records, key=lambda x: (x.year, x.month)):
         if (r.year, r.month) > current_ym:
             continue
-        month_savings = (r.self_consumed_savings_pln or 0.0) + (r.feedin_revenue_pln or 0.0)
+        month_savings = (r.self_consumed_savings_pln or 0.0) + (r.feedin_revenue_pln or 0.0) + (r.battery_arbitrage_savings_pln or 0.0)
         cumulative += month_savings
         month_key = f'{r.year}-{r.month:02d}'
         rcem_status = r.rcem_status
@@ -198,6 +198,7 @@ def api_data():
             'feedin_price': r.feedin_price_pln_kwh,
             'self_savings': r.self_consumed_savings_pln,
             'feedin_revenue': r.feedin_revenue_pln,
+            'battery_arbitrage_savings': r.battery_arbitrage_savings_pln,
             'month_savings': round(month_savings, 2),
             'cumulative_return': round(cumulative, 2),
             'roi_pct': round(cumulative / result.gross_investment * 100, 2),
@@ -242,6 +243,7 @@ def api_data():
             'total_return': result.total_return,
             'self_consumption_savings': result.self_consumption_savings,
             'feedin_revenue': result.feedin_revenue,
+            'battery_arbitrage_savings': result.battery_arbitrage_savings,
             'gross_investment': result.gross_investment,
             'subsidy': result.subsidy,
             'net_investment': round(result.gross_investment - result.subsidy, 2),
@@ -617,7 +619,7 @@ function renderCards(s) {
   const cards = [
     { lbl: 'ROI',               val: pct(roi),                    cls: roi >= 100 ? 'c-green' : 'c-blue' },
     { lbl: 'Laczny zwrot',      val: pln(s.total_return),         sub: 'subsydium ' + pln(s.subsidy) + ' + oszcz. ' + pln(s.total_savings) },
-    { lbl: 'Oszczednosci',      val: pln(s.total_savings),        sub: 'autokons. ' + pln(s.self_consumption_savings) + ' / sprzedaz ' + pln(s.feedin_revenue) },
+    { lbl: 'Oszczednosci',      val: pln(s.total_savings),        sub: 'autokons. ' + pln(s.self_consumption_savings) + ' / sprzedaz ' + pln(s.feedin_revenue) + (s.battery_arbitrage_savings > 0 ? ' / arbitraz ' + pln(s.battery_arbitrage_savings) : '') },
     { lbl: 'Pozostalo',         val: pln(s.remaining_to_recover), sub: 'inwestycja brutto ' + pln(s.gross_investment) },
     { lbl: 'Srednia mies.',     val: pln(s.monthly_avg_savings),  sub: 'ost. ' + s.avg_window + ' mies.' },
     { lbl: 'Splata',            val: s.payback_date || '—',  sub: s.years_to_payback != null ? 'za ' + num(s.years_to_payback, 1) + ' lat' : '' },
@@ -766,6 +768,7 @@ function renderHistTable(records, monthClosed) {
     '<th title="PLN/kWh RCEm">RCEm</th>' +
     '<th title="PLN oszczednosci autokonsumpcji">Oszcz. autokons.</th>' +
     '<th title="PLN przychod ze sprzedazy">Przych. sprzedazy</th>' +
+    '<th title="PLN arbitraz baterii (ladowanie z sieci w taniej taryfie)">Arbitraż bat.</th>' +
     '<th title="PLN lacznie w miesiacu">Łącznie mies.</th>' +
     '<th title="PLN kumulatywnie">Kumulatywnie</th>' +
     '<th>ROI</th>' +
@@ -782,13 +785,14 @@ function renderHistTable(records, monthClosed) {
   const yearTotals = {};
   for (const r of records) {
     const y = r.month_label.substring(0, 4);
-    if (!yearTotals[y]) yearTotals[y] = {produced: 0, exported: 0, sc: 0, self_sav: 0, feedin: 0, total: 0, purchase: 0, net_grid: 0, consumed: 0, peak_kw: 0, offpeak_kw: 0, peak_kw_count: 0};
+    if (!yearTotals[y]) yearTotals[y] = {produced: 0, exported: 0, sc: 0, self_sav: 0, feedin: 0, arbitrage: 0, total: 0, purchase: 0, net_grid: 0, consumed: 0, peak_kw: 0, offpeak_kw: 0, peak_kw_count: 0};
     const t = yearTotals[y];
     t.produced    += r.produced_kwh          || 0;
     t.exported    += r.exported_kwh          || 0;
     t.sc          += r.self_consumed_kwh     || 0;
     t.self_sav    += r.self_savings          || 0;
     t.feedin      += r.feedin_revenue        || 0;
+    t.arbitrage   += r.battery_arbitrage_savings || 0;
     t.total       += r.month_savings         || 0;
     t.purchase    += r.purchase_cost_pln     || 0;
     t.net_grid    += r.net_grid_cost         || 0;
@@ -810,8 +814,9 @@ function renderHistTable(records, monthClosed) {
       '<td>' + pkCell  + '</td>' +
       '<td>' + opkCell + '</td>' +
       '<td colspan="2">—</td>' +
-      '<td>' + pln(t.self_sav, 0) + '</td>' +
+      '<td>' + pln(t.self_sav,  0) + '</td>' +
       '<td>' + pln(t.feedin,   0) + '</td>' +
+      '<td>' + pln(t.arbitrage,0) + '</td>' +
       '<td>' + pln(t.total,    0) + '</td>' +
       '<td colspan="2">—</td>' +
       '<td>' + suff + '</td>' +
@@ -855,6 +860,7 @@ function renderHistTable(records, monthClosed) {
       '<td>' + feedinPriceCell(r) + '</td>' +
       '<td>' + pln(r.self_savings, 2) + '</td>' +
       '<td>' + pln(r.feedin_revenue, 2) + '</td>' +
+      '<td>' + pln(r.battery_arbitrage_savings, 2) + '</td>' +
       '<td>' + pln(r.month_savings, 2) + '</td>' +
       '<td>' + pln(r.cumulative_return) + '</td>' +
       '<td>' + pct(r.roi_pct) + '</td>' +

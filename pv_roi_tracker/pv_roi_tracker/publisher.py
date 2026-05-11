@@ -46,6 +46,7 @@ _SENSORS: list[_Sensor] = [
     _Sensor('total_produced_kwh',       'PV Total Produced',           'total_produced_kwh',        'kWh',     'energy',   'total_increasing', 'mdi:solar-power'),
     _Sensor('total_exported_kwh',       'PV Total Exported',           'total_exported_kwh',        'kWh',     'energy',   'total_increasing', 'mdi:transmission-tower'),
     _Sensor('specific_yield',           'PV Specific Yield',           'specific_yield_lifetime',   'kWh/kWp', None,       'total_increasing', 'mdi:chart-bar'),
+    _Sensor('battery_arbitrage_savings', 'PV Battery Arbitrage Savings', 'battery_arbitrage_savings', 'PLN',    'monetary', 'total_increasing', 'mdi:battery-charging'),
     _Sensor('net_profit',              'PV Net Profit',               'net_profit',                'PLN',     'monetary', 'total_increasing', 'mdi:cash-multiple'),
     _Sensor('current_month_savings',   'PV Savings This Month',       None,                        'PLN',     'monetary', 'measurement',      'mdi:calendar-today'),
     _Sensor('rcem_scrape_status',      'RCEm Scrape Status',          None,                        None,      None,       None,               'mdi:cloud-sync'),

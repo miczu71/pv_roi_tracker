@@ -20,6 +20,7 @@ SYSTEM_KWP = 6.72
 class RoiResult:
     self_consumption_savings: float   # Σ autokonsumpcja oszczędności
     feedin_revenue: float             # Σ suma sprzedaży
+    battery_arbitrage_savings: float  # Σ grid off-peak charge × 0.50 PLN/kWh
     total_savings: float              # == spreadsheet oszczędności (savings streams only)
     total_return: float               # subsidy + total_savings  == spreadsheet "status"
     roi_pct: float                    # total_return / gross_investment × 100
@@ -50,7 +51,8 @@ def calculate(
 
     self_consumption_savings = sum(r.self_consumed_savings_pln or 0.0 for r in records)
     feedin_revenue = sum(r.feedin_revenue_pln or 0.0 for r in records)
-    total_savings = self_consumption_savings + feedin_revenue
+    battery_arbitrage_savings = sum(r.battery_arbitrage_savings_pln or 0.0 for r in records)
+    total_savings = self_consumption_savings + feedin_revenue + battery_arbitrage_savings
 
     # Spreadsheet formula: status = dofinansowanie + oszczędności; % = status / inwestycja
     total_return = subsidy + total_savings
@@ -74,6 +76,7 @@ def calculate(
     if window:
         monthly_avg_savings: Optional[float] = sum(
             (r.self_consumed_savings_pln or 0.0) + (r.feedin_revenue_pln or 0.0)
+            + (r.battery_arbitrage_savings_pln or 0.0)
             for r in window
         ) / len(window)
         monthly_avg_window = len(window)
@@ -99,6 +102,7 @@ def calculate(
     return RoiResult(
         self_consumption_savings=round(self_consumption_savings, 2),
         feedin_revenue=round(feedin_revenue, 2),
+        battery_arbitrage_savings=round(battery_arbitrage_savings, 2),
         total_savings=round(total_savings, 2),
         total_return=round(total_return, 2),
         roi_pct=round(roi_pct, 2),

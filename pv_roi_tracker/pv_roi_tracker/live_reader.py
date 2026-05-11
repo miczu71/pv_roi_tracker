@@ -76,6 +76,7 @@ def read_current_month(rcem_price: Optional[float] = None) -> Optional[MonthlyRe
     peak      = _get_state('sensor.monthly_energy_peak')
     offpeak   = _get_state('sensor.monthly_energy_offpeak')
     buy_price = _get_state('sensor.srednia_cena_energii_w_miesiacu')
+    arbitrage = _get_state('sensor.battery_arbitrage_savings_monthly')
 
     if produced is None:
         logger.warning('sensor.inverter_yield_monthly unavailable — skipping current-month record')
@@ -105,6 +106,7 @@ def read_current_month(rcem_price: Optional[float] = None) -> Optional[MonthlyRe
         purchase_cost_pln=purchase_cost_pln,
         feedin_revenue_pln=feedin_revenue_pln,
         specific_yield=specific_yield,
+        battery_arbitrage_savings_pln=round(arbitrage, 2) if arbitrage is not None else None,
         rcem_status='confirmed' if rcem_price is not None else 'pending',
         projected_month_kwh=projected_month_kwh,
     )
