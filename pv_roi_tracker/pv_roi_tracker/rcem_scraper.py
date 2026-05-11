@@ -298,6 +298,8 @@ def run_scheduled_scrape(
     cutoff_key = f'{today.year - 1}-{today.month:02d}'
 
     history = _load_history(history_path)
+    corrections = _load_corrections(corrections_path)
+    corrections_dirty = False
     updated: list[str] = []
 
     for key, (new_price, _) in scraped_full.items():
@@ -313,20 +315,17 @@ def run_scheduled_scrape(
 
     if updated:
         today_str = str(today)
-        corrections = _load_corrections(corrections_path)
         for key in updated:
             old_price = history.get(key)
             new_price, base_price = scraped_full[key]
             new_entry = {'price': new_price, 'recorded_at': today_str}
             if key not in corrections:
                 if old_price is not None:
-                    # Price changed since last run
                     corrections[key] = [
                         {'price': old_price, 'recorded_at': 'original'},
                         new_entry,
                     ]
                 elif base_price is not None:
-                    # First store AND PSE already had a skorygowana correction — record both
                     corrections[key] = [
                         {'price': base_price, 'recorded_at': 'PSE oryginalna'},
                         {'price': new_price, 'recorded_at': 'PSE skorygowana'},
@@ -335,8 +334,23 @@ def run_scheduled_scrape(
                     corrections[key] = [new_entry]
             else:
                 corrections[key].append(new_entry)
+        corrections_dirty = True
+
+    # Populate correction history for months that have a PSE skorygowana correction
+    # but no entry in corrections.json yet (e.g. history pre-dates this feature).
+    for key, (new_price, base_price) in scraped_full.items():
+        if base_price is not None and key not in corrections:
+            corrections[key] = [
+                {'price': base_price, 'recorded_at': 'PSE oryginalna'},
+                {'price': new_price, 'recorded_at': 'PSE skorygowana'},
+            ]
+            corrections_dirty = True
+            logger.info('PSE correction history recorded for %s', key)
+
+    if corrections_dirty:
         _save_corrections(corrections, corrections_path)
 
+    if updated:
         for key in updated:
             history[key] = scraped_full[key][0]
         _save_history(history, history_path)

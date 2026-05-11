@@ -167,9 +167,12 @@ def api_data():
             continue
         month_savings = (r.self_consumed_savings_pln or 0.0) + (r.feedin_revenue_pln or 0.0)
         cumulative += month_savings
+        month_key = f'{r.year}-{r.month:02d}'
         rcem_status = r.rcem_status
         if rcem_status == 'confirmed' and r.feedin_price_pln_kwh is None:
             rcem_status = 'pending'
+        elif rcem_status == 'confirmed' and len(corrections.get(month_key) or []) >= 2:
+            rcem_status = 'updated'
         purchased = r.purchased_kwh or 0.0
         buy_px = r.buy_price_pln_kwh or 0.0
         feedin_rev = r.feedin_revenue_pln or 0.0
@@ -200,7 +203,7 @@ def api_data():
             'self_sufficiency_pct': self_suff,
             'purchased_kwh_peak': r.purchased_kwh_peak,
             'purchased_kwh_offpeak': r.purchased_kwh_offpeak,
-            'feedin_corrections': corrections.get(f'{r.year}-{r.month:02d}') or None,
+            'feedin_corrections': corrections.get(month_key) or None,
         })
 
     current_rec = next((r for r in records if (r.year, r.month) == current_ym), None)
@@ -416,7 +419,7 @@ thead th {
   background: #f7fafc; padding: 7px 8px;
   text-align: right; font-weight: 600; font-size: 10px;
   text-transform: uppercase; letter-spacing: .4px; color: var(--muted);
-  border-bottom: 2px solid var(--border); white-space: nowrap;
+  border-bottom: 2px solid var(--border); white-space: normal; line-height: 1.3;
 }
 thead th:first-child { text-align: left; }
 tbody td { padding: 5px 8px; text-align: right; border-bottom: 1px solid var(--border); white-space: nowrap; }
@@ -441,6 +444,7 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
 .badge-ok      { background: #dcfce7; color: var(--green); }
 .badge-pending { background: #fef3c7; color: var(--yellow); }
 .badge-missing { background: #fee2e2; color: var(--red); }
+.badge-updated { background: #e0f2fe; color: #0369a1; }
 .badge-live    { background: #fef3c7; color: var(--yellow); }
 .badge-snap    { background: #dcfce7; color: var(--green); }
 
@@ -740,25 +744,25 @@ function renderRcemChart(records) {
 /* -- History table -- */
 function renderHistTable(records, monthClosed) {
   const head = '<thead><tr>' +
-    '<th>Miesiac</th>' +
-    '<th title="kWh wyprodukowane">Prod.</th>' +
-    '<th title="kWh sprzedane">Sprz.</th>' +
-    '<th title="kWh autokonsumpcja">Autok.</th>' +
-    '<th title="kWh zakupione w szczycie">Zak.szczyt</th>' +
-    '<th title="kWh zakupione poza szczytem">Zak.poza</th>' +
-    '<th title="PLN/kWh cena zakupu">C.zakupu</th>' +
+    '<th>Miesiąc</th>' +
+    '<th title="kWh wyprodukowane">Produkcja</th>' +
+    '<th title="kWh sprzedane">Sprzedane</th>' +
+    '<th title="kWh autokonsumpcja">Autokons.</th>' +
+    '<th title="kWh zakupione w szczycie">Zakup szczyt</th>' +
+    '<th title="kWh zakupione poza szczytem">Zakup poza</th>' +
+    '<th title="PLN/kWh cena zakupu">Cena zakupu</th>' +
     '<th title="PLN/kWh RCEm">RCEm</th>' +
-    '<th title="PLN oszczednosci autokonsumpcji">Osz.autok.</th>' +
-    '<th title="PLN przychod ze sprzedazy">Prz.sprz.</th>' +
-    '<th title="PLN lacznie w miesiacu">Mies.</th>' +
-    '<th title="PLN kumulatywnie">Kumul.</th>' +
+    '<th title="PLN oszczednosci autokonsumpcji">Oszcz. autokons.</th>' +
+    '<th title="PLN przychod ze sprzedazy">Przych. sprzedazy</th>' +
+    '<th title="PLN lacznie w miesiacu">Łącznie mies.</th>' +
+    '<th title="PLN kumulatywnie">Kumulatywnie</th>' +
     '<th>ROI</th>' +
-    '<th title="udzial autokonsumpcji w zuzyciu">Autark.</th>' +
-    '<th title="koszt zakupu minus przychod sprzedazy">Koszt sieci</th>' +
-    '<th title="status ceny RCEm">St.RCEm</th>' +
+    '<th title="udzial autokonsumpcji w zuzyciu">Autarkia</th>' +
+    '<th title="koszt zakupu minus przychod sprzedazy">Koszt netto sieci</th>' +
+    '<th title="status ceny RCEm">Status RCEm</th>' +
   '</tr></thead>';
 
-  const badgeMap = { ok: 'badge-ok', pending: 'badge-pending', missing: 'badge-missing', confirmed: 'badge-ok' };
+  const badgeMap = { ok: 'badge-ok', pending: 'badge-pending', missing: 'badge-missing', confirmed: 'badge-ok', updated: 'badge-updated' };
   const closedBadge = monthClosed
     ? '<span class="badge badge-snap" title="Wartosci zapisane w migawce">migawka</span>'
     : '<span class="badge badge-live" title="Dane z czujnikow na zywo">na zywo</span>';
