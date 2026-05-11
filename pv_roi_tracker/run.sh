@@ -3,8 +3,6 @@ set -e
 
 CONFIG="/data/options.json"
 
-export CSV_URL=$(jq -r '.csv_url' "$CONFIG")
-export FORCE_REIMPORT=$(jq -r '.force_reimport' "$CONFIG")
 export GROSS_INVESTMENT=$(jq -r '.gross_investment' "$CONFIG")
 export SUBSIDY=$(jq -r '.subsidy' "$CONFIG")
 export SYSTEM_KWP=$(jq -r '.system_kwp' "$CONFIG")
@@ -14,8 +12,10 @@ export MQTT_PORT=$(jq -r '.mqtt_port' "$CONFIG")
 export MQTT_USER=$(jq -r '.mqtt_user' "$CONFIG")
 export MQTT_PASSWORD=$(jq -r '.mqtt_password' "$CONFIG")
 export LOG_LEVEL=$(jq -r '.log_level' "$CONFIG")
+export BACKUP_SHARE=$(jq -r '.backup_share // "/share/pv_roi_tracker"' "$CONFIG")
 
 export HISTORIC_PATH="/data/historic.json"
 export RCEM_HISTORY_PATH="/data/rcem_history.json"
+export RCEM_CORRECTIONS_PATH="/data/rcem_corrections.json"
 
 exec python3 -m pv_roi_tracker.main

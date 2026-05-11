@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 HISTORIC_PATH          = Path(os.environ.get('HISTORIC_PATH', '/data/historic.json'))
 RCEM_HISTORY_PATH      = Path(os.environ.get('RCEM_HISTORY_PATH', '/data/rcem_history.json'))
 RCEM_CORRECTIONS_PATH  = Path(os.environ.get('RCEM_CORRECTIONS_PATH', '/data/rcem_corrections.json'))
+BACKUP_SHARE       = Path(os.environ.get('BACKUP_SHARE', '/share/pv_roi_tracker'))
 GROSS_INVESTMENT   = float(os.environ.get('GROSS_INVESTMENT', '51900.0'))
 SUBSIDY            = float(os.environ.get('SUBSIDY', '28714.0'))
 SYSTEM_KWP         = float(os.environ.get('SYSTEM_KWP', '6.72'))
@@ -34,6 +35,18 @@ MQTT_HOST          = os.environ.get('MQTT_HOST', 'core-mosquitto')
 MQTT_PORT          = int(os.environ.get('MQTT_PORT', '1883'))
 MQTT_USER          = os.environ.get('MQTT_USER', '')
 MQTT_PASSWORD      = os.environ.get('MQTT_PASSWORD', '')
+
+
+def _backup_data() -> None:
+    import shutil
+    try:
+        BACKUP_SHARE.mkdir(parents=True, exist_ok=True)
+        for src in [HISTORIC_PATH, RCEM_HISTORY_PATH, RCEM_CORRECTIONS_PATH]:
+            if src.exists():
+                shutil.copy2(src, BACKUP_SHARE / src.name)
+        logger.info('Data backed up to %s', BACKUP_SHARE)
+    except Exception:
+        logger.exception('Backup failed')
 
 
 def main() -> None:
@@ -156,7 +169,13 @@ def main() -> None:
     scheduler.add_job(rcem_correction_job, CronTrigger(day=1, hour=6, minute=0),
                       id='rcem_correction_scan', name='RCEm correction scan')
 
+    # Daily backup to /share so data survives accidental add-on removal
+    scheduler.add_job(_backup_data, CronTrigger(hour=2, minute=0),
+                      id='backup', name='Daily data backup')
+
     logger.info('PV ROI Tracker v%s started — poll every %d min', __version__, POLL_INTERVAL)
+
+    _backup_data()   # ensure /share copy is current on every start
 
     # Startup: heal any months whose feedin_price is missing from historic.json
     # but whose RCEm price is already in rcem_history.json (can happen after a crash).

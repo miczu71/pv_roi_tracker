@@ -1,5 +1,5 @@
 name: PV ROI Tracker
-version: "0.5.8"
+version: "0.5.9"
 slug: pv_roi_tracker
 description: >-
   Tracks the ROI of a residential PV solar system.
@@ -12,6 +12,8 @@ arch:
   - armv7
 init: false
 homeassistant_api: true
+map:
+  - share:rw
 ingress: true
 ingress_port: 8099
 panel_icon: mdi:solar-power-variant
@@ -25,6 +27,7 @@ options:
   mqtt_user: ""
   mqtt_password: ""
   log_level: "info"
+  backup_share: "/share/pv_roi_tracker"
 schema:
   gross_investment: float
   subsidy: float
@@ -35,3 +38,4 @@ schema:
   mqtt_user: str
   mqtt_password: password
   log_level: "list(debug|info|warning|error)?"
+  backup_share: str
