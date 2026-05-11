@@ -220,6 +220,40 @@ def get_current_month_rcem(path: Path = DEFAULT_HISTORY_PATH) -> Optional[float]
     return _load_history(path).get(f'{today.year}-{today.month:02d}')
 
 
+def heal_rcem_backfill(
+    history_path: Path = DEFAULT_HISTORY_PATH,
+    historic_json_path: Optional[Path] = None,
+) -> int:
+    """
+    Startup heal: backfill feedin_price into historic.json for any month that has
+    a known price in rcem_history.json but still has null feedin_price_pln_kwh.
+    Needed when a previous run saved rcem_history.json but crashed before backfilling.
+    Returns number of months healed.
+    """
+    from . import historic_store
+
+    if historic_json_path is None:
+        historic_json_path = historic_store.DEFAULT_PATH
+
+    history = _load_history(history_path)
+    if not history:
+        return 0
+
+    records = historic_store.load(historic_json_path)
+    healed = 0
+    for r in records:
+        if r.feedin_price_pln_kwh is None:
+            key = f'{r.year}-{r.month:02d}'
+            price = history.get(key)
+            if price is not None:
+                historic_store.backfill_rcem(r.year, r.month, price, historic_json_path)
+                logger.info('Heal: backfilled RCEm for %s', key)
+                healed += 1
+    if healed:
+        logger.info('Heal complete: %d month(s) backfilled', healed)
+    return healed
+
+
 def run_scheduled_scrape(
     target_month: Optional[str] = None,
     history_path: Path = DEFAULT_HISTORY_PATH,

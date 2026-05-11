@@ -1,10 +1,10 @@
 name: PV ROI Tracker
-version: "0.5.4"
+version: "0.5.5"
 slug: pv_roi_tracker
 description: >-
   Tracks the ROI of a residential PV solar system.
-  Imports historic data once from Google Sheets, then uses live HA sensors
-  for ongoing monthly tracking. Publishes ROI sensors via MQTT discovery.
+  Uses live HA sensors for ongoing monthly tracking and scrapes RCEm prices from PSE.
+  Publishes ROI sensors via MQTT discovery.
 url: "https://github.com/miczu71/pv_roi_tracker"
 arch:
   - aarch64
@@ -16,8 +16,6 @@ ingress: true
 ingress_port: 8099
 panel_icon: mdi:solar-power-variant
 options:
-  csv_url: "https://docs.google.com/spreadsheets/d/e/2PACX-1vT_3gmj8s_2JPJzPijb9T27oh0FS3JhlQ3cB1HkKPbBa2yi8GyudqJb5ZeyM20QQ9IKbfB3SnbKZukC/pub?output=csv"
-  force_reimport: false
   gross_investment: 51900.0
   subsidy: 28714.0
   system_kwp: 6.72
@@ -28,8 +26,6 @@ options:
   mqtt_password: ""
   log_level: "info"
 schema:
-  csv_url: str
-  force_reimport: bool
   gross_investment: float
   subsidy: float
   system_kwp: float
