@@ -410,16 +410,16 @@ main { max-width: 1600px; margin: 0 auto; padding: 18px 16px; }
 
 /* -- Tables -- */
 .tbl-wrap { overflow-x: auto; max-height: 540px; overflow-y: auto; }
-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
 thead th {
   position: sticky; top: 0; z-index: 2;
-  background: #f7fafc; padding: 9px 11px;
-  text-align: right; font-weight: 600; font-size: 10.5px;
+  background: #f7fafc; padding: 7px 8px;
+  text-align: right; font-weight: 600; font-size: 10px;
   text-transform: uppercase; letter-spacing: .4px; color: var(--muted);
   border-bottom: 2px solid var(--border); white-space: nowrap;
 }
 thead th:first-child { text-align: left; }
-tbody td { padding: 7px 11px; text-align: right; border-bottom: 1px solid var(--border); white-space: nowrap; }
+tbody td { padding: 5px 8px; text-align: right; border-bottom: 1px solid var(--border); white-space: nowrap; }
 tbody td:first-child { text-align: left; font-weight: 600; }
 tbody tr:last-child td { border-bottom: none; }
 tbody tr:hover { background: #f7fafc; }
@@ -741,21 +741,21 @@ function renderRcemChart(records) {
 function renderHistTable(records, monthClosed) {
   const head = '<thead><tr>' +
     '<th>Miesiac</th>' +
-    '<th title="kWh wyprodukowane">Produkcja</th>' +
-    '<th title="kWh sprzedane">Sprzedane</th>' +
-    '<th title="kWh autokonsumpcja">Autokons.</th>' +
-    '<th title="kWh zakupione w szczycie">Zakup szczyt</th>' +
-    '<th title="kWh zakupione poza szczytem">Zakup poza</th>' +
-    '<th title="PLN/kWh cena zakupu">Cena zakupu</th>' +
+    '<th title="kWh wyprodukowane">Prod.</th>' +
+    '<th title="kWh sprzedane">Sprz.</th>' +
+    '<th title="kWh autokonsumpcja">Autok.</th>' +
+    '<th title="kWh zakupione w szczycie">Zak.szczyt</th>' +
+    '<th title="kWh zakupione poza szczytem">Zak.poza</th>' +
+    '<th title="PLN/kWh cena zakupu">C.zakupu</th>' +
     '<th title="PLN/kWh RCEm">RCEm</th>' +
-    '<th title="PLN oszczednosci autokonsumpcji">Oszcz. autokons.</th>' +
-    '<th title="PLN przychod ze sprzedazy">Przych. sprzedazy</th>' +
-    '<th title="PLN lacznie w miesiacu">Lacznie mies.</th>' +
-    '<th title="PLN kumulatywnie">Kumulatywnie</th>' +
+    '<th title="PLN oszczednosci autokonsumpcji">Osz.autok.</th>' +
+    '<th title="PLN przychod ze sprzedazy">Prz.sprz.</th>' +
+    '<th title="PLN lacznie w miesiacu">Mies.</th>' +
+    '<th title="PLN kumulatywnie">Kumul.</th>' +
     '<th>ROI</th>' +
-    '<th title="udzial autokonsumpcji w zuzyciu">Autarkia</th>' +
-    '<th title="koszt zakupu minus przychod sprzedazy">Koszt netto sieci</th>' +
-    '<th>RCEm status</th>' +
+    '<th title="udzial autokonsumpcji w zuzyciu">Autark.</th>' +
+    '<th title="koszt zakupu minus przychod sprzedazy">Koszt sieci</th>' +
+    '<th title="status ceny RCEm">St.RCEm</th>' +
   '</tr></thead>';
 
   const badgeMap = { ok: 'badge-ok', pending: 'badge-pending', missing: 'badge-missing', confirmed: 'badge-ok' };
@@ -817,9 +817,7 @@ function renderHistTable(records, monthClosed) {
     const cls = r.is_current ? ' class="cur"' : '';
     const st  = r.rcem_status || 'ok';
 
-    const monthLabel = r.is_current
-      ? r.month_label + ' ' + closedBadge
-      : r.month_label;
+    const monthLabel = r.month_label;
 
     const producedCell = r.is_current && r.projected_month_kwh != null
       ? kwh(r.produced_kwh) + '<br><span class="proj-hint">→ ' + kwh(r.projected_month_kwh) + ' proj.</span>'

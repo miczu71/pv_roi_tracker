@@ -113,9 +113,10 @@ def _match_month(text: str) -> Optional[int]:
 
 # ── Core scrape ───────────────────────────────────────────────────────────────
 
-def scrape_all_months() -> dict[str, float]:
+def _scrape_all_months_full() -> dict[str, tuple[float, Optional[float]]]:
     """
-    Fetch the PSE page and return all available months as {YYYY-MM: PLN/kWh gross}.
+    Fetch the PSE page and return all months as {YYYY-MM: (effective_kwh, base_kwh_or_None)}.
+    base_kwh is set when PSE shows a 'skorygowana' correction; effective uses the corrected value.
 
     PSE table structure (one table per year):
       row 0:  ['2026']                    ← year
@@ -126,7 +127,6 @@ def scrape_all_months() -> dict[str, float]:
       ...repeated for each month
 
     PLN/MWh net is converted to PLN/kWh gross by ÷1000 and ×1.23 (23% VAT).
-    Corrected price takes precedence over the base price when present.
     """
     try:
         resp = requests.get(PSE_URL, timeout=30,
@@ -137,7 +137,7 @@ def scrape_all_months() -> dict[str, float]:
         return {}
 
     soup = BeautifulSoup(resp.content, 'html.parser')
-    results: dict[str, float] = {}
+    results: dict[str, tuple[float, Optional[float]]] = {}
 
     for table in soup.find_all('table'):
         rows = table.find_all('tr')
@@ -157,7 +157,9 @@ def scrape_all_months() -> dict[str, float]:
         def _store(y: int, m: int, base: float, corrected: Optional[float]) -> None:
             effective = corrected if corrected is not None else base
             key = f'{y}-{m:02d}'
-            results[key] = round(effective / 1000.0 * 1.23, 6)
+            eff_kwh  = round(effective / 1000.0 * 1.23, 6)
+            base_kwh = round(base / 1000.0 * 1.23, 6) if corrected is not None else None
+            results[key] = (eff_kwh, base_kwh)
             if corrected is not None:
                 logger.info('Month %s: RCEm=%.2f → skorygowana=%.2f PLN/MWh', key, base, corrected)
 
@@ -196,6 +198,11 @@ def scrape_all_months() -> dict[str, float]:
 
     logger.info('PSE page: %d months parsed', len(results))
     return results
+
+
+def scrape_all_months() -> dict[str, float]:
+    """Return effective RCEm prices {YYYY-MM: PLN/kWh gross}."""
+    return {k: v[0] for k, v in _scrape_all_months_full().items()}
 
 
 def scrape_rcem(target_month: Optional[str] = None) -> Optional[float]:
@@ -281,20 +288,24 @@ def run_scheduled_scrape(
 
     callback = on_update or on_success
 
-    scraped = scrape_all_months()
-    if not scraped:
+    scraped_full = _scrape_all_months_full()
+    if not scraped_full:
         logger.warning('PSE returned no data — keeping existing history')
         return target_month in _load_history(history_path)
+
+    # PSE can only issue corrections for the last 12 months.
+    # New (never-seen) months are always stored regardless of age.
+    cutoff_key = f'{today.year - 1}-{today.month:02d}'
 
     history = _load_history(history_path)
     updated: list[str] = []
 
-    for key, new_price in scraped.items():
+    for key, (new_price, _) in scraped_full.items():
         old_price = history.get(key)
         if old_price is None:
             logger.info('New RCEm price for %s: %.4f PLN/kWh', key, new_price)
             updated.append(key)
-        elif abs(new_price - old_price) > 1e-6:
+        elif key >= cutoff_key and abs(new_price - old_price) > 1e-6:
             pct = (new_price - old_price) / old_price * 100
             logger.info('RCEm correction for %s: %.4f → %.4f PLN/kWh (%+.2f%%)',
                         key, old_price, new_price, pct)
@@ -305,13 +316,20 @@ def run_scheduled_scrape(
         corrections = _load_corrections(corrections_path)
         for key in updated:
             old_price = history.get(key)
-            new_price = scraped[key]
+            new_price, base_price = scraped_full[key]
             new_entry = {'price': new_price, 'recorded_at': today_str}
             if key not in corrections:
                 if old_price is not None:
+                    # Price changed since last run
                     corrections[key] = [
                         {'price': old_price, 'recorded_at': 'original'},
                         new_entry,
+                    ]
+                elif base_price is not None:
+                    # First store AND PSE already had a skorygowana correction — record both
+                    corrections[key] = [
+                        {'price': base_price, 'recorded_at': 'PSE oryginalna'},
+                        {'price': new_price, 'recorded_at': 'PSE skorygowana'},
                     ]
                 else:
                     corrections[key] = [new_entry]
@@ -320,11 +338,11 @@ def run_scheduled_scrape(
         _save_corrections(corrections, corrections_path)
 
         for key in updated:
-            history[key] = scraped[key]
+            history[key] = scraped_full[key][0]
         _save_history(history, history_path)
         for key in updated:
             year, month = int(key[:4]), int(key[5:])
-            historic_store.backfill_rcem(year, month, scraped[key], historic_json_path)
+            historic_store.backfill_rcem(year, month, scraped_full[key][0], historic_json_path)
             logger.info('Backfilled historic.json for %s', key)
         if callback:
             callback()
