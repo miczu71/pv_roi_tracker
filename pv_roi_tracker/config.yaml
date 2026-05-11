@@ -1,5 +1,5 @@
 name: PV ROI Tracker
-version: "0.5.9"
+version: "0.6.0"
 slug: pv_roi_tracker
 description: >-
   Tracks the ROI of a residential PV solar system.
@@ -28,6 +28,9 @@ options:
   mqtt_password: ""
   log_level: "info"
   backup_share: "/share/pv_roi_tracker"
+  gdrive_folder_id: ""
+  gdrive_client_id: ""
+  gdrive_client_secret: ""
 schema:
   gross_investment: float
   subsidy: float
@@ -39,3 +42,6 @@ schema:
   mqtt_password: password
   log_level: "list(debug|info|warning|error)?"
   backup_share: str
+  gdrive_folder_id: str
+  gdrive_client_id: str
+  gdrive_client_secret: password

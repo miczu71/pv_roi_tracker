@@ -13,6 +13,9 @@ export MQTT_USER=$(jq -r '.mqtt_user' "$CONFIG")
 export MQTT_PASSWORD=$(jq -r '.mqtt_password' "$CONFIG")
 export LOG_LEVEL=$(jq -r '.log_level' "$CONFIG")
 export BACKUP_SHARE=$(jq -r '.backup_share // "/share/pv_roi_tracker"' "$CONFIG")
+export GDRIVE_FOLDER_ID=$(jq -r '.gdrive_folder_id // ""' "$CONFIG")
+export GDRIVE_CLIENT_ID=$(jq -r '.gdrive_client_id // ""' "$CONFIG")
+export GDRIVE_CLIENT_SECRET=$(jq -r '.gdrive_client_secret // ""' "$CONFIG")
 
 export HISTORIC_PATH="/data/historic.json"
 export RCEM_HISTORY_PATH="/data/rcem_history.json"
