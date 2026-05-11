@@ -337,9 +337,10 @@ def run_scheduled_scrape(
         corrections_dirty = True
 
     # Populate correction history for months that have a PSE skorygowana correction
-    # but no entry in corrections.json yet (e.g. history pre-dates this feature).
+    # but fewer than 2 entries in corrections.json (single-entry records from early versions
+    # that stored prices before this feature existed).
     for key, (new_price, base_price) in scraped_full.items():
-        if base_price is not None and key not in corrections:
+        if base_price is not None and len(corrections.get(key, [])) < 2:
             corrections[key] = [
                 {'price': base_price, 'recorded_at': 'PSE oryginalna'},
                 {'price': new_price, 'recorded_at': 'PSE skorygowana'},
