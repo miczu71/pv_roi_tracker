@@ -27,6 +27,10 @@ DEFAULT_CORRECTIONS_PATH = Path('/data/rcem_corrections.json')
 _HISTORY_MAX_ENTRIES = 60
 _MAX_PLN_MWH = 2000.0
 
+# From this month onward prosumers receive RCEm × 1.23 (gross incl. VAT).
+# Before this date PSE reports the net price with no multiplier applied.
+_MULTIPLIER_FROM = '2025-02'
+
 
 # ── History helpers ───────────────────────────────────────────────────────────
 
@@ -157,8 +161,9 @@ def _scrape_all_months_full() -> dict[str, tuple[float, Optional[float]]]:
         def _store(y: int, m: int, base: float, corrected: Optional[float]) -> None:
             effective = corrected if corrected is not None else base
             key = f'{y}-{m:02d}'
-            eff_kwh  = round(effective / 1000.0 * 1.23, 6)
-            base_kwh = round(base / 1000.0 * 1.23, 6) if corrected is not None else None
+            factor = 1.23 if key >= _MULTIPLIER_FROM else 1.0
+            eff_kwh  = round(effective / 1000.0 * factor, 6)
+            base_kwh = round(base / 1000.0 * factor, 6) if corrected is not None else None
             results[key] = (eff_kwh, base_kwh)
             if corrected is not None:
                 logger.info('Month %s: RCEm=%.2f → skorygowana=%.2f PLN/MWh', key, base, corrected)
@@ -363,3 +368,59 @@ def run_scheduled_scrape(
             callback()
 
     return target_month in history
+
+
+def force_rescrape_all(
+    history_path: Path = DEFAULT_HISTORY_PATH,
+    historic_json_path: Optional[Path] = None,
+    corrections_path: Path = DEFAULT_CORRECTIONS_PATH,
+    on_update=None,
+) -> int:
+    """
+    Re-fetch all months from PSE and update stored prices unconditionally.
+    Used for one-time migration when the multiplier logic changed — corrects
+    any pre-2025-02 months that were stored with the wrong ×1.23 factor.
+    Returns the number of months corrected.
+    """
+    from . import historic_store
+
+    if historic_json_path is None:
+        historic_json_path = historic_store.DEFAULT_PATH
+
+    scraped_full = _scrape_all_months_full()
+    if not scraped_full:
+        logger.warning('force_rescrape_all: PSE returned no data, aborting')
+        return 0
+
+    history = _load_history(history_path)
+    corrections = _load_corrections(corrections_path)
+    corrections_dirty = False
+    updated: list[str] = []
+    today_str = str(date.today())
+
+    for key, (new_price, base_price) in scraped_full.items():
+        old_price = history.get(key)
+        if old_price is None or abs(new_price - old_price) > 1e-9:
+            if old_price is not None and abs(new_price - old_price) > 1e-6:
+                logger.info('force_rescrape %s: %.6f → %.6f PLN/kWh', key, old_price, new_price)
+                rec = corrections.setdefault(key, [])
+                if not rec or abs(rec[-1]['price'] - old_price) > 1e-9:
+                    rec.append({'price': old_price, 'recorded_at': 'pre-multiplier-fix'})
+                rec.append({'price': new_price, 'recorded_at': today_str})
+                corrections_dirty = True
+            updated.append(key)
+
+    if updated:
+        for key in updated:
+            history[key] = scraped_full[key][0]
+        _save_history(history, history_path)
+        for key in updated:
+            year, month = int(key[:4]), int(key[5:])
+            historic_store.backfill_rcem(year, month, scraped_full[key][0], historic_json_path)
+        if corrections_dirty:
+            _save_corrections(corrections, corrections_path)
+        logger.info('force_rescrape_all: %d month(s) updated', len(updated))
+        if on_update:
+            on_update()
+
+    return len(updated)

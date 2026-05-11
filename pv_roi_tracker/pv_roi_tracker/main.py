@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 HISTORIC_PATH          = Path(os.environ.get('HISTORIC_PATH', '/data/historic.json'))
 RCEM_HISTORY_PATH      = Path(os.environ.get('RCEM_HISTORY_PATH', '/data/rcem_history.json'))
 RCEM_CORRECTIONS_PATH  = Path(os.environ.get('RCEM_CORRECTIONS_PATH', '/data/rcem_corrections.json'))
+_MULTIPLIER_FIX_FLAG   = Path('/data/.multiplier_fix_v1')
 BACKUP_SHARE       = Path(os.environ.get('BACKUP_SHARE', '/share/pv_roi_tracker'))
 GROSS_INVESTMENT   = float(os.environ.get('GROSS_INVESTMENT', '51900.0'))
 SUBSIDY            = float(os.environ.get('SUBSIDY', '28714.0'))
@@ -184,13 +185,25 @@ def main() -> None:
         historic_json_path=HISTORIC_PATH,
     )
 
-    # Startup scan: fetch full PSE table to apply any new prices or skorygowana corrections
-    # accumulated since the last run. No on_update callback — poll_and_publish() follows immediately.
-    rcem_scraper.run_scheduled_scrape(
-        history_path=RCEM_HISTORY_PATH,
-        historic_json_path=HISTORIC_PATH,
-        corrections_path=RCEM_CORRECTIONS_PATH,
-    )
+    # One-time migration: correct pre-2025-02 months that were stored with the
+    # wrong ×1.23 multiplier. After the flag file exists, use the normal scrape.
+    if not _MULTIPLIER_FIX_FLAG.exists():
+        logger.info('Applying one-time multiplier fix (pre-2025-02 months)…')
+        rcem_scraper.force_rescrape_all(
+            history_path=RCEM_HISTORY_PATH,
+            historic_json_path=HISTORIC_PATH,
+            corrections_path=RCEM_CORRECTIONS_PATH,
+        )
+        _MULTIPLIER_FIX_FLAG.touch()
+        logger.info('Multiplier fix complete.')
+    else:
+        # Startup scan: fetch full PSE table to apply any new prices or skorygowana corrections
+        # accumulated since the last run. No on_update callback — poll_and_publish() follows immediately.
+        rcem_scraper.run_scheduled_scrape(
+            history_path=RCEM_HISTORY_PATH,
+            historic_json_path=HISTORIC_PATH,
+            corrections_path=RCEM_CORRECTIONS_PATH,
+        )
 
     poll_and_publish()   # initial poll with up-to-date RCEm history
     scheduler.start()
