@@ -1151,25 +1151,28 @@ function renderGdrive(s) {
   let html = '';
   if (s.flow === 'pending') {
     html =
-      '<div style="margin-bottom:8px;font-size:12px">Idz na <a href="' + s.verification_url + '" target="_blank" style="color:var(--accent)">' + s.verification_url + '</a> i wpisz kod:</div>' +
-      '<div class="gdrive-code-block">' + s.user_code + '</div>' +
-      '<div style="margin-top:8px;font-size:11px;color:var(--muted)">Oczekiwanie na autoryzacje&hellip; (strona odswiezana co 5 s)</div>';
+      '<div style="margin-bottom:10px;font-size:13px;color:var(--green);font-weight:600">&#10003; Strona autoryzacji Google zostala otwarta w nowej karcie.</div>' +
+      '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">Zaloguj sie na konto Google i kliknij <strong>Zezwol</strong>. Mozesz zamknac karte po akceptacji.</div>' +
+      '<div style="font-size:12px;color:var(--muted)">Jesli karta sie nie otworzy, uzyj kodu: <strong>' + s.user_code + '</strong> na ' +
+        '<a href="' + s.verification_url + '" target="_blank" style="color:var(--accent)">' + s.verification_url + '</a></div>' +
+      '<div style="margin-top:10px;font-size:11px;color:var(--muted)">Oczekiwanie na autoryzacje&hellip;</div>';
   } else if (s.authorized) {
     html =
-      '<div class="gdrive-status"><span class="badge badge-ok">autoryzowany</span></div>' +
+      '<div class="gdrive-status"><span class="badge badge-ok">&#10003; Polaczono z Google Drive</span></div>' +
       '<div class="gdrive-btns">' +
         '<button class="gdrive-btn gdrive-btn-secondary" onclick="gdriveBackupNow(event)">&#9729; Backup teraz</button>' +
-        '<button class="gdrive-btn gdrive-btn-danger" onclick="gdriveRevoke()">Odwolaj autoryzacje</button>' +
+        '<button class="gdrive-btn gdrive-btn-danger" onclick="gdriveRevoke()">Roz&#322;&#261;cz</button>' +
       '</div>';
   } else if (s.flow === 'error') {
     html =
       '<div class="gdrive-status"><span class="badge badge-missing">blad</span> <span style="font-size:12px;color:var(--red)">' + (s.error || '') + '</span></div>' +
-      '<div class="gdrive-btns"><button class="gdrive-btn gdrive-btn-primary" onclick="gdriveAuthorize()">Autoryzuj Google Drive</button></div>';
+      '<div class="gdrive-btns"><button class="gdrive-btn gdrive-btn-primary" onclick="gdriveAuthorize()">Polacz z Google Drive</button></div>';
   } else {
-    const label = s.flow === 'starting' ? 'uruchamianie&hellip;' : 'nieautoryzowany';
+    const busy = s.flow === 'starting';
     html =
-      '<div class="gdrive-status"><span class="badge badge-pending">' + label + '</span></div>' +
-      '<div class="gdrive-btns"><button class="gdrive-btn gdrive-btn-primary" onclick="gdriveAuthorize()">Autoryzuj Google Drive</button></div>';
+      '<div class="gdrive-btns"><button class="gdrive-btn gdrive-btn-primary" onclick="gdriveAuthorize()" ' + (busy ? 'disabled' : '') + '>' +
+        (busy ? 'Uruchamianie&hellip;' : '&#9729; Polacz z Google Drive') +
+      '</button></div>';
   }
   el.innerHTML = html;
 }
@@ -1180,7 +1183,7 @@ async function loadGdriveStatus() {
     const s = await r.json();
     renderGdrive(s);
     if (s.flow === 'pending' || s.flow === 'starting') {
-      if (!_gdrivePollTimer) _gdrivePollTimer = setInterval(loadGdriveStatus, 5000);
+      if (!_gdrivePollTimer) _gdrivePollTimer = setInterval(loadGdriveStatus, 3000);
     } else {
       clearInterval(_gdrivePollTimer); _gdrivePollTimer = null;
     }
@@ -1192,13 +1195,19 @@ async function gdriveAuthorize() {
     const r = await fetch('api/gdrive/authorize', {method: 'POST'});
     const d = await r.json();
     if (!d.ok) { alert('Blad: ' + (d.error || 'nieznany')); return; }
-    setTimeout(loadGdriveStatus, 800);
-    if (!_gdrivePollTimer) _gdrivePollTimer = setInterval(loadGdriveStatus, 5000);
+    // Poll once to get the auth URL, then open it
+    const sr = await fetch('api/gdrive/status');
+    const s = await sr.json();
+    if (s.verification_url_complete) {
+      window.open(s.verification_url_complete, '_blank', 'noopener');
+    }
+    renderGdrive(s);
+    if (!_gdrivePollTimer) _gdrivePollTimer = setInterval(loadGdriveStatus, 3000);
   } catch(e) { alert('Blad polaczenia'); }
 }
 
 async function gdriveRevoke() {
-  if (!confirm('Odwolac autoryzacje Google Drive?')) return;
+  if (!confirm('Rozłączyć Google Drive?')) return;
   try {
     await fetch('api/gdrive/revoke', {method: 'POST'});
     loadGdriveStatus();

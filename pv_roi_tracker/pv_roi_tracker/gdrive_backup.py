@@ -37,9 +37,10 @@ _TOKEN_URL = 'https://oauth2.googleapis.com/token'
 _DEVICE_GRANT = 'urn:ietf:params:oauth:grant-type:device_code'
 
 _state: dict = {
-    'flow': 'idle',          # idle | pending | authorized | error
+    'flow': 'idle',                  # idle | pending | authorized | error
     'user_code': None,
     'verification_url': None,
+    'verification_url_complete': None,  # pre-filled URL — open this directly
     'expires_at': None,
     'error': None,
 }
@@ -123,11 +124,14 @@ def _device_flow_worker(client_id: str) -> None:
         device_code = d['device_code']
         user_code = d['user_code']
         verification_url = d.get('verification_url', 'https://google.com/device')
+        verification_url_complete = d.get('verification_url_complete') or f'{verification_url}?user_code={user_code}'
         expires_at = time.time() + d.get('expires_in', 1800)
         interval = d.get('interval', 5)
 
         _update(flow='pending', user_code=user_code,
-                verification_url=verification_url, expires_at=expires_at)
+                verification_url=verification_url,
+                verification_url_complete=verification_url_complete,
+                expires_at=expires_at)
         logger.info('GDrive auth: go to %s and enter %s', verification_url, user_code)
 
         while time.time() < expires_at:
