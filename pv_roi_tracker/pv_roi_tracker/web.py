@@ -35,6 +35,7 @@ _state: dict = {
     'records': [],
     'rcem_price': None,
     'month_closed': False,
+    'rcem_scrape_status': None,
     'updated_at': None,
 }
 
@@ -43,12 +44,14 @@ _MONTHS_PL = ['', 'Sty', 'Lut', 'Mar', 'Kwi', 'Maj', 'Cze',
 
 
 def update_state(result: RoiResult, records: list[MonthlyRecord],
-                 rcem_price: Optional[float], month_closed: bool = False) -> None:
+                 rcem_price: Optional[float], month_closed: bool = False,
+                 rcem_scrape_status: Optional[str] = None) -> None:
     with _lock:
         _state['result'] = result
         _state['records'] = list(records)
         _state['rcem_price'] = rcem_price
         _state['month_closed'] = month_closed
+        _state['rcem_scrape_status'] = rcem_scrape_status
         _state['updated_at'] = datetime.now().isoformat(timespec='seconds')
 
 
@@ -123,6 +126,7 @@ def api_data():
         records = list(_state['records'])
         rcem_price = _state['rcem_price']
         month_closed = _state['month_closed']
+        rcem_scrape_status = _state['rcem_scrape_status']
         updated_at = _state['updated_at']
 
     if result is None:
@@ -251,6 +255,7 @@ def api_data():
             'total_exported_kwh': result.total_exported_kwh,
             'specific_yield': result.specific_yield_lifetime,
             'rcem_price': rcem_price,
+            'rcem_scrape_status': rcem_scrape_status,
             'best_month': best_month,
             'worst_month': worst_month,
             'month_closed': month_closed,
@@ -490,6 +495,11 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
 .override-form button:hover { background: #1d4ed8; }
 #ovMsg.ok  { color: var(--green); }
 #ovMsg.err { color: var(--red); }
+.rcem-badge { font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 10px; text-transform: uppercase; letter-spacing: .4px; margin-left: 8px; vertical-align: middle; }
+.rcem-badge.ok       { background: #d1fae5; color: #065f46; }
+.rcem-badge.pending  { background: #e0e7ff; color: #3730a3; }
+.rcem-badge.retrying { background: #fef3c7; color: #92400e; }
+.rcem-badge.error    { background: #fee2e2; color: #991b1b; }
 
 </style>
 </head>
@@ -542,7 +552,7 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
       </div>
     </div>
     <div class="override-wrap" style="margin-top:18px">
-      <h3>Reczne nadpisanie ceny RCEm</h3>
+      <h3>Reczne nadpisanie ceny RCEm<span id="rcemBadge" class="rcem-badge"></span></h3>
       <div class="override-form">
         <label>Miesiac: <input type="month" id="ovMonth"></label>
         <label>Cena (zl/kWh): <input type="number" id="ovPrice" step="0.0001" min="0.0001" max="2" placeholder="0.0000" style="width:100px"></label>
@@ -612,7 +622,6 @@ function renderCards(s) {
     { lbl: 'Srednia mies.',     val: pln(s.monthly_avg_savings),  sub: 'ost. ' + s.avg_window + ' mies.' },
     { lbl: 'Splata',            val: s.payback_date || '—',  sub: s.years_to_payback != null ? 'za ' + num(s.years_to_payback, 1) + ' lat' : '' },
     { lbl: 'Produkcja lacznie', val: kwh(s.total_produced_kwh),   sub: 'uzysk ' + num(s.specific_yield, 0) + ' kWh/kWp' },
-    { lbl: 'RCEm biezacy',      val: s.rcem_price != null ? price(s.rcem_price) : '—' },
     s.best_month  ? { lbl: 'Najlepszy miesiac',  val: pln(s.best_month.savings),  sub: s.best_month.label,  cls: 'c-green' } : null,
     s.worst_month ? { lbl: 'Najslabszy miesiac', val: pln(s.worst_month.savings), sub: s.worst_month.label } : null,
     s.solcast_projected_kwh != null ? { lbl: 'Prognoza miesiaca', val: kwh(s.solcast_projected_kwh), sub: 'produkcja + Solcast 7 dni' } : null,
@@ -1044,6 +1053,14 @@ async function loadData() {
     document.getElementById('loading').style.display = 'none';
     document.getElementById('content').style.display = '';
     document.getElementById('updated').textContent = 'Aktualizacja: ' + (d.updated_at || '—');
+
+    const badge = document.getElementById('rcemBadge');
+    if (badge) {
+      const st = d.summary.rcem_scrape_status || 'pending';
+      const labels = { ok: 'RCEm OK', pending: 'oczekuje', retrying: 'sprawdzam', error: 'błąd' };
+      badge.textContent = labels[st] || st;
+      badge.className = 'rcem-badge ' + st;
+    }
 
     const systemKwp = d.summary.specific_yield > 0
       ? d.summary.total_produced_kwh / d.summary.specific_yield

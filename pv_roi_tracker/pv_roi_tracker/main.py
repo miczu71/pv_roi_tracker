@@ -37,6 +37,24 @@ MQTT_USER          = os.environ.get('MQTT_USER', '')
 MQTT_PASSWORD      = os.environ.get('MQTT_PASSWORD', '')
 
 
+def _notify_ha(title: str, message: str) -> None:
+    import requests as _req
+    token = os.environ.get('SUPERVISOR_TOKEN', '')
+    if not token:
+        logger.debug('SUPERVISOR_TOKEN not set — skipping HA notification')
+        return
+    try:
+        _req.post(
+            'http://supervisor/core/api/services/notify/family',
+            headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'},
+            json={'title': title, 'message': message},
+            timeout=5,
+        )
+        logger.info('HA notification sent: %s', message)
+    except Exception:
+        logger.exception('HA notification failed')
+
+
 def _backup_data() -> None:
     import shutil
     try:
@@ -105,10 +123,11 @@ def main() -> None:
                 if current else None
             )
             scrape_status = _rcem_scrape_status(_now)
-            pub.publish_roi(result, rcem_price=rcem_price,
+            pub.publish_roi(result,
                             current_month_savings=current_month_savings,
                             rcem_scrape_status=scrape_status)
-            _web.update_state(result, all_records, rcem_price, month_closed=month_closed)
+            _web.update_state(result, all_records, rcem_price, month_closed=month_closed,
+                              rcem_scrape_status=scrape_status)
             logger.info('Poll complete — ROI %.2f%%, remaining %.0f PLN, payback %s',
                         result.roi_pct, result.remaining_to_recover,
                         result.payback_date or 'unknown')
@@ -125,12 +144,22 @@ def main() -> None:
         if rcem_scraper._load_history(RCEM_HISTORY_PATH).get(target) is not None:
             logger.debug('RCEm job: %s already known, skipping', target)
             return
-        rcem_scraper.run_scheduled_scrape(
+
+        def _on_rcem_update():
+            poll_and_publish()
+            price = rcem_scraper._load_history(RCEM_HISTORY_PATH).get(target)
+            if price is not None:
+                _notify_ha('PV ROI Tracker',
+                           f'RCEm {target}: {price:.4f} zł/kWh — obliczenia zaktualizowane')
+
+        found = rcem_scraper.run_scheduled_scrape(
             history_path=RCEM_HISTORY_PATH,
             historic_json_path=HISTORIC_PATH,
             corrections_path=RCEM_CORRECTIONS_PATH,
-            on_update=poll_and_publish,
+            on_update=_on_rcem_update,
         )
+        if not found:
+            logger.info('RCEm %s nie opublikowane jeszcze przez PSE — ponowna próba o następnej zaplanowanej porze', target)
 
     def rcem_correction_job() -> None:
         """Always scrapes — used for the 1st-of-month correction scan."""
