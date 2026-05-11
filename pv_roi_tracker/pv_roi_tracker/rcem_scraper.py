@@ -154,14 +154,12 @@ def scrape_all_months() -> dict[str, float]:
         base_mwh: Optional[float] = None
         corrected_mwh: Optional[float] = None
 
-        def _commit() -> None:
-            if current_month is not None and base_mwh is not None:
-                effective = corrected_mwh if corrected_mwh is not None else base_mwh
-                key = f'{year}-{current_month:02d}'
-                results[key] = round(effective / 1000.0 * 1.23, 6)
-                if corrected_mwh is not None:
-                    logger.info('Month %s: RCEm=%.2f → skorygowana=%.2f PLN/MWh',
-                                key, base_mwh, corrected_mwh)
+        def _store(y: int, m: int, base: float, corrected: Optional[float]) -> None:
+            effective = corrected if corrected is not None else base
+            key = f'{y}-{m:02d}'
+            results[key] = round(effective / 1000.0 * 1.23, 6)
+            if corrected is not None:
+                logger.info('Month %s: RCEm=%.2f → skorygowana=%.2f PLN/MWh', key, base, corrected)
 
         for row in rows[1:]:
             cells = [c.get_text(' ', strip=True) for c in row.find_all(['td', 'th'])]
@@ -170,10 +168,11 @@ def scrape_all_months() -> dict[str, float]:
 
             first = unicodedata.normalize('NFC', cells[0].strip().lower())
 
-            # Month-name row (single-cell, contains Polish month name)
+            # Month-name row: contains a Polish month name
             month_num = _match_month(first)
             if month_num is not None:
-                _commit()
+                if current_month is not None and base_mwh is not None:
+                    _store(year, current_month, base_mwh, corrected_mwh)
                 current_month = month_num
                 base_mwh = corrected_mwh = None
                 continue
@@ -191,7 +190,9 @@ def scrape_all_months() -> dict[str, float]:
                 corrected_mwh = _parse_pln_mwh(cells[1])
                 continue
 
-        _commit()  # commit last month in table
+        # Commit last month in table
+        if current_month is not None and base_mwh is not None:
+            _store(year, current_month, base_mwh, corrected_mwh)
 
     logger.info('PSE page: %d months parsed', len(results))
     return results
