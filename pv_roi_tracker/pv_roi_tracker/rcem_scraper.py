@@ -1,14 +1,16 @@
 """
 RCEm (Rynkowa Cena Energii Miesięczna) scraper.
 
-Fetches the previous month's feed-in price from the PSE website on the 11th
-of each month at 09:00, 12:00 and 20:00 local time, with retries through the 20th.
-Stores results in /data/rcem_history.json (keyed YYYY-MM, values in PLN/kWh).
+Fetches RCEm prices from the PSE website. On every run the full table is
+parsed so that 'skorygowana RCEm' corrections are detected and applied
+retroactively. Stores results in /data/rcem_history.json (keyed YYYY-MM,
+values in PLN/kWh gross including 23% VAT).
 """
 from __future__ import annotations
 
 import json
 import logging
+import re
 import unicodedata
 from datetime import date
 from pathlib import Path
@@ -58,7 +60,7 @@ def _parse_pln_mwh(text: str) -> Optional[float]:
         return None
 
 
-# ── Month matching ────────────────────────────────────────────────────────────
+# ── Year/month extraction ─────────────────────────────────────────────────────
 
 _PL_MONTHS = {
     'styczeń': 1, 'stycznia': 1, 'sty': 1,
@@ -76,63 +78,123 @@ _PL_MONTHS = {
 }
 
 
-def _row_matches(cell_text: str, year: int, month: int) -> bool:
-    """Return True if a table cell text refers to the given year+month."""
-    t = unicodedata.normalize('NFC', cell_text.strip().lower())
-    year_s = str(year)
-    month_s = f'{month:02d}'
-
-    # Numeric patterns: "2026-05", "05.2026", "2026/05"
-    if year_s in t and month_s in t:
-        return True
-    # Polish name patterns: "maj 2026", "maja 2026"
-    if year_s in t:
+def _parse_year_month(text: str) -> Optional[tuple[int, int]]:
+    """Extract (year, month) from a table cell. Returns None if not parseable."""
+    t = unicodedata.normalize('NFC', text.strip())
+    # Numeric: "2026-04", "04.2026", "2026/04"
+    for pat in (r'(20\d{2})[.\-/](\d{1,2})\b', r'\b(\d{1,2})[.\-/](20\d{2})'):
+        m = re.search(pat, t)
+        if m:
+            a, b = int(m.group(1)), int(m.group(2))
+            year, month = (a, b) if a > 2000 else (b, a)
+            if 1 <= month <= 12:
+                return year, month
+    # Polish name: "kwiecień 2026", "maja 2026"
+    year_m = re.search(r'(20\d{2})', t)
+    if year_m:
+        year = int(year_m.group(1))
+        t_lower = t.lower()
         for name, num in _PL_MONTHS.items():
-            if num == month and name in t:
-                return True
-    return False
+            if name in t_lower:
+                return year, num
+    return None
+
+
+# ── Column detection ──────────────────────────────────────────────────────────
+
+def _find_rcem_columns(header_cells: list[str]) -> tuple[int, int]:
+    """
+    Scan header row for RCEm price columns.
+    Returns (base_col, corrected_col), each -1 if not found.
+    'corrected_col' matches headers containing 'skorygowan'.
+    'base_col' matches headers with 'rcem' but not 'skorygowan' or 'różni'.
+    """
+    base_col = corrected_col = -1
+    for i, h in enumerate(header_cells):
+        h_n = unicodedata.normalize('NFC', h.strip().lower())
+        if 'skorygowan' in h_n:
+            corrected_col = i
+        elif 'rcem' in h_n and 'różni' not in h_n and base_col == -1:
+            base_col = i
+    return base_col, corrected_col
 
 
 # ── Core scrape ───────────────────────────────────────────────────────────────
 
-def scrape_rcem(target_month: Optional[str] = None) -> Optional[float]:
+def scrape_all_months() -> dict[str, float]:
     """
-    Fetch the PSE page and return the RCEm price (PLN/kWh) for target_month (YYYY-MM).
-    Defaults to the previous calendar month. Returns None if not yet published.
+    Fetch the PSE page once and return all available months as {YYYY-MM: PLN/kWh gross}.
+    Uses 'skorygowana RCEm' where present, falling back to the base RCEm price.
+    PLN/MWh (net) is converted to PLN/kWh gross by dividing by 1000 and adding 23% VAT.
     """
-    today = date.today()
-    if target_month is None:
-        y, m = (today.year - 1, 12) if today.month == 1 else (today.year, today.month - 1)
-        target_month = f'{y}-{m:02d}'
-
-    year, month = int(target_month[:4]), int(target_month[5:])
-    logger.info('Scraping RCEm for %s from PSE', target_month)
-
     try:
         resp = requests.get(PSE_URL, timeout=30,
                             headers={'User-Agent': 'Mozilla/5.0 (compatible; pv_roi_tracker)'})
         resp.raise_for_status()
     except requests.RequestException as exc:
         logger.error('PSE fetch failed: %s', exc)
-        return None
+        return {}
 
     soup = BeautifulSoup(resp.content, 'html.parser')
+    results: dict[str, float] = {}
 
     for table in soup.find_all('table'):
-        for row in table.find_all('tr'):
+        rows = table.find_all('tr')
+        if not rows:
+            continue
+
+        header_cells = [c.get_text(' ', strip=True) for c in rows[0].find_all(['td', 'th'])]
+
+        # Skip tables unrelated to RCEm
+        if not any('rcem' in unicodedata.normalize('NFC', h.strip().lower())
+                   for h in header_cells):
+            continue
+
+        base_col, corrected_col = _find_rcem_columns(header_cells)
+
+        for row in rows[1:]:
             cells = [c.get_text(' ', strip=True) for c in row.find_all(['td', 'th'])]
             if not cells:
                 continue
-            if _row_matches(cells[0], year, month):
-                for cell in cells[1:]:
-                    val = _parse_pln_mwh(cell)
-                    if val is not None:
-                        price_kwh = round(val / 1000.0 * 1.23, 6)  # PSE publishes net; add 23% VAT
-                        logger.info('RCEm %s = %.4f zł/kWh gross (%.2f zł/MWh net)', target_month, price_kwh, val)
-                        return price_kwh
+            ym = _parse_year_month(cells[0])
+            if ym is None:
+                continue
+            year, month = ym
+            key = f'{year}-{month:02d}'
 
-    logger.info('RCEm for %s not yet published on PSE page', target_month)
-    return None
+            # Prefer corrected price, fall back to base, then first numeric cell
+            price_mwh: Optional[float] = None
+            if corrected_col > 0 and corrected_col < len(cells):
+                price_mwh = _parse_pln_mwh(cells[corrected_col])
+                if price_mwh is not None:
+                    logger.debug('Using skorygowana RCEm for %s: %.2f PLN/MWh', key, price_mwh)
+            if price_mwh is None and base_col > 0 and base_col < len(cells):
+                price_mwh = _parse_pln_mwh(cells[base_col])
+            if price_mwh is None:
+                for cell in cells[1:]:
+                    price_mwh = _parse_pln_mwh(cell)
+                    if price_mwh is not None:
+                        break
+
+            if price_mwh is not None:
+                results[key] = round(price_mwh / 1000.0 * 1.23, 6)  # net → gross PLN/kWh
+
+    logger.info('PSE page: %d months parsed', len(results))
+    return results
+
+
+def scrape_rcem(target_month: Optional[str] = None) -> Optional[float]:
+    """
+    Return the effective RCEm price (PLN/kWh gross) for target_month.
+    Defaults to the previous calendar month. Returns None if not published.
+    Used by the CLI; production code calls run_scheduled_scrape instead.
+    """
+    today = date.today()
+    if target_month is None:
+        y, m = (today.year - 1, 12) if today.month == 1 else (today.year, today.month - 1)
+        target_month = f'{y}-{m:02d}'
+    logger.info('Scraping RCEm for %s', target_month)
+    return scrape_all_months().get(target_month)
 
 
 # ── Scheduled entry points ────────────────────────────────────────────────────
@@ -147,11 +209,14 @@ def run_scheduled_scrape(
     target_month: Optional[str] = None,
     history_path: Path = DEFAULT_HISTORY_PATH,
     historic_json_path: Optional[Path] = None,
-    on_success=None,
+    on_update=None,   # called (no args) once if any price was new or corrected
+    on_success=None,  # legacy alias; ignored when on_update is provided
 ) -> bool:
     """
-    Attempt one scrape. Saves to rcem_history.json, backfills historic.json, calls
-    on_success(price) when a new price is found. Returns True if price is known.
+    Fetch all months from PSE. Update rcem_history.json and backfill historic.json
+    for any month whose price is new or has changed (skorygowana correction).
+    Calls on_update() once if anything changed.
+    Returns True if target_month price is now known.
     """
     from . import historic_store
 
@@ -163,22 +228,36 @@ def run_scheduled_scrape(
     if historic_json_path is None:
         historic_json_path = historic_store.DEFAULT_PATH
 
+    callback = on_update or on_success
+
+    scraped = scrape_all_months()
+    if not scraped:
+        logger.warning('PSE returned no data — keeping existing history')
+        return target_month in _load_history(history_path)
+
     history = _load_history(history_path)
-    if target_month in history:
-        logger.debug('RCEm for %s already cached (%.4f) — no scrape needed', target_month, history[target_month])
-        return True
+    updated: list[str] = []
 
-    price = scrape_rcem(target_month)
-    if price is None:
-        return False
+    for key, new_price in scraped.items():
+        old_price = history.get(key)
+        if old_price is None:
+            logger.info('New RCEm price for %s: %.4f PLN/kWh', key, new_price)
+            updated.append(key)
+        elif abs(new_price - old_price) > 1e-6:
+            pct = (new_price - old_price) / old_price * 100
+            logger.info('RCEm correction for %s: %.4f → %.4f PLN/kWh (%+.2f%%)',
+                        key, old_price, new_price, pct)
+            updated.append(key)
 
-    history[target_month] = price
-    _save_history(history, history_path)
+    if updated:
+        for key in updated:
+            history[key] = scraped[key]
+        _save_history(history, history_path)
+        for key in updated:
+            year, month = int(key[:4]), int(key[5:])
+            historic_store.backfill_rcem(year, month, history[key], historic_json_path)
+            logger.info('Backfilled historic.json for %s', key)
+        if callback:
+            callback()
 
-    year, month = int(target_month[:4]), int(target_month[5:])
-    historic_store.backfill_rcem(year, month, price, historic_json_path)
-
-    if on_success:
-        on_success(price)
-
-    return True
+    return target_month in history

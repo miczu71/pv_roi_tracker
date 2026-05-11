@@ -1,10 +1,13 @@
 """
-Add-on entry point — steady-state loop (Phase 3).
+Add-on entry point — steady-state loop.
 
 Jobs:
   • Poll every POLL_INTERVAL_MINUTES: read historic + live → ROI calc → MQTT publish
-  • Month-close: 23:55 on last day of each month (before utility meters reset at midnight)
-  • RCEm scrape: day 11–20 of each month at 20:00 UTC (stops retrying once price is found)
+  • Month-close: 23:55 on last day of each month
+  • RCEm scrape: days 11–20 at 09:00/12:00/20:00 local time — fetches full PSE table,
+    applies new prices and 'skorygowana RCEm' corrections for any month
+  • RCEm correction scan: 1st of each month at 06:00 — catches corrections that appear
+    after the 20th-day retry window has closed
 """
 from __future__ import annotations
 
@@ -91,16 +94,7 @@ def main() -> None:
 
     _web.set_rcem_override_callback(_rcem_override)
 
-    # ── Startup RCEm catch-up ─────────────────────────────────────────────────
-    # If today >= 11th and last month's RCEm is missing, try immediately.
     from datetime import date
-    today = date.today()
-    if today.day >= 11:
-        rcem_scraper.run_scheduled_scrape(
-            history_path=RCEM_HISTORY_PATH,
-            historic_json_path=HISTORIC_PATH,
-            on_success=lambda p: logger.info('Startup RCEm catch-up: found %.4f PLN/kWh', p),
-        )
 
     def _rcem_scrape_status(now: date) -> str:
         y, m = (now.year - 1, 12) if now.month == 1 else (now.year, now.month - 1)
@@ -144,7 +138,7 @@ def main() -> None:
         rcem_scraper.run_scheduled_scrape(
             history_path=RCEM_HISTORY_PATH,
             historic_json_path=HISTORIC_PATH,
-            on_success=lambda _: poll_and_publish(),  # recompute immediately on new price
+            on_update=poll_and_publish,  # recompute immediately on any new or corrected price
         )
 
     def month_close_job() -> None:
@@ -165,13 +159,25 @@ def main() -> None:
     scheduler.add_job(month_close_job, CronTrigger(day='last', hour=23, minute=55),
                       id='month_close', name='Month-close snapshot')
 
-    # RCEm: days 11–20 at 09:00, 12:00, 20:00 local time (no-op if already cached)
+    # RCEm: days 11–20 at 09:00, 12:00, 20:00 local time
     scheduler.add_job(rcem_job, CronTrigger(day='11-20', hour='9,12,20', minute=0),
                       id='rcem_scrape', name='RCEm price scrape')
 
+    # RCEm correction scan: 1st of each month at 06:00 — catches skorygowana corrections
+    # that appear after the 20th-day retry window (PSE allows corrections up to 12 months later)
+    scheduler.add_job(rcem_job, CronTrigger(day=1, hour=6, minute=0),
+                      id='rcem_correction_scan', name='RCEm correction scan')
+
     logger.info('PV ROI Tracker v%s started — poll every %d min', __version__, POLL_INTERVAL)
 
-    poll_and_publish()   # run once immediately before entering the scheduler loop
+    # Startup scan: fetch full PSE table to apply any new prices or skorygowana corrections
+    # accumulated since the last run. No on_update callback — poll_and_publish() follows immediately.
+    rcem_scraper.run_scheduled_scrape(
+        history_path=RCEM_HISTORY_PATH,
+        historic_json_path=HISTORIC_PATH,
+    )
+
+    poll_and_publish()   # initial poll with up-to-date RCEm history
     scheduler.start()
 
 
