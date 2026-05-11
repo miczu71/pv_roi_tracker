@@ -24,8 +24,9 @@ logger = logging.getLogger(__name__)
 
 # ── Config from env (set by run.sh via bashio) ────────────────────────────────
 
-HISTORIC_PATH      = Path(os.environ.get('HISTORIC_PATH', '/data/historic.json'))
-RCEM_HISTORY_PATH  = Path(os.environ.get('RCEM_HISTORY_PATH', '/data/rcem_history.json'))
+HISTORIC_PATH          = Path(os.environ.get('HISTORIC_PATH', '/data/historic.json'))
+RCEM_HISTORY_PATH      = Path(os.environ.get('RCEM_HISTORY_PATH', '/data/rcem_history.json'))
+RCEM_CORRECTIONS_PATH  = Path(os.environ.get('RCEM_CORRECTIONS_PATH', '/data/rcem_corrections.json'))
 CSV_URL            = os.environ.get('CSV_URL', (
     'https://docs.google.com/spreadsheets/d/e/'
     '2PACX-1vT_3gmj8s_2JPJzPijb9T27oh0FS3JhlQ3cB1HkKPbBa2yi8GyudqJb5ZeyM20QQ9IKbfB3SnbKZukC'
@@ -138,7 +139,8 @@ def main() -> None:
         rcem_scraper.run_scheduled_scrape(
             history_path=RCEM_HISTORY_PATH,
             historic_json_path=HISTORIC_PATH,
-            on_update=poll_and_publish,  # recompute immediately on any new or corrected price
+            corrections_path=RCEM_CORRECTIONS_PATH,
+            on_update=poll_and_publish,
         )
 
     def month_close_job() -> None:
@@ -175,6 +177,7 @@ def main() -> None:
     rcem_scraper.run_scheduled_scrape(
         history_path=RCEM_HISTORY_PATH,
         historic_json_path=HISTORIC_PATH,
+        corrections_path=RCEM_CORRECTIONS_PATH,
     )
 
     poll_and_publish()   # initial poll with up-to-date RCEm history

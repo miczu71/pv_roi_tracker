@@ -22,7 +22,8 @@ from bs4 import BeautifulSoup
 logger = logging.getLogger(__name__)
 
 PSE_URL = 'https://www.pse.pl/oire/rcem-rynkowa-miesieczna-cena-energii-elektrycznej'
-DEFAULT_HISTORY_PATH = Path('/data/rcem_history.json')
+DEFAULT_HISTORY_PATH     = Path('/data/rcem_history.json')
+DEFAULT_CORRECTIONS_PATH = Path('/data/rcem_corrections.json')
 _HISTORY_MAX_ENTRIES = 36
 _MAX_PLN_MWH = 2000.0
 
@@ -45,6 +46,29 @@ def _save_history(history: dict, path: Path = DEFAULT_HISTORY_PATH) -> None:
     tmp = path.with_suffix('.json.tmp')
     tmp.write_text(json.dumps(history, indent=2, ensure_ascii=False), encoding='utf-8')
     tmp.rename(path)
+
+
+# ── Correction history helpers ────────────────────────────────────────────────
+
+def _load_corrections(path: Path = DEFAULT_CORRECTIONS_PATH) -> dict:
+    """Load {YYYY-MM: [{price, recorded_at}, ...]} correction history."""
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding='utf-8'))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_corrections(corrections: dict, path: Path = DEFAULT_CORRECTIONS_PATH) -> None:
+    tmp = path.with_suffix('.json.tmp')
+    tmp.write_text(json.dumps(corrections, indent=2, ensure_ascii=False), encoding='utf-8')
+    tmp.rename(path)
+
+
+def get_price_history(month_key: str, path: Path = DEFAULT_CORRECTIONS_PATH) -> list:
+    """Return [{price, recorded_at}, ...] for month_key, oldest first. Empty if never corrected."""
+    return _load_corrections(path).get(month_key, [])
 
 
 # ── Number parsing ────────────────────────────────────────────────────────────
@@ -209,12 +233,14 @@ def run_scheduled_scrape(
     target_month: Optional[str] = None,
     history_path: Path = DEFAULT_HISTORY_PATH,
     historic_json_path: Optional[Path] = None,
+    corrections_path: Path = DEFAULT_CORRECTIONS_PATH,
     on_update=None,   # called (no args) once if any price was new or corrected
     on_success=None,  # legacy alias; ignored when on_update is provided
 ) -> bool:
     """
     Fetch all months from PSE. Update rcem_history.json and backfill historic.json
     for any month whose price is new or has changed (skorygowana correction).
+    Records price change history to rcem_corrections.json.
     Calls on_update() once if anything changed.
     Returns True if target_month price is now known.
     """
@@ -250,6 +276,24 @@ def run_scheduled_scrape(
             updated.append(key)
 
     if updated:
+        today_str = str(today)
+        corrections = _load_corrections(corrections_path)
+        for key in updated:
+            old_price = history.get(key)
+            new_price = scraped[key]
+            new_entry = {'price': new_price, 'recorded_at': today_str}
+            if key not in corrections:
+                if old_price is not None:
+                    corrections[key] = [
+                        {'price': old_price, 'recorded_at': 'original'},
+                        new_entry,
+                    ]
+                else:
+                    corrections[key] = [new_entry]
+            else:
+                corrections[key].append(new_entry)
+        _save_corrections(corrections, corrections_path)
+
         for key in updated:
             history[key] = scraped[key]
         _save_history(history, history_path)

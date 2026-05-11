@@ -157,6 +157,9 @@ def api_data():
         for r in records if (r.year, r.month) <= current_ym
     ), 2)
 
+    from . import rcem_scraper as _rs
+    corrections = _rs._load_corrections()
+
     cumulative = result.subsidy
     records_out = []
     for r in sorted(records, key=lambda x: (x.year, x.month)):
@@ -197,6 +200,7 @@ def api_data():
             'self_sufficiency_pct': self_suff,
             'purchased_kwh_peak': r.purchased_kwh_peak,
             'purchased_kwh_offpeak': r.purchased_kwh_offpeak,
+            'feedin_corrections': corrections.get(f'{r.year}-{r.month:02d}') or None,
         })
 
     current_rec = next((r for r in records if (r.year, r.month) == current_ym), None)
@@ -443,6 +447,34 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
 /* -- Projected hint -- */
 .proj-hint { font-size: 10px; color: var(--muted); font-weight: 400; }
 
+/* -- RCEm correction tooltip -- */
+.price-corrected { cursor: help; border-bottom: 1px dotted currentColor; position: relative; }
+.price-down { color: #e53e3e; }
+.price-up   { color: #38a169; }
+.price-corrected::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: 130%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #2d3748;
+  color: #fff;
+  padding: 7px 11px;
+  border-radius: 6px;
+  font-size: 11px;
+  white-space: pre;
+  min-width: 210px;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 200;
+  transition: opacity 0.15s;
+  line-height: 1.6;
+  text-align: left;
+  font-weight: 400;
+}
+.price-corrected:hover::after,
+.price-corrected.tip-open::after { opacity: 1; }
+
 /* -- RCEm override form -- */
 .override-wrap { background: var(--card); border-radius: var(--radius); padding: 14px 16px; box-shadow: var(--shadow); }
 .override-wrap h3 { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 10px; }
@@ -529,6 +561,28 @@ const pct   = (v)       => fmt(v, 2, '%');
 const kwh   = (v)       => fmt(v, 1, 'kWh');
 const price = (v)       => fmt(v, 4, 'zl/kWh');
 const num   = (v, dp=1) => fmt(v, dp);
+
+function feedinPriceCell(r) {
+  const hist = r.feedin_corrections;
+  if (!hist || hist.length < 2) return price(r.feedin_price);
+  const prev = hist[hist.length - 2].price;
+  const curr = hist[hist.length - 1].price;
+  const dir  = curr < prev ? 'price-down' : 'price-up';
+  let tip = 'Historia cen RCEm:\n';
+  hist.forEach((h, i) => {
+    const marker = i === hist.length - 1 ? ' ◄' : '';
+    tip += (h.price * 1000).toFixed(2) + ' zl/MWh  (' + h.recorded_at + ')' + marker + '\n';
+  });
+  const safeTip = tip.trimEnd().replace(/"/g, '&quot;');
+  return '<span class="price-corrected ' + dir + '" data-tip="' + safeTip + '">' + price(r.feedin_price) + '</span>';
+}
+
+// Toggle correction tooltip on click (mobile-friendly)
+document.addEventListener('click', function(e) {
+  const el = e.target.closest('.price-corrected');
+  document.querySelectorAll('.price-corrected.tip-open').forEach(x => { if (x !== el) x.classList.remove('tip-open'); });
+  if (el) el.classList.toggle('tip-open');
+});
 
 /* -- Tab switching -- */
 function showTab(name) {
@@ -784,7 +838,7 @@ function renderHistTable(records, monthClosed) {
       '<td>' + pkCell + '</td>' +
       '<td>' + opkCell + '</td>' +
       '<td>' + price(r.buy_price) + '</td>' +
-      '<td>' + price(r.feedin_price) + '</td>' +
+      '<td>' + feedinPriceCell(r) + '</td>' +
       '<td>' + pln(r.self_savings, 2) + '</td>' +
       '<td>' + pln(r.feedin_revenue, 2) + '</td>' +
       '<td>' + pln(r.month_savings, 2) + '</td>' +
