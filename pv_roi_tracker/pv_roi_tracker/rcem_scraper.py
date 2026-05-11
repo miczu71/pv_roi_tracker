@@ -102,54 +102,31 @@ _PL_MONTHS = {
 }
 
 
-def _parse_year_month(text: str) -> Optional[tuple[int, int]]:
-    """Extract (year, month) from a table cell. Returns None if not parseable."""
-    t = unicodedata.normalize('NFC', text.strip())
-    # Numeric: "2026-04", "04.2026", "2026/04"
-    for pat in (r'(20\d{2})[.\-/](\d{1,2})\b', r'\b(\d{1,2})[.\-/](20\d{2})'):
-        m = re.search(pat, t)
-        if m:
-            a, b = int(m.group(1)), int(m.group(2))
-            year, month = (a, b) if a > 2000 else (b, a)
-            if 1 <= month <= 12:
-                return year, month
-    # Polish name: "kwiecień 2026", "maja 2026"
-    year_m = re.search(r'(20\d{2})', t)
-    if year_m:
-        year = int(year_m.group(1))
-        t_lower = t.lower()
-        for name, num in _PL_MONTHS.items():
-            if name in t_lower:
-                return year, num
+def _match_month(text: str) -> Optional[int]:
+    """Return month number if text contains a Polish month name, else None."""
+    t = unicodedata.normalize('NFC', text.strip().lower())
+    for name, num in _PL_MONTHS.items():
+        if name in t:
+            return num
     return None
-
-
-# ── Column detection ──────────────────────────────────────────────────────────
-
-def _find_rcem_columns(header_cells: list[str]) -> tuple[int, int]:
-    """
-    Scan header row for RCEm price columns.
-    Returns (base_col, corrected_col), each -1 if not found.
-    'corrected_col' matches headers containing 'skorygowan'.
-    'base_col' matches headers with 'rcem' but not 'skorygowan' or 'różni'.
-    """
-    base_col = corrected_col = -1
-    for i, h in enumerate(header_cells):
-        h_n = unicodedata.normalize('NFC', h.strip().lower())
-        if 'skorygowan' in h_n:
-            corrected_col = i
-        elif 'rcem' in h_n and 'różni' not in h_n and base_col == -1:
-            base_col = i
-    return base_col, corrected_col
 
 
 # ── Core scrape ───────────────────────────────────────────────────────────────
 
 def scrape_all_months() -> dict[str, float]:
     """
-    Fetch the PSE page once and return all available months as {YYYY-MM: PLN/kWh gross}.
-    Uses 'skorygowana RCEm' where present, falling back to the base RCEm price.
-    PLN/MWh (net) is converted to PLN/kWh gross by dividing by 1000 and adding 23% VAT.
+    Fetch the PSE page and return all available months as {YYYY-MM: PLN/kWh gross}.
+
+    PSE table structure (one table per year):
+      row 0:  ['2026']                    ← year
+      row 1:  ['', 'cena [zł/MWh]', ...]  ← column headers
+      row N:  ['styczeń']                 ← month name (Polish, no year)
+      row N+1:['RCEm', '551,96', ...]     ← base price
+      row N+2:['skorygowana RCEm*', '-' or price, ...]  ← correction (dash = none)
+      ...repeated for each month
+
+    PLN/MWh net is converted to PLN/kWh gross by ÷1000 and ×1.23 (23% VAT).
+    Corrected price takes precedence over the base price when present.
     """
     try:
         resp = requests.get(PSE_URL, timeout=30,
@@ -164,44 +141,57 @@ def scrape_all_months() -> dict[str, float]:
 
     for table in soup.find_all('table'):
         rows = table.find_all('tr')
-        if not rows:
+        if len(rows) < 3:
             continue
 
-        header_cells = [c.get_text(' ', strip=True) for c in rows[0].find_all(['td', 'th'])]
-
-        # Skip tables unrelated to RCEm
-        if not any('rcem' in unicodedata.normalize('NFC', h.strip().lower())
-                   for h in header_cells):
+        # Row 0 must be a bare year number
+        year_text = rows[0].get_text(strip=True)
+        if not re.fullmatch(r'20\d{2}', year_text):
             continue
+        year = int(year_text)
 
-        base_col, corrected_col = _find_rcem_columns(header_cells)
+        current_month: Optional[int] = None
+        base_mwh: Optional[float] = None
+        corrected_mwh: Optional[float] = None
+
+        def _commit() -> None:
+            if current_month is not None and base_mwh is not None:
+                effective = corrected_mwh if corrected_mwh is not None else base_mwh
+                key = f'{year}-{current_month:02d}'
+                results[key] = round(effective / 1000.0 * 1.23, 6)
+                if corrected_mwh is not None:
+                    logger.info('Month %s: RCEm=%.2f → skorygowana=%.2f PLN/MWh',
+                                key, base_mwh, corrected_mwh)
 
         for row in rows[1:]:
             cells = [c.get_text(' ', strip=True) for c in row.find_all(['td', 'th'])]
             if not cells:
                 continue
-            ym = _parse_year_month(cells[0])
-            if ym is None:
+
+            first = unicodedata.normalize('NFC', cells[0].strip().lower())
+
+            # Month-name row (single-cell, contains Polish month name)
+            month_num = _match_month(first)
+            if month_num is not None:
+                _commit()
+                current_month = month_num
+                base_mwh = corrected_mwh = None
                 continue
-            year, month = ym
-            key = f'{year}-{month:02d}'
 
-            # Prefer corrected price, fall back to base, then first numeric cell
-            price_mwh: Optional[float] = None
-            if corrected_col > 0 and corrected_col < len(cells):
-                price_mwh = _parse_pln_mwh(cells[corrected_col])
-                if price_mwh is not None:
-                    logger.debug('Using skorygowana RCEm for %s: %.2f PLN/MWh', key, price_mwh)
-            if price_mwh is None and base_col > 0 and base_col < len(cells):
-                price_mwh = _parse_pln_mwh(cells[base_col])
-            if price_mwh is None:
-                for cell in cells[1:]:
-                    price_mwh = _parse_pln_mwh(cell)
-                    if price_mwh is not None:
-                        break
+            if current_month is None:
+                continue
 
-            if price_mwh is not None:
-                results[key] = round(price_mwh / 1000.0 * 1.23, 6)  # net → gross PLN/kWh
+            # Base RCEm row: first cell is exactly 'rcem'
+            if first == 'rcem' and len(cells) > 1:
+                base_mwh = _parse_pln_mwh(cells[1])
+                continue
+
+            # Correction row: first cell contains 'skorygowan'
+            if 'skorygowan' in first and len(cells) > 1 and cells[1] not in ('-', '', '–'):
+                corrected_mwh = _parse_pln_mwh(cells[1])
+                continue
+
+        _commit()  # commit last month in table
 
     logger.info('PSE page: %d months parsed', len(results))
     return results
