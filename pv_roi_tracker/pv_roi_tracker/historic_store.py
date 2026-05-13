@@ -5,7 +5,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from .models import MonthlyRecord
 
@@ -15,7 +15,7 @@ DEFAULT_PATH = Path('/data/historic.json')
 SCHEMA_VERSION = 1
 
 
-# ── Internal helpers ────────────────────────────────────────────────────────────────────────────────────
+# ── Internal helpers ─────────────────────────────────────────────────────────
 
 def _atomic_write(path: Path, doc: dict) -> None:
     tmp = path.with_suffix('.json.tmp')
@@ -44,7 +44,18 @@ def _save_document(doc: dict, path: Path) -> None:
     _atomic_write(path, doc)
 
 
-# ── Public API ───────────────────────────────────────────────────────────────────────────────────────
+def _mutate_month(year: int, month: int, path: Path, mutate_fn: Callable[[dict], None]) -> bool:
+    """Find a month record, apply mutate_fn in place, and save. Returns False if not found."""
+    doc = _load_document(path)
+    for m in doc.get('months', []):
+        if m['year'] == year and m['month'] == month:
+            mutate_fn(m)
+            _save_document(doc, path)
+            return True
+    return False
+
+
+# ── Public API ────────────────────────────────────────────────────────────────
 
 def load(path: Path = DEFAULT_PATH) -> list[MonthlyRecord]:
     doc = _load_document(path)
@@ -99,23 +110,14 @@ def patch_month_field(
     value: float,
     path: Path = DEFAULT_PATH,
 ) -> bool:
-    """Overwrite a single numeric field on an existing historic month record.
-    Only fields in _PATCHABLE_FIELDS are accepted.
-    Returns True on success, False if month not found.
-    """
     if field not in _PATCHABLE_FIELDS:
         raise ValueError(f"Field '{field}' is not patchable")
-    doc = _load_document(path)
-    months: list[dict] = doc.get('months', [])
-    for m in months:
-        if m['year'] == year and m['month'] == month:
-            m[field] = value
-            doc['months'] = months
-            _save_document(doc, path)
-            logger.info("Patched %d-%02d %s = %s", year, month, field, value)
-            return True
-    logger.warning("patch_month_field: month %d-%02d not found in %s", year, month, path)
-    return False
+    found = _mutate_month(year, month, path, lambda m: m.__setitem__(field, value))
+    if found:
+        logger.info("Patched %d-%02d %s = %s", year, month, field, value)
+    else:
+        logger.warning("patch_month_field: month %d-%02d not found in %s", year, month, path)
+    return found
 
 
 def backfill_rcem(
@@ -124,23 +126,15 @@ def backfill_rcem(
     price_pln_kwh: float,
     path: Path = DEFAULT_PATH,
 ) -> bool:
-    """
-    Write feedin_price_pln_kwh and feedin_revenue_pln into an existing month record
-    that was saved without RCEm data (rcem_status='pending').
-    Only touches the three RCEm fields — all other fields are unchanged.
-    Returns True on success, False if the month was not found.
-    """
-    doc = _load_document(path)
-    months: list[dict] = doc.get('months', [])
-    for m in months:
-        if m['year'] == year and m['month'] == month:
-            m['feedin_price_pln_kwh'] = price_pln_kwh
-            exported = m.get('exported_kwh')
-            m['feedin_revenue_pln'] = round(exported * price_pln_kwh, 2) if exported is not None else None
-            m['rcem_status'] = 'confirmed'
-            doc['months'] = months
-            _save_document(doc, path)
-            logger.info("Backfilled RCEm for %d-%02d: %.4f zł/kWh", year, month, price_pln_kwh)
-            return True
-    logger.warning("backfill_rcem: month %d-%02d not found in %s", year, month, path)
-    return False
+    def _apply(m: dict) -> None:
+        m['feedin_price_pln_kwh'] = price_pln_kwh
+        exported = m.get('exported_kwh')
+        m['feedin_revenue_pln'] = round(exported * price_pln_kwh, 2) if exported is not None else None
+        m['rcem_status'] = 'confirmed'
+
+    found = _mutate_month(year, month, path, _apply)
+    if found:
+        logger.info("Backfilled RCEm for %d-%02d: %.4f zł/kWh", year, month, price_pln_kwh)
+    else:
+        logger.warning("backfill_rcem: month %d-%02d not found in %s", year, month, path)
+    return found
