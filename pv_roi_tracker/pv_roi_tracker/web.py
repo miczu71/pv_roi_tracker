@@ -712,6 +712,7 @@ function renderCards(s) {
     { lbl: 'Splata',            val: s.payback_date || '—',  sub: s.years_to_payback != null ? 'za ' + num(s.years_to_payback, 1) + ' lat' : '' },
     { lbl: 'Produkcja lacznie', val: kwh(s.total_produced_kwh),   sub: 'uzysk ' + num(s.specific_yield, 0) + ' kWh/kWp' },
     s.battery_arbitrage_savings > 0 ? { lbl: 'Arbitraż baterii', val: pln(s.battery_arbitrage_savings, 2), sub: 'łącznie z sieci w taniej taryfie', cls: 'c-green' } : null,
+    s.battery_arbitrage_savings > 0 && s.total_savings > 0 ? { lbl: 'Udział arbitrażu', val: pct(s.battery_arbitrage_savings / s.total_savings * 100), sub: 'bateria w łącznych oszczędnościach', cls: 'c-green' } : null,
     s.best_month  ? { lbl: 'Najlepszy miesiac',  val: pln(s.best_month.savings),  sub: s.best_month.label,  cls: 'c-green' } : null,
     s.worst_month ? { lbl: 'Najslabszy miesiac', val: pln(s.worst_month.savings), sub: s.worst_month.label } : null,
     s.solcast_projected_kwh != null ? { lbl: 'Prognoza miesiaca', val: kwh(s.solcast_projected_kwh), sub: 'produkcja + Solcast 7 dni' } : null,
@@ -740,33 +741,35 @@ function renderCards(s) {
 }
 
 /* -- Line chart (cumulative) -- */
-function renderLineChart(records, predictions, gross) {
+function renderLineChart(records, predictions, gross, netInvestment) {
   const histLbls = records.map(r => r.month_label);
   const histVals = records.map(r => r.cumulative_return);
   const predLbls = predictions.map(p => p.month_label);
   const predVals = predictions.map(p => p.cumulative_return || (p.net_profit != null ? gross + p.net_profit : null));
 
-  const allLbls = [...histLbls, ...predLbls];
-  const target  = allLbls.map(() => gross);
+  const allLbls  = [...histLbls, ...predLbls];
+  const grossLine = allLbls.map(() => gross);
+  const netLine   = netInvestment != null ? allLbls.map(() => netInvestment) : null;
 
   const hDs = [...histVals, ...predLbls.map(() => null)];
   const pDs = [...histLbls.map(() => null)];
   if (histVals.length) pDs[histVals.length - 1] = histVals[histVals.length - 1];
   pDs.push(...predVals);
 
+  const datasets = [
+    { label: 'Zwrot (historia)', data: hDs,       borderColor: '#2563eb', backgroundColor: 'rgba(37,99,235,.07)', fill: true,  tension: 0.35, pointRadius: allLbls.length > 60 ? 0 : 3, spanGaps: false },
+    { label: 'Zwrot (prognoza)', data: pDs,       borderColor: '#2563eb', borderDash: [6,4], backgroundColor: 'transparent', fill: false, tension: 0.35, pointRadius: 0, spanGaps: false },
+    { label: 'Inwestycja brutto', data: grossLine, borderColor: '#dc2626', borderDash: [4,4], backgroundColor: 'transparent', fill: false, pointRadius: 0 },
+  ];
+  if (netLine) {
+    datasets.push({ label: 'Inwestycja netto', data: netLine, borderColor: '#16a34a', borderDash: [4,4], backgroundColor: 'transparent', fill: false, pointRadius: 0 });
+  }
+
   const ctx = document.getElementById('lineChart').getContext('2d');
   if (_lineChart) _lineChart.destroy();
-  const manyPts = allLbls.length > 60;
   _lineChart = new Chart(ctx, {
     type: 'line',
-    data: {
-      labels: allLbls,
-      datasets: [
-        { label: 'Zwrot (historia)', data: hDs,    borderColor: '#2563eb', backgroundColor: 'rgba(37,99,235,.07)', fill: true,  tension: 0.35, pointRadius: manyPts ? 0 : 3, spanGaps: false },
-        { label: 'Zwrot (prognoza)', data: pDs,    borderColor: '#2563eb', borderDash: [6,4],  backgroundColor: 'transparent', fill: false, tension: 0.35, pointRadius: 0, spanGaps: false },
-        { label: 'Inwestycja brutto',data: target, borderColor: '#dc2626', borderDash: [4,4],  backgroundColor: 'transparent', fill: false, pointRadius: 0 },
-      ],
-    },
+    data: { labels: allLbls, datasets },
     options: {
       responsive: true, maintainAspectRatio: false,
       interaction: { mode: 'index', intersect: false },
@@ -1306,8 +1309,11 @@ function renderYearsTable(records, systemKwp) {
   const yearMap = {};
   for (const r of records) {
     const y = r.month_label.substring(0, 4);
-    if (!yearMap[y]) yearMap[y] = { produced: 0, exported: 0, sc: 0, consumed: 0, purchased: 0,
-                                    self_sav: 0, feedin: 0, purchase_cost: 0, net_grid: 0, months: 0 };
+    if (!yearMap[y]) yearMap[y] = {
+      produced: 0, exported: 0, sc: 0, consumed: 0, purchased: 0,
+      self_sav: 0, feedin: 0, arbitrage: 0, purchase_cost: 0, net_grid: 0,
+      buy_price_sum: 0, buy_price_n: 0, feedin_price_sum: 0, feedin_price_n: 0, months: 0,
+    };
     const t = yearMap[y];
     t.produced      += r.produced_kwh      || 0;
     t.exported      += r.exported_kwh      || 0;
@@ -1315,14 +1321,17 @@ function renderYearsTable(records, systemKwp) {
     t.consumed      += r.consumed_kwh      || 0;
     t.self_sav      += r.self_savings      || 0;
     t.feedin        += r.feedin_revenue    || 0;
+    t.arbitrage     += r.battery_arbitrage_savings || 0;
     t.purchase_cost += r.purchase_cost_pln || 0;
     t.net_grid      += r.net_grid_cost     || 0;
-    t.months        += 1;
+    if (r.buy_price    != null) { t.buy_price_sum    += r.buy_price;    t.buy_price_n++;    }
+    if (r.feedin_price != null) { t.feedin_price_sum += r.feedin_price; t.feedin_price_n++; }
+    t.months += 1;
   }
 
   const years = Object.keys(yearMap).sort();
+  const hasArbitrage = years.some(y => yearMap[y].arbitrage > 0);
 
-  // Find best/worst production years (full years only)
   const fullYears = years.filter(y => yearMap[y].months === 12);
   let bestY = null, worstY = null;
   if (fullYears.length > 1) {
@@ -1339,7 +1348,10 @@ function renderYearsTable(records, systemKwp) {
     '<th>Autarkia %</th>' +
     '<th>Oszcz. autokons.</th>' +
     '<th>Przych. sprzedazy</th>' +
+    (hasArbitrage ? '<th>Arbitraz bat.</th>' : '') +
     '<th>Lacznie oszcz.</th>' +
+    '<th>Sr. cena zakupu</th>' +
+    '<th>Sr. RCEm</th>' +
     '<th>Zakup energii</th>' +
     '<th>Koszt netto sieci</th>' +
     '<th>Mies.</th>' +
@@ -1347,8 +1359,11 @@ function renderYearsTable(records, systemKwp) {
 
   const rows = years.map(y => {
     const t = yearMap[y];
-    const kwhKwp = systemKwp > 0 ? Math.round(t.produced / systemKwp) : '—';
-    const suff   = t.consumed > 0 ? pct(t.sc / t.consumed * 100) : '—';
+    const kwhKwp   = systemKwp > 0 ? Math.round(t.produced / systemKwp) : '—';
+    const suff     = t.consumed > 0 ? pct(t.sc / t.consumed * 100) : '—';
+    const avgBuy   = t.buy_price_n    > 0 ? (t.buy_price_sum    / t.buy_price_n).toFixed(4)    + ' zl' : '—';
+    const avgRcem  = t.feedin_price_n > 0 ? (t.feedin_price_sum / t.feedin_price_n).toFixed(4) + ' zl' : '—';
+    const total    = t.self_sav + t.feedin + t.arbitrage;
     let note = '';
     if (y === bestY)  note = ' ⬆️';
     if (y === worstY) note = ' ⬇️';
@@ -1362,7 +1377,10 @@ function renderYearsTable(records, systemKwp) {
       '<td>' + suff + '</td>' +
       '<td>' + pln(t.self_sav, 0) + '</td>' +
       '<td>' + pln(t.feedin, 0) + '</td>' +
-      '<td>' + pln(t.self_sav + t.feedin, 0) + '</td>' +
+      (hasArbitrage ? '<td>' + (t.arbitrage > 0 ? pln(t.arbitrage, 0) : '—') + '</td>' : '') +
+      '<td><strong>' + pln(total, 0) + '</strong></td>' +
+      '<td style="color:var(--muted)">' + avgBuy + '</td>' +
+      '<td style="color:var(--muted)">' + avgRcem + '</td>' +
       '<td>' + pln(t.purchase_cost, 0) + '</td>' +
       '<td>' + pln(t.net_grid, 0) + '</td>' +
       '<td style="color:var(--muted)">' + t.months + '</td>' +
@@ -1432,7 +1450,7 @@ async function loadData() {
       : 6.72;
 
     renderCards(d.summary);
-    renderLineChart(d.records, d.predictions, d.summary.gross_investment);
+    renderLineChart(d.records, d.predictions, d.summary.gross_investment, d.summary.net_investment);
     renderBarChart(d.records);
     renderRcemChart(d.records);
     renderAutarkiaChart(d.records);
