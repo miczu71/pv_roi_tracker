@@ -213,13 +213,22 @@ def main() -> None:
         historic_json_path=HISTORIC_PATH,
     )
 
-    # Startup scan: fetch full PSE table to apply any new prices or skorygowana corrections
-    # accumulated since the last run. No on_update callback — poll_and_publish() follows immediately.
-    rcem_scraper.run_scheduled_scrape(
-        history_path=RCEM_HISTORY_PATH,
-        historic_json_path=HISTORIC_PATH,
-        corrections_path=RCEM_CORRECTIONS_PATH,
+    # Startup scan: only hit PSE if rcem_history.json is older than 24 h.
+    # Catches corrections after a long outage without hammering PSE on every restart.
+    from datetime import datetime as _dt
+    _rcem_age_h = (
+        (_dt.now().timestamp() - RCEM_HISTORY_PATH.stat().st_mtime) / 3600
+        if RCEM_HISTORY_PATH.exists() else float('inf')
     )
+    if _rcem_age_h > 24:
+        logger.info('RCEm history %.0fh old — running startup scrape', _rcem_age_h)
+        rcem_scraper.run_scheduled_scrape(
+            history_path=RCEM_HISTORY_PATH,
+            historic_json_path=HISTORIC_PATH,
+            corrections_path=RCEM_CORRECTIONS_PATH,
+        )
+    else:
+        logger.info('RCEm history %.0fh old — skipping startup scrape', _rcem_age_h)
 
     poll_and_publish()   # initial poll with up-to-date RCEm history
     scheduler.start()

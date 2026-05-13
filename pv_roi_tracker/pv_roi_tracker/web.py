@@ -525,16 +525,11 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
         <canvas id="barChart"></canvas>
       </div>
     </div>
-    <div class="charts2">
-      <div class="chart-wrap sm">
-        <h3>Historia ceny RCEm (zl/kWh)</h3>
-        <canvas id="rcemChart"></canvas>
-      </div>
-    </div>
     <div class="tabs">
       <button class="tab-btn active" onclick="showTab('hist')">Historia miesieczna</button>
       <button class="tab-btn"        onclick="showTab('pred')">Prognoza splaty</button>
       <button class="tab-btn"        onclick="showTab('years')">Podsumowanie roczne</button>
+      <button class="tab-btn"        onclick="showTab('charts')">Wykresy</button>
     </div>
     <div class="tab-panel">
       <div id="tab-hist">
@@ -552,6 +547,26 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
         <div class="tbl-wrap"><table id="yearsTbl"></table></div>
         <div class="tbl-foot" id="yearsFoot"></div>
       </div>
+      <div id="tab-charts" style="display:none">
+        <div style="padding:12px">
+          <div class="charts" style="margin-bottom:12px">
+            <div class="chart-wrap">
+              <h3>Historia ceny RCEm (zl/kWh)</h3>
+              <canvas id="rcemChart"></canvas>
+            </div>
+            <div class="chart-wrap">
+              <h3>Autarkia miesięczna (%)</h3>
+              <canvas id="autarkiaChart"></canvas>
+            </div>
+          </div>
+          <div class="charts2">
+            <div class="chart-wrap">
+              <h3>Produkcja, autokonsumpcja i eksport (kWh)</h3>
+              <canvas id="prodChart"></canvas>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
     <div class="override-wrap" style="margin-top:18px">
       <h3>Reczne nadpisanie ceny RCEm<span id="rcemBadge" class="rcem-badge"></span></h3>
@@ -567,7 +582,7 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
 </main>
 <script>
 'use strict';
-let _lineChart = null, _barChart = null, _rcemChart = null;
+let _lineChart = null, _barChart = null, _rcemChart = null, _autarkiaChart = null, _prodChart = null;
 
 /* -- Formatters -- */
 function fmt(v, dp, sfx) {
@@ -605,12 +620,15 @@ document.addEventListener('click', function(e) {
 
 /* -- Tab switching -- */
 function showTab(name) {
-  ['hist','pred','years'].forEach(t => {
+  ['hist','pred','years','charts'].forEach(t => {
     document.getElementById('tab-' + t).style.display = (t === name) ? '' : 'none';
   });
   document.querySelectorAll('.tab-btn').forEach((b, i) =>
-    b.classList.toggle('active', ['hist','pred','years'][i] === name)
+    b.classList.toggle('active', ['hist','pred','years','charts'][i] === name)
   );
+  if (name === 'charts') {
+    [_rcemChart, _autarkiaChart, _prodChart].forEach(c => c && c.resize());
+  }
 }
 
 /* -- Summary cards -- */
@@ -624,7 +642,7 @@ function renderCards(s) {
     { lbl: 'Srednia mies.',     val: pln(s.monthly_avg_savings),  sub: 'ost. ' + s.avg_window + ' mies.' },
     { lbl: 'Splata',            val: s.payback_date || '—',  sub: s.years_to_payback != null ? 'za ' + num(s.years_to_payback, 1) + ' lat' : '' },
     { lbl: 'Produkcja lacznie', val: kwh(s.total_produced_kwh),   sub: 'uzysk ' + num(s.specific_yield, 0) + ' kWh/kWp' },
-    s.battery_arbitrage_savings > 0 ? { lbl: 'Arbitraż baterii', val: pln(s.battery_arbitrage_savings), sub: 'łącznie z sieci w taniej taryfie', cls: 'c-green' } : null,
+    s.battery_arbitrage_savings > 0 ? { lbl: 'Arbitraż baterii', val: pln(s.battery_arbitrage_savings, 2), sub: 'łącznie z sieci w taniej taryfie', cls: 'c-green' } : null,
     s.best_month  ? { lbl: 'Najlepszy miesiac',  val: pln(s.best_month.savings),  sub: s.best_month.label,  cls: 'c-green' } : null,
     s.worst_month ? { lbl: 'Najslabszy miesiac', val: pln(s.worst_month.savings), sub: s.worst_month.label } : null,
     s.solcast_projected_kwh != null ? { lbl: 'Prognoza miesiaca', val: kwh(s.solcast_projected_kwh), sub: 'produkcja + Solcast 7 dni' } : null,
@@ -751,6 +769,66 @@ function renderRcemChart(records) {
       scales: {
         x: { ticks: { maxTicksLimit: 30, font: { size: 9 }, maxRotation: 45 } },
         y: { ticks: { callback: v => v.toFixed(4) + ' zl', font: { size: 10 } }, beginAtZero: false },
+      },
+    },
+  });
+}
+
+/* -- Autarkia chart -- */
+function renderAutarkiaChart(records) {
+  const withData = records.filter(r => r.self_sufficiency_pct != null);
+  const labels = withData.map(r => r.month_label);
+  const values = withData.map(r => r.self_sufficiency_pct);
+  const ctx = document.getElementById('autarkiaChart').getContext('2d');
+  if (_autarkiaChart) _autarkiaChart.destroy();
+  _autarkiaChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{ label: 'Autarkia (%)', data: values, borderColor: '#16a34a', backgroundColor: 'rgba(22,163,74,.07)', fill: true, tension: 0.3, pointRadius: 2, pointHoverRadius: 5 }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: c => 'Autarkia: ' + Number(c.raw).toLocaleString('pl-PL', {minimumFractionDigits: 1}) + '%' } }
+      },
+      scales: {
+        x: { ticks: { maxTicksLimit: 30, font: { size: 9 }, maxRotation: 45 } },
+        y: { min: 0, max: 100, ticks: { callback: v => v + '%', font: { size: 10 } } },
+      },
+    },
+  });
+}
+
+/* -- Production/export chart -- */
+function renderProdChart(records) {
+  const recent = records.slice(-36);
+  const labels = recent.map(r => r.month_label);
+  const sc  = recent.map(r => r.self_consumed_kwh || 0);
+  const exp = recent.map(r => r.exported_kwh      || 0);
+  const ctx = document.getElementById('prodChart').getContext('2d');
+  if (_prodChart) _prodChart.destroy();
+  _prodChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Autokonsumpcja', data: sc,  backgroundColor: 'rgba(37,99,235,0.75)', borderColor: '#2563eb', borderWidth: 1, stack: 'prod' },
+        { label: 'Eksport',        data: exp, backgroundColor: 'rgba(22,163,74,0.75)', borderColor: '#16a34a', borderWidth: 1, stack: 'prod' },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { position: 'top', labels: { boxWidth: 12, font: { size: 11 } } },
+        tooltip: { callbacks: { label: c => c.dataset.label + ': ' + Number(c.raw).toLocaleString('pl-PL', {maximumFractionDigits: 0}) + ' kWh' } }
+      },
+      scales: {
+        x: { stacked: true, ticks: { maxTicksLimit: 36, font: { size: 9 }, maxRotation: 45 } },
+        y: { stacked: true, ticks: { callback: v => v.toLocaleString('pl-PL', {maximumFractionDigits: 0}) + ' kWh', font: { size: 10 } } },
       },
     },
   });
@@ -1077,6 +1155,8 @@ async function loadData() {
     renderLineChart(d.records, d.predictions, d.summary.gross_investment);
     renderBarChart(d.records);
     renderRcemChart(d.records);
+    renderAutarkiaChart(d.records);
+    renderProdChart(d.records);
     renderHistTable([...d.records].reverse(), d.summary.month_closed);
     renderPredTable(d.predictions, d.sensitivity, d.summary.avg_window);
     renderYearsTable(d.records, systemKwp);
