@@ -784,11 +784,12 @@ function renderLineChart(records, predictions, gross) {
 
 /* -- Bar chart (monthly breakdown) -- */
 function renderBarChart(records) {
-  const nonEmpty = records.filter(r => (r.self_savings || 0) + (r.feedin_revenue || 0) > 0);
+  const nonEmpty = records.filter(r => (r.self_savings || 0) + (r.feedin_revenue || 0) + (r.battery_arbitrage_savings || 0) > 0);
   const recent   = nonEmpty.slice(-24);
   const labels   = recent.map(r => r.month_label);
-  const autokons = recent.map(r => r.self_savings    || 0);
-  const sprzedaz = recent.map(r => r.feedin_revenue  || 0);
+  const autokons = recent.map(r => r.self_savings              || 0);
+  const sprzedaz = recent.map(r => r.feedin_revenue            || 0);
+  const arbitraz = recent.map(r => r.battery_arbitrage_savings || 0);
 
   const ctx = document.getElementById('barChart').getContext('2d');
   if (_barChart) _barChart.destroy();
@@ -797,19 +798,29 @@ function renderBarChart(records) {
     data: {
       labels,
       datasets: [
-        { label: 'Autokonsumpcja', data: autokons, backgroundColor: 'rgba(37,99,235,0.75)',  borderColor: '#2563eb', borderWidth: 1 },
-        { label: 'Sprzedaz',  data: sprzedaz, backgroundColor: 'rgba(22,163,74,0.75)',  borderColor: '#16a34a', borderWidth: 1 },
+        { label: 'Autokonsumpcja', data: autokons, backgroundColor: 'rgba(37,99,235,0.75)',  borderColor: '#2563eb', borderWidth: 1, stack: 'savings' },
+        { label: 'Sprzedaz',       data: sprzedaz, backgroundColor: 'rgba(22,163,74,0.75)',  borderColor: '#16a34a', borderWidth: 1, stack: 'savings' },
+        { label: 'Arbitraz bat.',  data: arbitraz, backgroundColor: 'rgba(234,179,8,0.80)',  borderColor: '#ca8a04', borderWidth: 1, stack: 'savings' },
       ],
     },
     options: {
       responsive: true, maintainAspectRatio: false,
       plugins: {
         legend: { position: 'top', labels: { boxWidth: 12, font: { size: 11 } } },
-        tooltip: { callbacks: { label: c => c.dataset.label + ': ' + Number(c.raw).toLocaleString('pl-PL', {maximumFractionDigits: 0}) + ' zl' } }
+        tooltip: {
+          mode: 'index',
+          callbacks: {
+            label: c => c.dataset.label + ': ' + Number(c.raw).toLocaleString('pl-PL', {maximumFractionDigits: 0}) + ' zl',
+            footer: items => {
+              const sum = items.reduce((a, c) => a + (c.raw || 0), 0);
+              return 'Lacznie: ' + sum.toLocaleString('pl-PL', {maximumFractionDigits: 0}) + ' zl';
+            },
+          },
+        },
       },
       scales: {
-        x: { ticks: { maxTicksLimit: 24, font: { size: 9 }, maxRotation: 45 } },
-        y: { ticks: { callback: v => v.toLocaleString('pl-PL', {maximumFractionDigits: 0}) + ' zl', font: { size: 10 } } },
+        x: { stacked: true, ticks: { maxTicksLimit: 24, font: { size: 9 }, maxRotation: 45 } },
+        y: { stacked: true, ticks: { callback: v => v.toLocaleString('pl-PL', {maximumFractionDigits: 0}) + ' zl', font: { size: 10 } } },
       },
     },
   });
