@@ -569,10 +569,32 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
               <canvas id="netCostChart"></canvas>
             </div>
           </div>
-          <div class="charts2">
+          <div class="charts" style="margin-bottom:12px">
+            <div class="chart-wrap">
+              <h3>Spread cen: zakup vs sprzedaz (zl/kWh)</h3>
+              <canvas id="priceSpreadChart"></canvas>
+            </div>
+            <div class="chart-wrap">
+              <h3>Uzysk specyficzny (kWh/kWp)</h3>
+              <canvas id="yieldChart"></canvas>
+            </div>
+          </div>
+          <div class="charts2" style="margin-bottom:12px">
+            <div class="chart-wrap">
+              <h3>Bilans energetyczny: produkcja vs zuzycie (kWh)</h3>
+              <canvas id="energyBalChart"></canvas>
+            </div>
+          </div>
+          <div class="charts2" style="margin-bottom:12px">
             <div class="chart-wrap">
               <h3>Produkcja i zakup z sieci — szczyt vs poza szczytem (kWh)</h3>
               <canvas id="prodChart"></canvas>
+            </div>
+          </div>
+          <div class="charts2">
+            <div class="chart-wrap" style="height:320px">
+              <h3>Porownanie roczne produkcji (kWh)</h3>
+              <canvas id="yearCompChart"></canvas>
             </div>
           </div>
         </div>
@@ -592,7 +614,7 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
 </main>
 <script>
 'use strict';
-let _lineChart = null, _barChart = null, _rcemChart = null, _autarkiaChart = null, _prodChart = null, _arbitrageChart = null, _netCostChart = null;
+let _lineChart = null, _barChart = null, _rcemChart = null, _autarkiaChart = null, _prodChart = null, _arbitrageChart = null, _netCostChart = null, _priceSpreadChart = null, _yieldChart = null, _energyBalChart = null, _yearCompChart = null;
 
 /* -- Formatters -- */
 function fmt(v, dp, sfx) {
@@ -637,7 +659,8 @@ function showTab(name) {
     b.classList.toggle('active', ['hist','pred','years','charts'][i] === name)
   );
   if (name === 'charts') {
-    [_rcemChart, _autarkiaChart, _prodChart, _arbitrageChart, _netCostChart].forEach(c => c && c.resize());
+    [_rcemChart, _autarkiaChart, _prodChart, _arbitrageChart, _netCostChart,
+     _priceSpreadChart, _yieldChart, _energyBalChart, _yearCompChart].forEach(c => c && c.resize());
   }
 }
 
@@ -901,6 +924,144 @@ function renderNetCostChart(records) {
       scales: {
         x: { ticks: { maxTicksLimit: 36, font: { size: 9 }, maxRotation: 45 } },
         y: { ticks: { callback: v => v.toLocaleString('pl-PL', {maximumFractionDigits: 0}) + ' zl', font: { size: 10 } } },
+      },
+    },
+  });
+}
+
+/* -- Price spread: buy vs sell -- */
+function renderPriceSpreadChart(records) {
+  const withBoth = records.filter(r => r.buy_price != null && r.feedin_price != null);
+  const labels = withBoth.map(r => r.month_label);
+  const buy  = withBoth.map(r => r.buy_price);
+  const sell = withBoth.map(r => r.feedin_price);
+  const ctx = document.getElementById('priceSpreadChart').getContext('2d');
+  if (_priceSpreadChart) _priceSpreadChart.destroy();
+  _priceSpreadChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Zakup (zl/kWh)',   data: buy,  borderColor: '#dc2626', backgroundColor: 'rgba(220,38,38,.06)',  fill: true,  tension: 0.3, pointRadius: 2, pointHoverRadius: 5 },
+        { label: 'Sprzedaz (zl/kWh)', data: sell, borderColor: '#b45309', backgroundColor: 'rgba(180,83,9,.06)',  fill: false, tension: 0.3, pointRadius: 2, pointHoverRadius: 5 },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { position: 'top', labels: { boxWidth: 12, font: { size: 11 } } },
+        tooltip: { callbacks: { label: c => c.dataset.label + ': ' + Number(c.raw).toLocaleString('pl-PL', {minimumFractionDigits: 4}) + ' zl/kWh' } }
+      },
+      scales: {
+        x: { ticks: { maxTicksLimit: 30, font: { size: 9 }, maxRotation: 45 } },
+        y: { beginAtZero: false, ticks: { callback: v => v.toFixed(4) + ' zl', font: { size: 10 } } },
+      },
+    },
+  });
+}
+
+/* -- Monthly specific yield (kWh/kWp) -- */
+function renderYieldChart(records, systemKwp) {
+  const recent = records.filter(r => r.produced_kwh != null).slice(-36);
+  const labels = recent.map(r => r.month_label);
+  const yields = recent.map(r => systemKwp > 0 ? Math.round(r.produced_kwh / systemKwp * 10) / 10 : 0);
+  const ctx = document.getElementById('yieldChart').getContext('2d');
+  if (_yieldChart) _yieldChart.destroy();
+  _yieldChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{ label: 'Uzysk (kWh/kWp)', data: yields, backgroundColor: 'rgba(234,179,8,0.75)', borderColor: '#ca8a04', borderWidth: 1 }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: c => 'Uzysk: ' + Number(c.raw).toLocaleString('pl-PL', {minimumFractionDigits: 1}) + ' kWh/kWp' } }
+      },
+      scales: {
+        x: { ticks: { maxTicksLimit: 36, font: { size: 9 }, maxRotation: 45 } },
+        y: { beginAtZero: true, ticks: { callback: v => v + ' kWh/kWp', font: { size: 10 } } },
+      },
+    },
+  });
+}
+
+/* -- Energy balance: produced vs consumed -- */
+function renderEnergyBalChart(records) {
+  const recent = records.filter(r => r.produced_kwh != null && r.consumed_kwh != null).slice(-36);
+  const labels   = recent.map(r => r.month_label);
+  const produced = recent.map(r => r.produced_kwh  || 0);
+  const consumed = recent.map(r => r.consumed_kwh  || 0);
+  const colors   = recent.map((r, i) => produced[i] >= consumed[i] ? 'rgba(37,99,235,0.80)' : 'rgba(220,38,38,0.80)');
+  const ctx = document.getElementById('energyBalChart').getContext('2d');
+  if (_energyBalChart) _energyBalChart.destroy();
+  _energyBalChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Produkcja (kWh)', data: produced, backgroundColor: colors,                         borderColor: '#2563eb', borderWidth: 1 },
+        { label: 'Zuzycie (kWh)',   data: consumed, backgroundColor: 'rgba(100,116,139,0.40)', borderColor: '#475569', borderWidth: 1 },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { position: 'top', labels: { boxWidth: 12, font: { size: 11 } } },
+        tooltip: { callbacks: { label: c => c.dataset.label + ': ' + Number(c.raw).toLocaleString('pl-PL', {maximumFractionDigits: 0}) + ' kWh' } }
+      },
+      scales: {
+        x: { ticks: { maxTicksLimit: 36, font: { size: 9 }, maxRotation: 45 } },
+        y: { beginAtZero: true, ticks: { callback: v => v.toLocaleString('pl-PL', {maximumFractionDigits: 0}) + ' kWh', font: { size: 10 } } },
+      },
+    },
+  });
+}
+
+/* -- Year-over-year production comparison -- */
+function renderYearCompChart(records) {
+  const PL_M = ['Sty','Lut','Mar','Kwi','Maj','Cze','Lip','Sie','Wrz','Paz','Lis','Gru'];
+  const byYear = {};
+  for (const r of records) {
+    if (r.produced_kwh == null) continue;
+    const year = r.month_label.substring(0, 4);
+    const abbr = r.month_label.slice(5);
+    const mi   = PL_M.findIndex(m => abbr.startsWith(m.substring(0, 3)));
+    if (mi < 0) continue;
+    if (!byYear[year]) byYear[year] = new Array(12).fill(null);
+    byYear[year][mi] = Math.round(r.produced_kwh * 10) / 10;
+  }
+  const years = Object.keys(byYear).sort().slice(-5);
+  const palette = ['#2563eb','#16a34a','#b45309','#dc2626','#7c3aed'];
+  const datasets = years.map((y, i) => ({
+    label: y,
+    data: byYear[y],
+    borderColor: palette[i % palette.length],
+    backgroundColor: 'transparent',
+    tension: 0.3,
+    pointRadius: 3,
+    pointHoverRadius: 6,
+    spanGaps: false,
+  }));
+  const ctx = document.getElementById('yearCompChart').getContext('2d');
+  if (_yearCompChart) _yearCompChart.destroy();
+  _yearCompChart = new Chart(ctx, {
+    type: 'line',
+    data: { labels: PL_M, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { position: 'top', labels: { boxWidth: 12, font: { size: 11 } } },
+        tooltip: { callbacks: { label: c => c.dataset.label + ': ' + (c.raw != null ? Number(c.raw).toLocaleString('pl-PL', {maximumFractionDigits: 0}) + ' kWh' : '—') } }
+      },
+      scales: {
+        x: { ticks: { font: { size: 10 } } },
+        y: { beginAtZero: true, ticks: { callback: v => v.toLocaleString('pl-PL', {maximumFractionDigits: 0}) + ' kWh', font: { size: 10 } } },
       },
     },
   });
@@ -1231,6 +1392,10 @@ async function loadData() {
     renderProdChart(d.records);
     renderArbitrageChart(d.records);
     renderNetCostChart(d.records);
+    renderPriceSpreadChart(d.records);
+    renderYieldChart(d.records, systemKwp);
+    renderEnergyBalChart(d.records);
+    renderYearCompChart(d.records);
     renderHistTable([...d.records].reverse(), d.summary.month_closed);
     renderPredTable(d.predictions, d.sensitivity, d.summary.avg_window);
     renderYearsTable(d.records, systemKwp);
