@@ -559,9 +559,19 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
               <canvas id="autarkiaChart"></canvas>
             </div>
           </div>
+          <div class="charts" style="margin-bottom:12px">
+            <div class="chart-wrap">
+              <h3>Arbitraż baterii (zl/mies.)</h3>
+              <canvas id="arbitrageChart"></canvas>
+            </div>
+            <div class="chart-wrap">
+              <h3>Koszt netto sieci (zl/mies.)</h3>
+              <canvas id="netCostChart"></canvas>
+            </div>
+          </div>
           <div class="charts2">
             <div class="chart-wrap">
-              <h3>Produkcja, autokonsumpcja i eksport (kWh)</h3>
+              <h3>Produkcja i zakup z sieci — szczyt vs poza szczytem (kWh)</h3>
               <canvas id="prodChart"></canvas>
             </div>
           </div>
@@ -582,7 +592,7 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
 </main>
 <script>
 'use strict';
-let _lineChart = null, _barChart = null, _rcemChart = null, _autarkiaChart = null, _prodChart = null;
+let _lineChart = null, _barChart = null, _rcemChart = null, _autarkiaChart = null, _prodChart = null, _arbitrageChart = null, _netCostChart = null;
 
 /* -- Formatters -- */
 function fmt(v, dp, sfx) {
@@ -627,7 +637,7 @@ function showTab(name) {
     b.classList.toggle('active', ['hist','pred','years','charts'][i] === name)
   );
   if (name === 'charts') {
-    [_rcemChart, _autarkiaChart, _prodChart].forEach(c => c && c.resize());
+    [_rcemChart, _autarkiaChart, _prodChart, _arbitrageChart, _netCostChart].forEach(c => c && c.resize());
   }
 }
 
@@ -802,12 +812,14 @@ function renderAutarkiaChart(records) {
   });
 }
 
-/* -- Production/export chart -- */
+/* -- Production + grid purchase per tariff chart -- */
 function renderProdChart(records) {
   const recent = records.slice(-36);
-  const labels = recent.map(r => r.month_label);
-  const sc  = recent.map(r => r.self_consumed_kwh || 0);
-  const exp = recent.map(r => r.exported_kwh      || 0);
+  const labels  = recent.map(r => r.month_label);
+  const sc      = recent.map(r => r.self_consumed_kwh       || 0);
+  const exp     = recent.map(r => r.exported_kwh            || 0);
+  const buyPeak = recent.map(r => r.purchased_kwh_peak      || 0);
+  const buyOff  = recent.map(r => r.purchased_kwh_offpeak   || 0);
   const ctx = document.getElementById('prodChart').getContext('2d');
   if (_prodChart) _prodChart.destroy();
   _prodChart = new Chart(ctx, {
@@ -815,8 +827,10 @@ function renderProdChart(records) {
     data: {
       labels,
       datasets: [
-        { label: 'Autokonsumpcja', data: sc,  backgroundColor: 'rgba(37,99,235,0.75)', borderColor: '#2563eb', borderWidth: 1, stack: 'prod' },
-        { label: 'Eksport',        data: exp, backgroundColor: 'rgba(22,163,74,0.75)', borderColor: '#16a34a', borderWidth: 1, stack: 'prod' },
+        { label: 'Autokonsumpcja',      data: sc,      backgroundColor: 'rgba(37,99,235,0.80)',  borderColor: '#2563eb', borderWidth: 1, stack: 'prod' },
+        { label: 'Eksport',             data: exp,     backgroundColor: 'rgba(22,163,74,0.80)',  borderColor: '#16a34a', borderWidth: 1, stack: 'prod' },
+        { label: 'Zakup poza szczytem', data: buyOff,  backgroundColor: 'rgba(139,92,246,0.75)', borderColor: '#7c3aed', borderWidth: 1, stack: 'buy' },
+        { label: 'Zakup w szczycie',    data: buyPeak, backgroundColor: 'rgba(234,88,12,0.80)',  borderColor: '#c2410c', borderWidth: 1, stack: 'buy' },
       ],
     },
     options: {
@@ -828,7 +842,65 @@ function renderProdChart(records) {
       },
       scales: {
         x: { stacked: true, ticks: { maxTicksLimit: 36, font: { size: 9 }, maxRotation: 45 } },
-        y: { stacked: true, ticks: { callback: v => v.toLocaleString('pl-PL', {maximumFractionDigits: 0}) + ' kWh', font: { size: 10 } } },
+        y: { stacked: false, ticks: { callback: v => v.toLocaleString('pl-PL', {maximumFractionDigits: 0}) + ' kWh', font: { size: 10 } } },
+      },
+    },
+  });
+}
+
+/* -- Battery arbitrage chart -- */
+function renderArbitrageChart(records) {
+  const recent = records.filter(r => r.battery_arbitrage_savings != null).slice(-24);
+  const labels = recent.map(r => r.month_label);
+  const values = recent.map(r => r.battery_arbitrage_savings || 0);
+  const ctx = document.getElementById('arbitrageChart').getContext('2d');
+  if (_arbitrageChart) _arbitrageChart.destroy();
+  _arbitrageChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{ label: 'Arbitraż baterii (zl)', data: values, backgroundColor: 'rgba(22,163,74,0.75)', borderColor: '#16a34a', borderWidth: 1 }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: c => 'Arbitraż: ' + Number(c.raw).toLocaleString('pl-PL', {minimumFractionDigits: 2}) + ' zl' } }
+      },
+      scales: {
+        x: { ticks: { maxTicksLimit: 24, font: { size: 9 }, maxRotation: 45 } },
+        y: { beginAtZero: true, ticks: { callback: v => v.toLocaleString('pl-PL', {maximumFractionDigits: 2}) + ' zl', font: { size: 10 } } },
+      },
+    },
+  });
+}
+
+/* -- Net grid cost chart -- */
+function renderNetCostChart(records) {
+  const recent = records.filter(r => r.net_grid_cost != null).slice(-36);
+  const labels = recent.map(r => r.month_label);
+  const values = recent.map(r => r.net_grid_cost || 0);
+  const colors = values.map(v => v >= 0 ? 'rgba(220,38,38,0.75)' : 'rgba(22,163,74,0.75)');
+  const borders = values.map(v => v >= 0 ? '#dc2626' : '#16a34a');
+  const ctx = document.getElementById('netCostChart').getContext('2d');
+  if (_netCostChart) _netCostChart.destroy();
+  _netCostChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{ label: 'Koszt netto sieci (zl)', data: values, backgroundColor: colors, borderColor: borders, borderWidth: 1 }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: c => 'Koszt netto: ' + Number(c.raw).toLocaleString('pl-PL', {minimumFractionDigits: 2}) + ' zl' } }
+      },
+      scales: {
+        x: { ticks: { maxTicksLimit: 36, font: { size: 9 }, maxRotation: 45 } },
+        y: { ticks: { callback: v => v.toLocaleString('pl-PL', {maximumFractionDigits: 0}) + ' zl', font: { size: 10 } } },
       },
     },
   });
@@ -1157,6 +1229,8 @@ async function loadData() {
     renderRcemChart(d.records);
     renderAutarkiaChart(d.records);
     renderProdChart(d.records);
+    renderArbitrageChart(d.records);
+    renderNetCostChart(d.records);
     renderHistTable([...d.records].reverse(), d.summary.month_closed);
     renderPredTable(d.predictions, d.sensitivity, d.summary.avg_window);
     renderYearsTable(d.records, systemKwp);
