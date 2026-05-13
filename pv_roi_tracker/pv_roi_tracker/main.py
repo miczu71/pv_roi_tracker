@@ -93,6 +93,14 @@ def main() -> None:
 
     _web.set_rcem_override_callback(_rcem_override)
 
+    def _historic_patch(year: int, month: int, field: str, value: float) -> bool:
+        ok = historic_store.patch_month_field(year, month, field, value, HISTORIC_PATH)
+        if ok:
+            poll_and_publish()
+        return ok
+
+    _web.set_historic_patch_callback(_historic_patch)
+
     from datetime import date
 
     def _rcem_scrape_status(now: date) -> str:

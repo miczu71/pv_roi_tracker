@@ -84,6 +84,40 @@ def append_month(record: MonthlyRecord, path: Path = DEFAULT_PATH) -> bool:
     return True
 
 
+_PATCHABLE_FIELDS = {
+    'produced_kwh', 'consumed_kwh', 'purchased_kwh', 'exported_kwh',
+    'self_consumed_kwh', 'buy_price_pln_kwh', 'feedin_price_pln_kwh',
+    'self_consumed_savings_pln', 'feedin_revenue_pln',
+    'purchased_kwh_peak', 'purchased_kwh_offpeak',
+}
+
+
+def patch_month_field(
+    year: int,
+    month: int,
+    field: str,
+    value: float,
+    path: Path = DEFAULT_PATH,
+) -> bool:
+    """Overwrite a single numeric field on an existing historic month record.
+    Only fields in _PATCHABLE_FIELDS are accepted.
+    Returns True on success, False if month not found.
+    """
+    if field not in _PATCHABLE_FIELDS:
+        raise ValueError(f"Field '{field}' is not patchable")
+    doc = _load_document(path)
+    months: list[dict] = doc.get('months', [])
+    for m in months:
+        if m['year'] == year and m['month'] == month:
+            m[field] = value
+            doc['months'] = months
+            _save_document(doc, path)
+            logger.info("Patched %d-%02d %s = %s", year, month, field, value)
+            return True
+    logger.warning("patch_month_field: month %d-%02d not found in %s", year, month, path)
+    return False
+
+
 def backfill_rcem(
     year: int,
     month: int,

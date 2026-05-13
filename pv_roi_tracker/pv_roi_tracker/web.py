@@ -22,11 +22,17 @@ log = logging.getLogger(__name__)
 
 _lock = threading.Lock()
 _rcem_override_callback = None
+_historic_patch_callback = None
 
 
 def set_rcem_override_callback(fn) -> None:
     global _rcem_override_callback
     _rcem_override_callback = fn
+
+
+def set_historic_patch_callback(fn) -> None:
+    global _historic_patch_callback
+    _historic_patch_callback = fn
 
 
 
@@ -293,6 +299,36 @@ def rcem_override():
         return jsonify({'ok': True, 'month': month, 'price': price})
     except Exception as exc:
         log.exception('RCEm override failed')
+        return jsonify({'ok': False, 'error': str(exc)}), 500
+
+
+@app.route('/api/historic/patch', methods=['POST'])
+def historic_patch():
+    if _historic_patch_callback is None:
+        return jsonify({'ok': False, 'error': 'not initialized'}), 503
+    data = request.get_json(silent=True) or {}
+    try:
+        year = int(data['year'])
+        month = int(data['month'])
+    except (KeyError, TypeError, ValueError):
+        return jsonify({'ok': False, 'error': 'year and month (integers) required'}), 400
+    field = str(data.get('field', ''))
+    value = data.get('value')
+    if not field:
+        return jsonify({'ok': False, 'error': 'field required'}), 400
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return jsonify({'ok': False, 'error': 'value must be numeric'}), 400
+    try:
+        ok = _historic_patch_callback(year, month, field, value)
+        if not ok:
+            return jsonify({'ok': False, 'error': f'{year}-{month:02d} not found in historic.json'}), 404
+        return jsonify({'ok': True, 'year': year, 'month': month, 'field': field, 'value': value})
+    except ValueError as exc:
+        return jsonify({'ok': False, 'error': str(exc)}), 400
+    except Exception as exc:
+        log.exception('Historic patch failed')
         return jsonify({'ok': False, 'error': str(exc)}), 500
 
 
@@ -1024,13 +1060,13 @@ function renderEnergyBalChart(records) {
 
 /* -- Year-over-year production comparison -- */
 function renderYearCompChart(records) {
-  const PL_M = ['Sty','Lut','Mar','Kwi','Maj','Cze','Lip','Sie','Wrz','Paz','Lis','Gru'];
+  const PL_M = ['Sty','Lut','Mar','Kwi','Maj','Cze','Lip','Sie','Wrz','Paź','Lis','Gru'];
   const byYear = {};
   for (const r of records) {
     if (r.produced_kwh == null) continue;
     const year = r.month_label.substring(0, 4);
     const abbr = r.month_label.slice(5);
-    const mi   = PL_M.findIndex(m => abbr.startsWith(m.substring(0, 3)));
+    const mi   = PL_M.indexOf(abbr);
     if (mi < 0) continue;
     if (!byYear[year]) byYear[year] = new Array(12).fill(null);
     byYear[year][mi] = Math.round(r.produced_kwh * 10) / 10;
