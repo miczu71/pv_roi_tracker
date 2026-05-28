@@ -633,6 +633,12 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
               <canvas id="yearCompChart"></canvas>
             </div>
           </div>
+          <div class="charts2">
+            <div class="chart-wrap" id="prodRankWrap" style="height:720px">
+              <h3>Produkcja miesięczna — ranking (najlepsza → najgorsza)</h3>
+              <canvas id="prodRankChart"></canvas>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -650,7 +656,7 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
 </main>
 <script>
 'use strict';
-let _lineChart = null, _barChart = null, _rcemChart = null, _autarkiaChart = null, _prodChart = null, _arbitrageChart = null, _netCostChart = null, _priceSpreadChart = null, _yieldChart = null, _energyBalChart = null, _yearCompChart = null;
+let _lineChart = null, _barChart = null, _rcemChart = null, _autarkiaChart = null, _prodChart = null, _arbitrageChart = null, _netCostChart = null, _priceSpreadChart = null, _yieldChart = null, _energyBalChart = null, _yearCompChart = null, _prodRankChart = null;
 
 /* -- Formatters -- */
 function fmt(v, dp, sfx) {
@@ -696,7 +702,7 @@ function showTab(name) {
   );
   if (name === 'charts') {
     [_rcemChart, _autarkiaChart, _prodChart, _arbitrageChart, _netCostChart,
-     _priceSpreadChart, _yieldChart, _energyBalChart, _yearCompChart].forEach(c => c && c.resize());
+     _priceSpreadChart, _yieldChart, _energyBalChart, _yearCompChart, _prodRankChart].forEach(c => c && c.resize());
   }
 }
 
@@ -1082,6 +1088,7 @@ function renderYearCompChart(records) {
     const abbr = r.month_label.slice(5);
     const mi   = PL_M.indexOf(abbr);
     if (mi < 0) continue;
+    if (year === '2023' && mi === 5) continue; // June 2023 — partial month (system started mid-June)
     if (!byYear[year]) byYear[year] = new Array(12).fill(null);
     byYear[year][mi] = Math.round(r.produced_kwh * 10) / 10;
   }
@@ -1112,6 +1119,58 @@ function renderYearCompChart(records) {
       scales: {
         x: { ticks: { font: { size: 10 } } },
         y: { beginAtZero: true, ticks: { callback: v => v.toLocaleString('pl-PL', {maximumFractionDigits: 0}) + ' kWh', font: { size: 10 } } },
+      },
+    },
+  });
+}
+
+/* -- Production ranking chart (best to worst months) -- */
+function renderProdRankChart(records) {
+  const PL_M = ['Sty','Lut','Mar','Kwi','Maj','Cze','Lip','Sie','Wrz','Paź','Lis','Gru'];
+  const seasonColor = [
+    'rgba(100,116,139,0.70)', // Sty
+    'rgba(100,116,139,0.70)', // Lut
+    'rgba(37,99,235,0.65)',   // Mar
+    'rgba(37,99,235,0.75)',   // Kwi
+    'rgba(234,179,8,0.80)',   // Maj
+    'rgba(234,88,12,0.85)',   // Cze
+    'rgba(234,88,12,0.85)',   // Lip
+    'rgba(234,179,8,0.80)',   // Sie
+    'rgba(37,99,235,0.70)',   // Wrz
+    'rgba(37,99,235,0.60)',   // Paź
+    'rgba(100,116,139,0.65)', // Lis
+    'rgba(100,116,139,0.60)', // Gru
+  ];
+
+  const ranked = records
+    .filter(r => r.produced_kwh != null && !r.is_current)
+    .sort((a, b) => b.produced_kwh - a.produced_kwh);
+
+  const labels = ranked.map(r => r.month_label);
+  const values = ranked.map(r => Math.round(r.produced_kwh * 10) / 10);
+  const colors = ranked.map(r => {
+    const mi = PL_M.indexOf(r.month_label.slice(5));
+    return mi >= 0 ? seasonColor[mi] : 'rgba(37,99,235,0.75)';
+  });
+
+  const ctx = document.getElementById('prodRankChart').getContext('2d');
+  if (_prodRankChart) _prodRankChart.destroy();
+  _prodRankChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{ label: 'Produkcja (kWh)', data: values, backgroundColor: colors, borderWidth: 0 }],
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: c => 'Produkcja: ' + Number(c.raw).toLocaleString('pl-PL', {maximumFractionDigits: 0}) + ' kWh' } },
+      },
+      scales: {
+        x: { beginAtZero: true, ticks: { callback: v => v.toLocaleString('pl-PL', {maximumFractionDigits: 0}) + ' kWh', font: { size: 10 } } },
+        y: { ticks: { font: { size: 10 } } },
       },
     },
   });
@@ -1461,6 +1520,7 @@ async function loadData() {
     renderYieldChart(d.records, systemKwp);
     renderEnergyBalChart(d.records);
     renderYearCompChart(d.records);
+    renderProdRankChart(d.records);
     renderHistTable([...d.records].reverse(), d.summary.month_closed);
     renderPredTable(d.predictions, d.sensitivity, d.summary.avg_window);
     renderYearsTable(d.records, systemKwp);
