@@ -8,7 +8,6 @@ import logging
 import re
 import threading
 from datetime import date, datetime
-from math import ceil
 from typing import Optional
 
 from dateutil.relativedelta import relativedelta
@@ -104,25 +103,6 @@ def _build_predictions(result: RoiResult) -> list[dict]:
         cursor += relativedelta(months=1)
     return rows
 
-
-def _build_sensitivity(result: RoiResult) -> dict:
-    avg = result.monthly_avg_savings
-    if not avg or avg <= 0:
-        return {}
-    today = date.today()
-    out: dict = {}
-    for label, factor in [('pessimistic', 0.85), ('base', 1.0), ('optimistic', 1.15)]:
-        adj = avg * factor
-        if result.remaining_to_recover <= 0:
-            out[label] = {'avg': round(adj, 2), 'months': 0, 'payback_date': None}
-        else:
-            months = result.remaining_to_recover / adj
-            out[label] = {
-                'avg': round(adj, 2),
-                'months': round(months, 1),
-                'payback_date': (today + relativedelta(months=ceil(months))).isoformat(),
-            }
-    return out
 
 
 @app.route('/api/data')
@@ -220,6 +200,7 @@ def api_data():
 
     current_rec = next((r for r in records if (r.year, r.month) == current_ym), None)
     solcast_projected_kwh = current_rec.projected_month_kwh if current_rec else None
+    projected_month_savings_pln = current_rec.projected_month_savings_pln if current_rec else None
 
     # Month progress
     days_in_month = calendar.monthrange(today.year, today.month)[1]
@@ -272,10 +253,23 @@ def api_data():
             'self_sufficiency_avg': self_sufficiency_avg,
             'net_grid_cost_total': net_grid_cost_total,
             'month_progress': month_progress,
+            # Seasonal forecast
+            'payback_date_seasonal': result.payback_date_seasonal.isoformat() if result.payback_date_seasonal else None,
+            'payback_date_p10': result.payback_date_p10.isoformat() if result.payback_date_p10 else None,
+            'payback_date_p90': result.payback_date_p90.isoformat() if result.payback_date_p90 else None,
+            # Solcast savings projection
+            'projected_month_savings_pln': projected_month_savings_pln,
+            # Financial analysis
+            'real_total_savings': result.real_total_savings,
+            'real_total_return': result.real_total_return,
+            'real_roi_pct': result.real_roi_pct,
+            'npv': result.npv,
+            'irr_pct': result.irr_pct,
+            'counterfactual_bond_value': result.counterfactual_bond_value,
+            'counterfactual_delta': result.counterfactual_delta,
         },
         'records': records_out,
         'predictions': _build_predictions(result),
-        'sensitivity': _build_sensitivity(result),
     })
 
 
@@ -715,13 +709,19 @@ function renderCards(s) {
     { lbl: 'Oszczednosci',      val: pln(s.total_savings),        sub: 'autokons. ' + pln(s.self_consumption_savings) + ' / sprzedaz ' + pln(s.feedin_revenue) + (s.battery_arbitrage_savings > 0 ? ' / arbitraz ' + pln(s.battery_arbitrage_savings) : '') },
     { lbl: 'Pozostalo',         val: pln(s.remaining_to_recover), sub: 'inwestycja brutto ' + pln(s.gross_investment) },
     { lbl: 'Srednia mies.',     val: pln(s.monthly_avg_savings),  sub: 'ost. ' + s.avg_window + ' mies.' },
-    { lbl: 'Splata',            val: s.payback_date || '—',  sub: s.years_to_payback != null ? 'za ' + num(s.years_to_payback, 1) + ' lat' : '' },
+    { lbl: 'Splata', val: s.payback_date || '—', sub: (s.years_to_payback != null ? 'za ' + num(s.years_to_payback, 1) + ' lat' : '') + (s.payback_date_p10 && s.payback_date_p90 ? '  •  P10: ' + s.payback_date_p10.slice(0,7) + '  P90: ' + s.payback_date_p90.slice(0,7) : '') },
     { lbl: 'Produkcja lacznie', val: kwh(s.total_produced_kwh),   sub: 'uzysk ' + num(s.specific_yield, 0) + ' kWh/kWp' },
     s.battery_arbitrage_savings > 0 ? { lbl: 'Arbitraż baterii', val: pln(s.battery_arbitrage_savings, 2), sub: 'łącznie z sieci w taniej taryfie', cls: 'c-green' } : null,
     s.battery_arbitrage_savings > 0 && s.total_savings > 0 ? { lbl: 'Udział arbitrażu', val: pct(s.battery_arbitrage_savings / s.total_savings * 100), sub: 'bateria w łącznych oszczędnościach', cls: 'c-green' } : null,
     s.best_month  ? { lbl: 'Najlepszy miesiac',  val: pln(s.best_month.savings),  sub: s.best_month.label,  cls: 'c-green' } : null,
     s.worst_month ? { lbl: 'Najslabszy miesiac', val: pln(s.worst_month.savings), sub: s.worst_month.label } : null,
-    s.solcast_projected_kwh != null ? { lbl: 'Prognoza miesiaca', val: kwh(s.solcast_projected_kwh), sub: 'produkcja + Solcast 7 dni' } : null,
+    s.solcast_projected_kwh != null ? { lbl: 'Prognoza produkcji', val: kwh(s.solcast_projected_kwh), sub: 'produkcja + Solcast 7 dni' } : null,
+    s.projected_month_savings_pln != null ? { lbl: 'Prognoza oszcz. (mies.)', val: pln(s.projected_month_savings_pln), sub: 'Solcast × sr. zl/kWh (mies.)', cls: 'c-green' } : null,
+    // Financial analysis
+    s.real_roi_pct != null ? { lbl: 'ROI realny', val: pct(s.real_roi_pct), sub: 'po inflacji 5%/rok', cls: s.real_roi_pct >= 100 ? 'c-green' : 'c-blue' } : null,
+    s.npv != null ? { lbl: 'NPV @ 4%', val: pln(s.npv), sub: 'stopa dyskontowa 4%', cls: s.npv >= 0 ? 'c-green' : '' } : null,
+    s.irr_pct != null ? { lbl: 'IRR', val: pct(s.irr_pct), sub: 'wewnętrzna stopa zwrotu', cls: 'c-green' } : null,
+    s.counterfactual_delta != null ? { lbl: 'vs Obligacje 10Y', val: pln(s.counterfactual_delta), sub: 'PV vs 5.5% obligacja', cls: s.counterfactual_delta >= 0 ? 'c-green' : '' } : null,
     { lbl: 'Zysk netto', val: pln(s.net_profit || 0), cls: (s.net_profit || 0) > 0 ? 'c-green' : '', sub: (s.net_profit || 0) > 0 ? 'ponad inwestycje brutto' : 'przed splata' },
     s.self_sufficiency_avg != null ? { lbl: 'Autarkia', val: pct(s.self_sufficiency_avg), sub: 'udzial autokonsumpcji' } : null,
     { lbl: 'Koszt netto sieci', val: pln(s.net_grid_cost_total), sub: 'zakup − sprzedaz lacznie' },
@@ -1297,7 +1297,7 @@ function renderHistTable(records, monthClosed) {
 }
 
 /* -- Predictions table -- */
-function renderPredTable(predictions, sensitivity, window) {
+function renderPredTable(predictions, summary, window) {
   if (!predictions.length) {
     document.getElementById('predTbl').innerHTML =
       '<tbody><tr><td colspan="5" style="padding:24px;text-align:center;color:#718096">Brak danych do prognozy.</td></tr></tbody>';
@@ -1337,30 +1337,22 @@ function renderPredTable(predictions, sensitivity, window) {
       : 'Prognoza oparta na sredniej z ostatnich ' + window + ' pelnych miesiecy';
   }
 
-  /* Sensitivity table */
+  /* Seasonal P10/P50/P90 confidence table */
   const sw = document.getElementById('sensiWrap');
-  if (!sensitivity || !sensitivity.base) {
-    sw.style.display = 'none';
-    return;
-  }
+  const hasConf = summary && (summary.payback_date_p10 || summary.payback_date_seasonal || summary.payback_date_p90);
+  if (!hasConf) { sw.style.display = 'none'; return; }
   sw.style.display = '';
-  const sHead = '<caption>Analiza wrazliwosci splaty</caption>' +
-    '<thead><tr><th>Scenariusz</th><th>Srednia mies.</th><th>Mies. do splaty</th><th>Prognozowana data splaty</th></tr></thead>';
-  const sRows = [
-    ['Pesymistyczny (−15%)', sensitivity.pessimistic, ''],
-    ['Bazowy', sensitivity.base, 'base'],
-    ['Optymistyczny (+15%)', sensitivity.optimistic, ''],
-  ].map(([label, v, rowCls]) => {
-    if (!v) return '';
-    const cls = rowCls ? ' class="' + rowCls + '"' : '';
-    return '<tr' + cls + '>' +
-      '<td>' + label + '</td>' +
-      '<td>' + pln(v.avg, 2) + '</td>' +
-      '<td>' + (v.months ? num(v.months, 1) : '—') + '</td>' +
-      '<td>' + (v.payback_date || 'juz splacone') + '</td>' +
-    '</tr>';
+  const sHead = '<caption>Sezonowe przedziały pewności daty spłaty</caption>' +
+    '<thead><tr><th>Scenariusz</th><th>Prognozowana data splaty</th></tr></thead>';
+  const confRows = [
+    ['Optymistyczny (P10)', summary.payback_date_p10],
+    ['Bazowy (P50)',        summary.payback_date_seasonal || summary.payback_date],
+    ['Pesymistyczny (P90)', summary.payback_date_p90],
+  ].map(([label, d], i) => {
+    const cls = i === 1 ? ' class="base"' : '';
+    return '<tr' + cls + '><td>' + label + '</td><td>' + (d ? d.slice(0,7) : 'już spłacone') + '</td></tr>';
   }).join('');
-  document.getElementById('sensiTbl').innerHTML = sHead + '<tbody>' + sRows + '</tbody>';
+  document.getElementById('sensiTbl').innerHTML = sHead + '<tbody>' + confRows + '</tbody>';
 }
 
 /* -- Year-over-year table -- */
@@ -1522,7 +1514,7 @@ async function loadData() {
     renderYearCompChart(d.records);
     renderProdRankChart(d.records);
     renderHistTable([...d.records].reverse(), d.summary.month_closed);
-    renderPredTable(d.predictions, d.sensitivity, d.summary.avg_window);
+    renderPredTable(d.predictions, d.summary, d.summary.avg_window);
     renderYearsTable(d.records, systemKwp);
   } catch (e) {
     document.getElementById('updated').textContent = 'Blad polaczenia';

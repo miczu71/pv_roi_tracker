@@ -8,6 +8,7 @@ import calendar
 import logging
 import os
 from datetime import date
+from statistics import mean
 from typing import Optional
 
 import requests
@@ -62,7 +63,26 @@ def _solcast_month_projection(today: date, produced_so_far: float) -> Optional[f
     return round(produced_so_far + projected_remaining, 1)
 
 
-def read_current_month(rcem_price: Optional[float] = None) -> Optional[MonthlyRecord]:
+def _savings_per_kwh(historic_records: list[MonthlyRecord], calendar_month: int) -> Optional[float]:
+    """Historical mean zł/kWh savings ratio for the given calendar month (or lifetime if no match)."""
+    def _msav(r: MonthlyRecord) -> float:
+        return (r.self_consumed_savings_pln or 0.0) + (r.feedin_revenue_pln or 0.0) + (r.battery_arbitrage_savings_pln or 0.0)
+
+    same_mo = [r for r in historic_records if r.month == calendar_month and (r.produced_kwh or 0.0) > 0]
+    if same_mo:
+        return mean(_msav(r) / r.produced_kwh for r in same_mo)  # type: ignore[arg-type]
+    all_prod = [r for r in historic_records if (r.produced_kwh or 0.0) > 0]
+    if all_prod:
+        total_s = sum(_msav(r) for r in all_prod)
+        total_p = sum(r.produced_kwh for r in all_prod)  # type: ignore[misc]
+        return total_s / total_p if total_p > 0 else None
+    return None
+
+
+def read_current_month(
+    rcem_price: Optional[float] = None,
+    historic_records: Optional[list] = None,
+) -> Optional[MonthlyRecord]:
     """
     Build a MonthlyRecord for the current calendar month from live HA values.
     Returns None if the primary production sensor is unavailable.
@@ -91,6 +111,12 @@ def read_current_month(rcem_price: Optional[float] = None) -> Optional[MonthlyRe
     specific_yield            = round(produced / _SYSTEM_KWP, 1)         if _SYSTEM_KWP else None
     projected_month_kwh       = _solcast_month_projection(today, produced)
 
+    projected_month_savings_pln = None
+    if projected_month_kwh is not None and historic_records:
+        spk = _savings_per_kwh(historic_records, month)
+        if spk is not None:
+            projected_month_savings_pln = round(projected_month_kwh * spk, 2)
+
     return MonthlyRecord(
         year=year, month=month,
         produced_kwh=produced,
@@ -109,4 +135,5 @@ def read_current_month(rcem_price: Optional[float] = None) -> Optional[MonthlyRe
         battery_arbitrage_savings_pln=round(arbitrage, 2) if arbitrage is not None else None,
         rcem_status='confirmed' if rcem_price is not None else 'pending',
         projected_month_kwh=projected_month_kwh,
+        projected_month_savings_pln=projected_month_savings_pln,
     )

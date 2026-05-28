@@ -23,7 +23,8 @@ class MonthlyRecord:
     specific_yield: Optional[float] = None
     battery_arbitrage_savings_pln: Optional[float] = None  # grid-charged off-peak × 0.50 PLN/kWh
     rcem_status: str = 'confirmed'  # 'confirmed' | 'pending' | 'missing'
-    projected_month_kwh: Optional[float] = None  # Solcast-based projection, current month only
+    projected_month_kwh: Optional[float] = None           # Solcast-based projection, current month only
+    projected_month_savings_pln: Optional[float] = None   # Solcast × historical savings/kWh, current month only
 
     def key(self) -> tuple[int, int]:
         return (self.year, self.month)

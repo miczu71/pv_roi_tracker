@@ -1,5 +1,5 @@
 name: PV ROI Tracker
-version: "0.7.2"
+version: "0.8.0"
 slug: pv_roi_tracker
 description: >-
   Tracks the ROI of a residential PV solar system.
@@ -28,6 +28,9 @@ options:
   mqtt_password: ""
   log_level: "info"
   backup_share: "/share/pv_roi_tracker"
+  discount_rate_real: 0.04
+  inflation_rate_assumption: 0.05
+  comparison_yield_rate: 0.055
 schema:
   gross_investment: float
   subsidy: float
@@ -39,3 +42,6 @@ schema:
   mqtt_password: password
   log_level: "list(debug|info|warning|error)?"
   backup_share: str
+  discount_rate_real: float
+  inflation_rate_assumption: float
+  comparison_yield_rate: float

@@ -35,6 +35,9 @@ MQTT_HOST          = os.environ.get('MQTT_HOST', 'core-mosquitto')
 MQTT_PORT          = int(os.environ.get('MQTT_PORT', '1883'))
 MQTT_USER          = os.environ.get('MQTT_USER', '')
 MQTT_PASSWORD      = os.environ.get('MQTT_PASSWORD', '')
+DISCOUNT_RATE      = float(os.environ.get('DISCOUNT_RATE_REAL', '0.04'))
+INFLATION_RATE     = float(os.environ.get('INFLATION_RATE', '0.05'))
+COMPARISON_YIELD   = float(os.environ.get('COMPARISON_YIELD_RATE', '0.055'))
 
 
 def _notify_ha(title: str, message: str) -> None:
@@ -118,12 +121,15 @@ def main() -> None:
         try:
             historic = historic_store.load(HISTORIC_PATH)
             rcem_price = rcem_scraper.get_current_month_rcem(RCEM_HISTORY_PATH)
-            current = live_reader.read_current_month(rcem_price=rcem_price)
+            current = live_reader.read_current_month(rcem_price=rcem_price, historic_records=historic)
             all_records = concat.concat(historic, current)
             result = roi.calculate(all_records,
                                    gross_investment=GROSS_INVESTMENT,
                                    subsidy=SUBSIDY,
-                                   system_kwp=SYSTEM_KWP)
+                                   system_kwp=SYSTEM_KWP,
+                                   discount_rate=DISCOUNT_RATE,
+                                   inflation=INFLATION_RATE,
+                                   comparison_yield=COMPARISON_YIELD)
             _now = date.today()
             month_closed = any(r.year == _now.year and r.month == _now.month for r in historic)
             current_month_savings = (
@@ -133,7 +139,9 @@ def main() -> None:
             scrape_status = _rcem_scrape_status(_now)
             pub.publish_roi(result,
                             current_month_savings=current_month_savings,
-                            rcem_scrape_status=scrape_status)
+                            rcem_scrape_status=scrape_status,
+                            projected_month_kwh=current.projected_month_kwh if current else None,
+                            projected_month_savings=current.projected_month_savings_pln if current else None)
             _web.update_state(result, all_records, rcem_price, month_closed=month_closed,
                               rcem_scrape_status=scrape_status)
             logger.info('Poll complete — ROI %.2f%%, remaining %.0f PLN, payback %s',

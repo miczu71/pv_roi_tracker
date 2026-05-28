@@ -13,6 +13,9 @@ export MQTT_USER=$(jq -r '.mqtt_user' "$CONFIG")
 export MQTT_PASSWORD=$(jq -r '.mqtt_password' "$CONFIG")
 export LOG_LEVEL=$(jq -r '.log_level' "$CONFIG")
 export BACKUP_SHARE=$(jq -r '.backup_share // "/share/pv_roi_tracker"' "$CONFIG")
+export DISCOUNT_RATE_REAL=$(jq -r '.discount_rate_real // "0.04"' "$CONFIG")
+export INFLATION_RATE=$(jq -r '.inflation_rate_assumption // "0.05"' "$CONFIG")
+export COMPARISON_YIELD_RATE=$(jq -r '.comparison_yield_rate // "0.055"' "$CONFIG")
 
 export HISTORIC_PATH="/data/historic.json"
 export RCEM_HISTORY_PATH="/data/rcem_history.json"

@@ -48,8 +48,17 @@ _SENSORS: list[_Sensor] = [
     _Sensor('specific_yield',           'PV Specific Yield',           'specific_yield_lifetime',   'kWh/kWp', None,       'total_increasing', 'mdi:chart-bar'),
     _Sensor('battery_arbitrage_savings', 'PV Battery Arbitrage Savings', 'battery_arbitrage_savings', 'PLN',    'monetary', 'total_increasing', 'mdi:battery-charging'),
     _Sensor('net_profit',              'PV Net Profit',               'net_profit',                'PLN',     'monetary', 'total_increasing', 'mdi:cash-multiple'),
-    _Sensor('current_month_savings',   'PV Savings This Month',       None,                        'PLN',     'monetary', 'measurement',      'mdi:calendar-today'),
-    _Sensor('rcem_scrape_status',      'RCEm Scrape Status',          None,                        None,      None,       None,               'mdi:cloud-sync'),
+    _Sensor('current_month_savings',      'PV Savings This Month',          None,                          'PLN',  'monetary', 'measurement',      'mdi:calendar-today'),
+    _Sensor('rcem_scrape_status',         'RCEm Scrape Status',             None,                          None,   None,       None,               'mdi:cloud-sync'),
+    # Solcast projection
+    _Sensor('projected_month_kwh',        'PV Projected Month kWh',         None,                          'kWh',  'energy',   'measurement',      'mdi:solar-power-variant'),
+    _Sensor('projected_month_savings',    'PV Projected Month Savings',     None,                          'PLN',  'monetary', 'measurement',      'mdi:chart-timeline-variant'),
+    # Financial analysis
+    _Sensor('real_total_savings',         'PV Real Total Savings',          'real_total_savings',          'PLN',  'monetary', 'total_increasing', 'mdi:cash-check'),
+    _Sensor('real_roi_pct',               'PV Real ROI',                    'real_roi_pct',                '%',    None,       'measurement',      'mdi:percent-outline'),
+    _Sensor('npv',                        'PV NPV',                         'npv',                         'PLN',  'monetary', 'measurement',      'mdi:bank-outline'),
+    _Sensor('irr_pct',                    'PV IRR',                         'irr_pct',                     '%',    None,       'measurement',      'mdi:trending-up'),
+    _Sensor('vs_bond_delta',              'PV vs Bond Delta',               'counterfactual_delta',        'PLN',  'monetary', 'measurement',      'mdi:scale-balance'),
 ]
 
 # Sensors removed in previous versions — clear their retained discovery messages on connect.
@@ -66,13 +75,19 @@ def _disc_topic(slug: str) -> str:
 
 def _render_value(sensor: _Sensor, result: RoiResult,
                   current_month_savings: Optional[float] = None,
-                  rcem_scrape_status: Optional[str] = None) -> str:
+                  rcem_scrape_status: Optional[str] = None,
+                  projected_month_kwh: Optional[float] = None,
+                  projected_month_savings: Optional[float] = None) -> str:
     if sensor.slug == 'net_investment':
         v: Any = round(result.gross_investment - result.subsidy, 2)
     elif sensor.slug == 'current_month_savings':
         v = current_month_savings
     elif sensor.slug == 'rcem_scrape_status':
         v = rcem_scrape_status
+    elif sensor.slug == 'projected_month_kwh':
+        v = projected_month_kwh
+    elif sensor.slug == 'projected_month_savings':
+        v = projected_month_savings
     else:
         v = getattr(result, sensor.attr) if sensor.attr else None
 
@@ -155,11 +170,14 @@ class MQTTPublisher:
 
     def publish_roi(self, result: RoiResult,
                     current_month_savings: Optional[float] = None,
-                    rcem_scrape_status: Optional[str] = None) -> None:
+                    rcem_scrape_status: Optional[str] = None,
+                    projected_month_kwh: Optional[float] = None,
+                    projected_month_savings: Optional[float] = None) -> None:
         if not self._connected:
             logger.debug('MQTT not connected — skipping publish')
             return
         for s in _SENSORS:
-            payload = _render_value(s, result, current_month_savings, rcem_scrape_status)
+            payload = _render_value(s, result, current_month_savings, rcem_scrape_status,
+                                    projected_month_kwh, projected_month_savings)
             self._client.publish(_state_topic(s.slug), payload, retain=True)
         logger.debug('Published ROI state to MQTT (roi_pct=%.2f%%)', result.roi_pct)
