@@ -16,9 +16,12 @@ export BACKUP_SHARE=$(jq -r '.backup_share // "/share/pv_roi_tracker"' "$CONFIG"
 export DISCOUNT_RATE_REAL=$(jq -r '.discount_rate_real // "0.04"' "$CONFIG")
 export INFLATION_RATE=$(jq -r '.inflation_rate_assumption // "0.05"' "$CONFIG")
 export COMPARISON_YIELD_RATE=$(jq -r '.comparison_yield_rate // "0.055"' "$CONFIG")
+export TARIFF_PEAK_PRICE=$(jq -r '.tariff_peak_price // "1.23"' "$CONFIG")
+export TARIFF_OFFPEAK_PRICE=$(jq -r '.tariff_offpeak_price // "0.63"' "$CONFIG")
 
 export HISTORIC_PATH="/data/historic.json"
 export RCEM_HISTORY_PATH="/data/rcem_history.json"
 export RCEM_CORRECTIONS_PATH="/data/rcem_corrections.json"
+export INVOICE_PATH="/data/invoices.json"
 
 exec python3 -m pv_roi_tracker.main
