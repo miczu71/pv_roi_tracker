@@ -174,8 +174,44 @@ def main() -> None:
             'learned_fields': learned_fields,
         }, INVOICE_LAYOUTS_PATH)
         logger.info('Trained invoice %d-%02d; learned fields: %s', year, month, learned_fields)
+
+        # Auto-retry all remaining stubs with the newly learned patterns.
+        # Stubs whose raw text now parses successfully are promoted to full invoices.
+        auto_promoted = _retry_stubs()
+
         poll_and_publish()
-        return {'ok': True, 'learned_fields': learned_fields, 'reconciled': reconciled}
+        return {'ok': True, 'learned_fields': learned_fields, 'reconciled': reconciled,
+                'auto_promoted': auto_promoted}
+
+    def _retry_stubs() -> list:
+        """Re-parse all stubs using current (possibly just-updated) learned patterns.
+        Stubs that now parse successfully are reconciled and promoted automatically."""
+        from .invoice_parser import _parse_text, InvoiceParseError
+        promoted = []
+        all_inv = invoice_store.load(INVOICE_PATH)
+        for stub_key, stub in list(all_inv.items()):
+            if not stub.get('needs_training'):
+                continue
+            raw_text = stub.get('raw_text', '')
+            if not raw_text:
+                continue
+            try:
+                from .invoice_parser import _parse_text
+                data = _parse_text(raw_text)
+                data._filename = stub.get('filename', '')  # type: ignore[attr-defined]
+                snap = historic_store.snapshot_month(data.year, data.month, HISTORIC_PATH)
+                reconciled = historic_store.reconcile_invoice(data, HISTORIC_PATH)
+                invoice_store.upsert(data, filename=stub.get('filename', ''),
+                                     reconciled=reconciled, pre_reconcile=snap,
+                                     path=INVOICE_PATH)
+                invoice_store.remove(stub_key, INVOICE_PATH)
+                promoted.append(f'{data.year}-{data.month:02d}')
+                logger.info('Auto-promoted stub %s → %d-%02d', stub_key, data.year, data.month)
+            except InvoiceParseError:
+                pass  # still needs training
+            except Exception:
+                logger.exception('Auto-retry of stub %s failed', stub_key)
+        return promoted
 
     _web.set_invoice_train_callback(_invoice_train)
     _web.set_invoice_path(INVOICE_PATH)
@@ -307,6 +343,12 @@ def main() -> None:
 
     # Startup: apply any invoices uploaded before their month was closed
     historic_store.reconcile_pending_invoices(INVOICE_PATH, HISTORIC_PATH)
+
+    # Startup: re-try stubs — learned patterns from a previous session may now
+    # resolve invoices that failed when they were first uploaded.
+    _promoted = _retry_stubs()
+    if _promoted:
+        logger.info('Startup auto-promoted %d stub(s): %s', len(_promoted), _promoted)
 
     # Startup: heal any months whose feedin_price is missing from historic.json
     # but whose RCEm price is already in rcem_history.json (can happen after a crash).

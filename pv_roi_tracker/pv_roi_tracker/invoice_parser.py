@@ -159,19 +159,25 @@ def find_field_spans(text: str, parsed_fields: dict) -> dict:
                 }
                 break
 
-    # Billing period — special pattern (year/month extracted from it)
+    # Billing period — use the same multi-pattern list as _parse_text
     year = parsed_fields.get('year')
     month = parsed_fields.get('month')
     if year is not None and month is not None:
-        bp_m = re.search(
+        _bp_span_patterns = [
             r'Okres rozliczeniowy\s+\d{2}\.\d{2}\.\d{4}[^\n]*',
-            text)
-        if bp_m:
-            spans['billing_period'] = {
-                'start': bp_m.start(),
-                'end': bp_m.end(),
-                'text': text[bp_m.start():bp_m.end()],
-            }
+            r'Okre.{0,3}rozliczeniowy\s+\d{2}\.\d{2}\.\d{4}[^\n]*',
+            r'rozliczeniow\w*[^.]*?\d{2}\.\d{2}\.\d{4}[^\n]*',
+            rf'\b01\.{month:02d}\.{year}[^\n]*',
+        ]
+        for _bp_pat in _bp_span_patterns:
+            bp_m = re.search(_bp_pat, text, re.IGNORECASE)
+            if bp_m:
+                spans['billing_period'] = {
+                    'start': bp_m.start(),
+                    'end': bp_m.end(),
+                    'text': text[bp_m.start():bp_m.end()],
+                }
+                break
 
     return spans
 
@@ -402,14 +408,54 @@ def _parse_text(text: str) -> InvoiceData:
     warnings: list = []
 
     # ── Billing period ────────────────────────────────────────────────────────
-    # "Okres rozliczeniowy 01.04.2026 - 30.04.2026"  (ł mangles to ø in pypdf)
-    period_m = re.search(
+    # "Okres rozliczeniowy 01.04.2026 - 30.04.2026"
+    # pypdf can mangle ś→ missing, add newlines inside phrases, or use variants.
+    # Try many patterns before falling back to raw date-range heuristic.
+    _BILLING_PERIOD_PATTERNS = [
+        # Standard label (exact and with diacritic drop)
         r'Okres rozliczeniowy\s+(\d{2})\.(\d{2})\.(\d{4})',
-        text)
+        r'Okre.{0,3}rozliczeniowy\s+(\d{2})\.(\d{2})\.(\d{4})',
+        # Label with colon
+        r'Okres rozliczeniowy\s*:\s*(\d{2})\.(\d{2})\.(\d{4})',
+        # Label and date on separate lines (pypdf sometimes inserts \n mid-phrase)
+        r'Okres rozliczeniowy\s*\n\s*(\d{2})\.(\d{2})\.(\d{4})',
+        r'Okre.{0,3}rozliczeniowy\s*\n\s*(\d{2})\.(\d{2})\.(\d{4})',
+        # Capitalised / all-caps variant
+        r'OKRES ROZLICZENIOWY\s+(\d{2})\.(\d{2})\.(\d{4})',
+        # Just the word "rozliczeniow" anywhere near a date
+        r'rozliczeniow\w*[^.]*?(\d{2})\.(\d{2})\.(\d{4})',
+        # Partial label with any number of mangled chars
+        r'[Oo]kre.{1,10}rozlicz\w*\s*[:\s]*(\d{2})\.(\d{2})\.(\d{4})',
+    ]
+    period_m = None
+    for _bp in _BILLING_PERIOD_PATTERNS:
+        period_m = re.search(_bp, text)
+        if period_m:
+            break
+
+    # Last resort: find any start-of-month date (01.MM.YYYY) in the text —
+    # the billing period on a Tauron invoice always starts on the 1st.
     if not period_m:
-        raise InvoiceParseError('Billing period (Okres rozliczeniowy) not found — not a Tauron invoice')
-    month = int(period_m.group(2))
-    year = int(period_m.group(3))
+        period_m = re.search(r'\b01\.(\d{2})\.(\d{4})\b', text)
+        if period_m:
+            # Rewrite groups so group(2)=month, group(3)=year like the patterns above
+            _raw_month, _raw_year = period_m.group(1), period_m.group(2)
+            warnings.append(
+                f'okres rozliczeniowy: etykieta nieznaleziona — wydedukowano z pierwszej daty '
+                f'01.{_raw_month}.{_raw_year}; zweryfikuj miesiąc'
+            )
+            month = int(_raw_month)
+            year  = int(_raw_year)
+            billing_period_raw = None
+            period_m = None  # suppress standard extraction below
+        else:
+            raise InvoiceParseError(
+                'Billing period (Okres rozliczeniowy) not found — not a Tauron invoice')
+
+    if period_m is not None:
+        month = int(period_m.group(2))
+        year  = int(period_m.group(3))
+
     billing_period_raw = _first(
         r'Okres rozliczeniowy\s+(\d{2}\.\d{2}\.\d{4} - \d{2}\.\d{2}\.\d{4})', text)
 
