@@ -105,22 +105,23 @@ _BUILTIN_PATTERNS: dict[str, list] = {
         r'5\.\s*Depozyt prosumencki z poprz[^\d]+([\d,]+)',
     ],
     'deposit_used': [
-        r'Rozliczenie depozytu \(\d\+\d\)\s+([\d,]+)',
+        r'Rozliczenie depozytu \(\d\+\d\)\s+([\d,]+)',       # old: (4+5)
+        r'Rozliczenie depozytu[^)]*\)\s*([\d,]+)',            # new: ( 4 + 5 + 6 ) and any variant
         r'Rozliczenie depozytu\s+([\d,]+)',
-        r'6\.\s*Rozliczenie depozytu[^\d]+([\d,]+)',
+        r'[67]\.\s*Rozliczenie depozytu[^\d]+([\d,]+)',       # numbered (6. or 7.)
     ],
     'fixed_mocowa': [
-        r'Op.ata mocowa\s+\d+\s+mc\s+[\d,]+\s+([\d,]+)',
-        r'Op.ata mocow\w*\s+\d+\s+mc\s+([\d,]+)',
+        r'Op.ata mocowa\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',  # "1 mc" or "1 zł/mc"
+        r'Op.ata mocow\w*\s+\d+\s+[^\s]*mc\s+([\d,]+)',
     ],
     'fixed_abonament': [
-        r'Stawka op.aty abonamentowej\s+\d+\s+mc\s+[\d,]+\s+([\d,]+)',
-        r'Op.ata abonamentow\w*\s+\d+\s+mc\s+[\d,]+\s+([\d,]+)',
-        r'Abonament\s+\d+\s+mc\s+[\d,]+\s+([\d,]+)',
+        r'Stawka op.aty abonamentowej\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
+        r'Op.ata abonamentow\w*\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
+        r'Abonament\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
     ],
     'fixed_stalysieciowy': [
-        r'Sk.adnik sta.y stawki sieciowej\s+\d+\s+mc\s+[\d,]+\s+([\d,]+)',
-        r'Sk.adnik sta.y sieciow\w*\s+\d+\s+mc\s+[\d,]+\s+([\d,]+)',
+        r'Sk.adnik sta.y stawki sieciowej\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
+        r'Sk.adnik sta.y sieciow\w*\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
     ],
 }
 
@@ -164,10 +165,11 @@ def find_field_spans(text: str, parsed_fields: dict) -> dict:
     month = parsed_fields.get('month')
     if year is not None and month is not None:
         _bp_span_patterns = [
-            r'Okres rozliczeniowy\s+\d{2}\.\d{2}\.\d{4}[^\n]*',
-            r'Okre.{0,3}rozliczeniowy\s+\d{2}\.\d{2}\.\d{4}[^\n]*',
-            r'rozliczeniow\w*[^.]*?\d{2}\.\d{2}\.\d{4}[^\n]*',
-            rf'\b01\.{month:02d}\.{year}[^\n]*',
+            r'Okres rozliczeniowy\s+\d{2}[./]\d{2}[./]\d{4}[^\n]*',
+            r'Okre.{0,3}rozliczeniowy\s+\d{2}[./]\d{2}[./]\d{4}[^\n]*',
+            r'Okres rozliczeniowy\s*\n[^\n]*\d{2}[./]\d{2}[./]\d{4}',
+            r'rozliczeniow\w*[^./\d]*\d{2}[./]\d{2}[./]\d{4}[^\n]*',
+            rf'\b01[./]{month:02d}[./]{year}[^\n]*',
         ]
         for _bp_pat in _bp_span_patterns:
             bp_m = re.search(_bp_pat, text, re.IGNORECASE)
@@ -411,21 +413,36 @@ def _parse_text(text: str) -> InvoiceData:
     # "Okres rozliczeniowy 01.04.2026 - 30.04.2026"
     # pypdf can mangle ś→ missing, add newlines inside phrases, or use variants.
     # Try many patterns before falling back to raw date-range heuristic.
+    # Each pattern variant is listed twice: dot-separator and slash-separator.
+    # Tauron's "nowy wzór faktury" (new format, introduced 2026) uses DD/MM/YYYY;
+    # the classic format uses DD.MM.YYYY.
     _BILLING_PERIOD_PATTERNS = [
-        # Standard label (exact and with diacritic drop)
+        # Standard label — dot format
         r'Okres rozliczeniowy\s+(\d{2})\.(\d{2})\.(\d{4})',
-        r'Okre.{0,3}rozliczeniowy\s+(\d{2})\.(\d{2})\.(\d{4})',
-        # Label with colon
-        r'Okres rozliczeniowy\s*:\s*(\d{2})\.(\d{2})\.(\d{4})',
-        # Label and date on separate lines (pypdf sometimes inserts \n mid-phrase)
+        # Standard label — slash format (new invoice template)
+        r'Okres rozliczeniowy\s+(\d{2})/(\d{2})/(\d{4})',
+        # Label on own line, date on next line — dot
         r'Okres rozliczeniowy\s*\n\s*(\d{2})\.(\d{2})\.(\d{4})',
+        # Label on own line, date on next line — slash
+        r'Okres rozliczeniowy\s*\n\s*(\d{2})/(\d{2})/(\d{4})',
+        # Diacritic-drop variant — dot
+        r'Okre.{0,3}rozliczeniowy\s+(\d{2})\.(\d{2})\.(\d{4})',
+        # Diacritic-drop variant — slash
+        r'Okre.{0,3}rozliczeniowy\s+(\d{2})/(\d{2})/(\d{4})',
+        # Diacritic-drop + newline — dot
         r'Okre.{0,3}rozliczeniowy\s*\n\s*(\d{2})\.(\d{2})\.(\d{4})',
-        # Capitalised / all-caps variant
+        # Diacritic-drop + newline — slash
+        r'Okre.{0,3}rozliczeniowy\s*\n\s*(\d{2})/(\d{2})/(\d{4})',
+        # Label with colon — dot
+        r'Okres rozliczeniowy\s*:\s*(\d{2})\.(\d{2})\.(\d{4})',
+        # Label with colon — slash
+        r'Okres rozliczeniowy\s*:\s*(\d{2})/(\d{2})/(\d{4})',
+        # Capitalised variants
         r'OKRES ROZLICZENIOWY\s+(\d{2})\.(\d{2})\.(\d{4})',
-        # Just the word "rozliczeniow" anywhere near a date
-        r'rozliczeniow\w*[^.]*?(\d{2})\.(\d{2})\.(\d{4})',
-        # Partial label with any number of mangled chars
-        r'[Oo]kre.{1,10}rozlicz\w*\s*[:\s]*(\d{2})\.(\d{2})\.(\d{4})',
+        r'OKRES ROZLICZENIOWY\s+(\d{2})/(\d{2})/(\d{4})',
+        # Just the concept word near any date
+        r'rozliczeniow\w*[^./\d]*(\d{2})\.(\d{2})\.(\d{4})',
+        r'rozliczeniow\w*[^./\d]*(\d{2})/(\d{2})/(\d{4})',
     ]
     period_m = None
     for _bp in _BILLING_PERIOD_PATTERNS:
@@ -433,16 +450,15 @@ def _parse_text(text: str) -> InvoiceData:
         if period_m:
             break
 
-    # Last resort: find any start-of-month date (01.MM.YYYY) in the text —
-    # the billing period on a Tauron invoice always starts on the 1st.
+    # Last resort: find any start-of-month date (01.MM.YYYY or 01/MM/YYYY) —
+    # Tauron billing periods always start on the 1st.
     if not period_m:
-        period_m = re.search(r'\b01\.(\d{2})\.(\d{4})\b', text)
-        if period_m:
-            # Rewrite groups so group(2)=month, group(3)=year like the patterns above
-            _raw_month, _raw_year = period_m.group(1), period_m.group(2)
+        _heuristic_m = re.search(r'\b01[./](\d{2})[./](\d{4})\b', text)
+        if _heuristic_m:
+            _raw_month, _raw_year = _heuristic_m.group(1), _heuristic_m.group(2)
             warnings.append(
-                f'okres rozliczeniowy: etykieta nieznaleziona — wydedukowano z pierwszej daty '
-                f'01.{_raw_month}.{_raw_year}; zweryfikuj miesiąc'
+                f'okres rozliczeniowy: etykieta nieznaleziona — wydedukowano z daty '
+                f'01/{_raw_month}/{_raw_year}; zweryfikuj miesiąc'
             )
             month = int(_raw_month)
             year  = int(_raw_year)
@@ -456,8 +472,10 @@ def _parse_text(text: str) -> InvoiceData:
         month = int(period_m.group(2))
         year  = int(period_m.group(3))
 
-    billing_period_raw = _first(
-        r'Okres rozliczeniowy\s+(\d{2}\.\d{2}\.\d{4} - \d{2}\.\d{2}\.\d{4})', text)
+    billing_period_raw = (
+        _first(r'Okres rozliczeniowy\s+(\d{2}\.\d{2}\.\d{4} - \d{2}\.\d{2}\.\d{4})', text)
+        or _first(r'Okres rozliczeniowy\s*\n?\s*(\d{2}/\d{2}/\d{4} - \d{2}/\d{2}/\d{4})', text)
+    )
 
     # ── Invoice number ────────────────────────────────────────────────────────
     invoice_number = _first_multi(_patterns_for('invoice_number'), text)
