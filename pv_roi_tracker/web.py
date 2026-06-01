@@ -24,7 +24,7 @@ _rcem_override_callback = None
 _historic_patch_callback = None
 _invoice_reconcile_callback = None
 _invoice_path = None
-_tariff_peak   = 1.23
+_tariff_peak    = 1.23
 _tariff_offpeak = 0.63
 
 
@@ -192,6 +192,7 @@ def api_data():
         self_suff = round(sc_kwh / consumed * 100, 1) if consumed > 0 else None
         records_out.append({
             'month_label': _month_label(r.year, r.month),
+            'month_key': month_key,
             'is_current': (r.year, r.month) == current_ym,
             'produced_kwh': r.produced_kwh,
             'exported_kwh': r.exported_kwh,
@@ -239,65 +240,9 @@ def api_data():
         'pace_vs_avg_pct': pace_vs_avg,
     }
 
-    # ── Invoice data for UI ───────────────────────────────────────────────────
-    invoices_out = []
-    tariff_drift = None
-    fixed_fee_drift = None
-    if _invoice_path is not None:
-        from . import invoice_store as _istore
-        stored = _istore.load(_invoice_path)
-        for mk, inv in sorted(stored.items()):
-            # kWh diff vs what's in historic records for that month
-            try:
-                iy, im = int(mk[:4]), int(mk[5:])
-                hist_rec = next((r for r in records if r.year == iy and r.month == im), None)
-                diff_imp = None
-                diff_exp = None
-                if hist_rec:
-                    if hist_rec.purchased_kwh is not None and inv.get('imported_kwh') is not None:
-                        diff_imp = round(inv['imported_kwh'] - hist_rec.purchased_kwh, 2)
-                    if hist_rec.exported_kwh is not None and inv.get('exported_kwh') is not None:
-                        diff_exp = round(inv['exported_kwh'] - hist_rec.exported_kwh, 2)
-                invoices_out.append({
-                    'month': mk,
-                    'amount_due': inv.get('amount_due_pln'),
-                    'deposit_previous': inv.get('deposit_previous_pln'),
-                    'deposit_used': inv.get('deposit_used_pln'),
-                    'imported_kwh': inv.get('imported_kwh'),
-                    'exported_kwh': inv.get('exported_kwh'),
-                    'diff_imported_kwh': diff_imp,
-                    'diff_exported_kwh': diff_exp,
-                    'peak_gross': inv.get('peak_gross'),
-                    'offpeak_gross': inv.get('offpeak_gross'),
-                    'fixed_total_net': inv.get('fixed_total_net'),
-                    'avg_price': inv.get('avg_price_pln_kwh'),
-                    'reconciled': inv.get('reconciled', False),
-                    'invoice_number': inv.get('invoice_number'),
-                })
-            except Exception:
-                pass
-        # Tariff drift: compare latest invoice's gross rates vs config
-        if stored:
-            latest = stored[max(stored)]
-            pk = latest.get('peak_gross')
-            op = latest.get('offpeak_gross')
-            if pk is not None and abs(pk - _tariff_peak) > 0.02:
-                tariff_drift = {'peak': {'configured': _tariff_peak, 'invoice': round(pk, 4)}}
-            if op is not None and abs(op - _tariff_offpeak) > 0.02:
-                tariff_drift = tariff_drift or {}
-                tariff_drift['offpeak'] = {'configured': _tariff_offpeak, 'invoice': round(op, 4)}
-            # Fixed fee drift vs HA energy_simulation.yaml known value (39.47 net from 2026 tariff)
-            _KNOWN_FIXED_NET = 39.47
-            fn = latest.get('fixed_total_net')
-            if fn is not None and abs(fn - _KNOWN_FIXED_NET) > 0.5:
-                fixed_fee_drift = {'yaml_fixed_net': _KNOWN_FIXED_NET, 'invoice_fixed_net': round(fn, 2)}
-
     return jsonify({
         'status': 'ok',
         'updated_at': updated_at,
-        'invoices': invoices_out,
-        'tariff_drift': tariff_drift,
-        'fixed_fee_drift': fixed_fee_drift,
         'summary': {
             'roi_pct': result.roi_pct,
             'total_savings': result.total_savings,
@@ -346,7 +291,143 @@ def api_data():
         },
         'records': records_out,
         'predictions': _build_predictions(result),
+        'invoices': _build_invoices_data(records),
+        'tariff_drift': _build_tariff_drift(),
     })
+
+
+def _build_invoices_data(records):
+    if _invoice_path is None:
+        return []
+    try:
+        from . import invoice_store as _istore
+        stored = _istore.load(_invoice_path)
+    except Exception:
+        return []
+    out = []
+    for mk, inv in sorted(stored.items()):
+        try:
+            iy, im = int(mk[:4]), int(mk[5:])
+            hist_rec = next((r for r in records if r.year == iy and r.month == im), None)
+            diff_imp = diff_exp = None
+            if hist_rec:
+                if hist_rec.purchased_kwh is not None and inv.get('imported_kwh') is not None:
+                    diff_imp = round(inv['imported_kwh'] - hist_rec.purchased_kwh, 2)
+                if hist_rec.exported_kwh is not None and inv.get('exported_kwh') is not None:
+                    diff_exp = round(inv['exported_kwh'] - hist_rec.exported_kwh, 2)
+            inv_warnings = inv.get('warnings', [])
+            out.append({
+                'month': mk,
+                'amount_due': inv.get('amount_due_pln'),
+                'deposit_current': inv.get('deposit_current_pln'),
+                'deposit_previous': inv.get('deposit_previous_pln'),
+                'deposit_used': inv.get('deposit_used_pln'),
+                'imported_kwh': inv.get('imported_kwh'),
+                'exported_kwh': inv.get('exported_kwh'),
+                'imported_kwh_peak': inv.get('imported_kwh_peak'),
+                'imported_kwh_offpeak': inv.get('imported_kwh_offpeak'),
+                'diff_imported_kwh': diff_imp,
+                'diff_exported_kwh': diff_exp,
+                'peak_gross': inv.get('peak_gross'),
+                'offpeak_gross': inv.get('offpeak_gross'),
+                'blended_gross': inv.get('blended_gross'),
+                'fixed_total_net': inv.get('fixed_total_net'),
+                'avg_price': inv.get('avg_price_pln_kwh'),
+                'reconciled': inv.get('reconciled', False),
+                'invoice_number': inv.get('invoice_number'),
+                'billing_period_raw': inv.get('billing_period_raw'),
+                'warnings': inv_warnings,
+                'warnings_count': len(inv_warnings),
+                # Detail fields for expand panel
+                'energy_peak_net': inv.get('energy_peak_net'),
+                'energy_offpeak_net': inv.get('energy_offpeak_net'),
+                'dist_var_peak_net': inv.get('dist_var_peak_net'),
+                'dist_var_offpeak_net': inv.get('dist_var_offpeak_net'),
+                'dist_jakosciowa_net': inv.get('dist_jakosciowa_net'),
+                'dist_oze_net': inv.get('dist_oze_net'),
+                'dist_kogeneracja_net': inv.get('dist_kogeneracja_net'),
+                'fixed_mocowa_net': inv.get('fixed_mocowa_net'),
+                'fixed_abonament_net': inv.get('fixed_abonament_net'),
+                'fixed_stalysieciowy_net': inv.get('fixed_stalysieciowy_net'),
+            })
+        except Exception:
+            pass
+    return out
+
+
+_FIXED_NET_EXPECTED = 39.47  # per energy_simulation.yaml 2026 Tauron tariff
+
+
+def _build_tariff_drift():
+    if _invoice_path is None:
+        return None
+    try:
+        from . import invoice_store as _istore
+        stored = _istore.load(_invoice_path)
+        if not stored:
+            return None
+        latest = stored[max(stored)]
+        drift = {}
+        pk = latest.get('peak_gross')
+        op = latest.get('offpeak_gross')
+        if pk is not None and abs(pk - _tariff_peak) > 0.02:
+            drift['peak'] = {'configured': _tariff_peak, 'invoice': round(pk, 4)}
+        if op is not None and abs(op - _tariff_offpeak) > 0.02:
+            drift['offpeak'] = {'configured': _tariff_offpeak, 'invoice': round(op, 4)}
+        ft = latest.get('fixed_total_net')
+        if ft is not None and abs(ft - _FIXED_NET_EXPECTED) > 0.50:
+            drift['fixed_net'] = {'expected': _FIXED_NET_EXPECTED, 'invoice': round(ft, 2)}
+        return drift or None
+    except Exception:
+        return None
+
+
+@app.route('/api/invoice/upload', methods=['POST'])
+def invoice_upload():
+    if _invoice_reconcile_callback is None:
+        return jsonify({'ok': False, 'error': 'not initialized'}), 503
+    files = request.files.getlist('files') or request.files.getlist('file')
+    if not files:
+        return jsonify({'ok': False, 'error': 'no file(s) attached (field name: files)'}), 400
+    from .invoice_parser import parse_invoice, InvoiceParseError
+    results = []
+    parsed_list = []
+    for f in files:
+        fname = f.filename or 'upload'
+        try:
+            data = parse_invoice(f.read())
+            data._filename = fname  # type: ignore[attr-defined]
+            parsed_list.append(data)
+            results.append({'filename': fname, 'month': f'{data.year}-{data.month:02d}',
+                             'imported_kwh': data.imported_kwh, 'exported_kwh': data.exported_kwh,
+                             'peak_gross': data.peak_gross, 'offpeak_gross': data.offpeak_gross,
+                             'amount_due': data.amount_due_pln, 'deposit_used': data.deposit_used_pln,
+                             'warnings': data.warnings,
+                             'ok': True})
+        except InvoiceParseError as exc:
+            results.append({'filename': fname, 'ok': False, 'error': str(exc)})
+        except Exception as exc:
+            log.exception('Invoice parse error: %s', fname)
+            results.append({'filename': fname, 'ok': False, 'error': str(exc)})
+    if parsed_list:
+        try:
+            _invoice_reconcile_callback(parsed_list)
+        except Exception as exc:
+            log.exception('Invoice reconcile callback failed')
+            return jsonify({'ok': False, 'error': str(exc), 'results': results}), 500
+    return jsonify({'ok': True, 'results': results})
+
+
+@app.route('/api/invoice/debug', methods=['POST'])
+def invoice_debug():
+    """Parse a PDF and return raw extracted text + fields, without saving."""
+    files = request.files.getlist('files') or request.files.getlist('file')
+    if not files:
+        return jsonify({'ok': False, 'error': 'no file attached'}), 400
+    from .invoice_parser import parse_invoice_debug
+    f = files[0]
+    result = parse_invoice_debug(f.read())
+    return jsonify(result)
 
 
 @app.route('/api/rcem/override', methods=['POST'])
@@ -400,55 +481,6 @@ def historic_patch():
     except Exception as exc:
         log.exception('Historic patch failed')
         return jsonify({'ok': False, 'error': str(exc)}), 500
-
-
-@app.route('/api/invoice/upload', methods=['POST'])
-def invoice_upload():
-    if _invoice_reconcile_callback is None:
-        return jsonify({'ok': False, 'error': 'not initialized'}), 503
-
-    files = request.files.getlist('files') or request.files.getlist('file')
-    if not files:
-        return jsonify({'ok': False, 'error': 'no file(s) attached (field name: files)'}), 400
-
-    from .invoice_parser import parse_invoice, InvoiceParseError
-
-    results = []
-    parsed_list = []
-    for f in files:
-        fname = f.filename or 'upload'
-        try:
-            pdf_bytes = f.read()
-            data = parse_invoice(pdf_bytes)
-            data._filename = fname  # type: ignore[attr-defined]  # carried to callback
-            parsed_list.append(data)
-            results.append({
-                'filename': fname,
-                'month': f'{data.year}-{data.month:02d}',
-                'imported_kwh': data.imported_kwh,
-                'exported_kwh': data.exported_kwh,
-                'peak_gross': data.peak_gross,
-                'offpeak_gross': data.offpeak_gross,
-                'amount_due': data.amount_due_pln,
-                'deposit_previous': data.deposit_previous_pln,
-                'deposit_used': data.deposit_used_pln,
-                'fixed_total_net': data.fixed_total_net,
-                'ok': True,
-            })
-        except InvoiceParseError as exc:
-            results.append({'filename': fname, 'ok': False, 'error': str(exc)})
-        except Exception as exc:
-            log.exception('Invoice parse error: %s', fname)
-            results.append({'filename': fname, 'ok': False, 'error': str(exc)})
-
-    if parsed_list:
-        try:
-            _invoice_reconcile_callback(parsed_list)
-        except Exception as exc:
-            log.exception('Invoice reconcile callback failed')
-            return jsonify({'ok': False, 'error': str(exc), 'results': results}), 500
-
-    return jsonify({'ok': True, 'results': results})
 
 
 @app.route('/api/export/csv')
@@ -685,6 +717,7 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
       <button class="tab-btn"        onclick="showTab('pred')">Prognoza splaty</button>
       <button class="tab-btn"        onclick="showTab('years')">Podsumowanie roczne</button>
       <button class="tab-btn"        onclick="showTab('charts')">Wykresy</button>
+      <button class="tab-btn"        onclick="showTab('invoices')">&#128196; Faktury</button>
     </div>
     <div class="tab-panel">
       <div id="tab-hist">
@@ -760,21 +793,49 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
           </div>
         </div>
       </div>
-    </div>
-    <!-- ── Faktury Tauron ─────────────────────────────────────────────────── -->
-    <div class="override-wrap" style="margin-top:18px" id="invoiceSection">
-      <h3>Faktury Tauron</h3>
-      <div id="tariffDriftBanner" style="display:none;margin-bottom:8px;padding:8px 12px;background:#fff3cd;border-left:4px solid #f0ad4e;border-radius:4px;font-size:13px"></div>
-      <div id="fixedFeeDriftBanner" style="display:none;margin-bottom:8px;padding:8px 12px;background:#cce5ff;border-left:4px solid #004085;border-radius:4px;font-size:13px"></div>
-      <div class="override-form" style="align-items:flex-start;gap:12px">
-        <label style="display:flex;flex-direction:column;gap:4px;font-size:13px">
-          Wgraj faktury PDF (jedna lub wiele):
-          <input type="file" id="invoiceFiles" accept=".pdf" multiple style="margin-top:4px">
-        </label>
-        <button onclick="uploadInvoices()" style="align-self:flex-end">Wgraj i uzgodnij</button>
-        <span id="invoiceMsg" style="align-self:flex-end;font-size:12px"></span>
+      <!-- Faktury Tauron tab -->
+      <div id="tab-invoices" style="display:none;padding:12px">
+        <!-- KPI summary cards -->
+        <div id="invKpiCards" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px"></div>
+        <!-- Drift banners -->
+        <div id="tariffDriftBanner" style="display:none;margin-bottom:10px;padding:8px 12px;background:#fff3cd;border-left:4px solid #f0ad4e;border-radius:4px;font-size:13px"></div>
+        <!-- Coverage grid -->
+        <div style="margin-bottom:16px">
+          <h4 style="margin:0 0 8px;font-size:13px;font-weight:600">Pokrycie fakturami</h4>
+          <div id="invCoverageGrid"></div>
+        </div>
+        <!-- Deposit trend chart -->
+        <div style="margin-bottom:16px">
+          <h4 style="margin:0 0 8px;font-size:13px;font-weight:600">Saldo depozytu prosumenckiego (zł)</h4>
+          <div class="chart-wrap" style="max-width:680px;height:200px">
+            <canvas id="depositChart"></canvas>
+          </div>
+        </div>
+        <!-- Invoice table (click to expand) -->
+        <div style="margin-bottom:16px">
+          <h4 style="margin:0 0 8px;font-size:13px;font-weight:600">Wgrane faktury</h4>
+          <div class="override-form" style="align-items:flex-start;gap:12px;margin-bottom:10px">
+            <label style="display:flex;flex-direction:column;gap:4px;font-size:13px">
+              Wgraj faktury PDF (jedna lub wiele):
+              <input type="file" id="invoiceFiles" accept=".pdf" multiple style="margin-top:4px">
+            </label>
+            <button onclick="uploadInvoices()" style="align-self:flex-end">Wgraj i uzgodnij</button>
+            <span id="invoiceMsg" style="align-self:flex-end;font-size:12px"></span>
+          </div>
+          <div id="invoiceTableWrap" style="overflow-x:auto"></div>
+        </div>
+        <!-- Raw-text debug view -->
+        <details style="margin-bottom:16px">
+          <summary style="cursor:pointer;font-size:13px;color:var(--muted)">Diagnoza parsera PDF (debug)</summary>
+          <div style="margin-top:8px;display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+            <label style="font-size:13px">Plik PDF:
+              <input type="file" id="debugPdfFile" accept=".pdf" style="margin-left:6px">
+            </label>
+            <button onclick="runInvoiceDebug()" style="font-size:12px">Pokaż surowy tekst</button>
+          </div>
+          <div id="debugOutput" style="margin-top:10px"></div>
+        </details>
       </div>
-      <div id="invoiceTableWrap" style="margin-top:12px;overflow-x:auto"></div>
     </div>
 
     <div class="override-wrap" style="margin-top:18px">
@@ -791,7 +852,7 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
 </main>
 <script>
 'use strict';
-let _lineChart = null, _barChart = null, _rcemChart = null, _autarkiaChart = null, _prodChart = null, _arbitrageChart = null, _netCostChart = null, _priceSpreadChart = null, _yieldChart = null, _energyBalChart = null, _yearCompChart = null, _prodRankChart = null;
+let _lineChart = null, _barChart = null, _rcemChart = null, _autarkiaChart = null, _prodChart = null, _arbitrageChart = null, _netCostChart = null, _priceSpreadChart = null, _yieldChart = null, _energyBalChart = null, _yearCompChart = null, _prodRankChart = null, _depositChart = null;
 
 /* -- Formatters -- */
 function fmt(v, dp, sfx) {
@@ -829,16 +890,17 @@ document.addEventListener('click', function(e) {
 
 /* -- Tab switching -- */
 function showTab(name) {
-  ['hist','pred','years','charts'].forEach(t => {
+  ['hist','pred','years','charts','invoices'].forEach(t => {
     document.getElementById('tab-' + t).style.display = (t === name) ? '' : 'none';
   });
   document.querySelectorAll('.tab-btn').forEach((b, i) =>
-    b.classList.toggle('active', ['hist','pred','years','charts'][i] === name)
+    b.classList.toggle('active', ['hist','pred','years','charts','invoices'][i] === name)
   );
   if (name === 'charts') {
     [_rcemChart, _autarkiaChart, _prodChart, _arbitrageChart, _netCostChart,
      _priceSpreadChart, _yieldChart, _energyBalChart, _yearCompChart, _prodRankChart].forEach(c => c && c.resize());
   }
+  if (name === 'invoices' && _depositChart) _depositChart.resize();
 }
 
 /* -- Summary cards -- */
@@ -1319,7 +1381,10 @@ function renderProdRankChart(records) {
 }
 
 /* -- History table -- */
-function renderHistTable(records, monthClosed) {
+function renderHistTable(records, monthClosed, invoices) {
+  // Build lookup: YYYY-MM → invoice data
+  const invByMonth = {};
+  (invoices || []).forEach(inv => { invByMonth[inv.month] = inv; });
   const head = '<thead><tr>' +
     '<th>Miesiąc</th>' +
     '<th title="kWh wyprodukowane">Produkcja</th>' +
@@ -1401,7 +1466,21 @@ function renderHistTable(records, monthClosed) {
     const cls = r.is_current ? ' class="cur"' : '';
     const st  = r.rcem_status || 'ok';
 
-    const monthLabel = r.month_label;
+    // Invoice badge
+    const invRec = invByMonth[r.month_key];
+    let invBadge = '';
+    if (invRec) {
+      const warn = invRec.warnings_count > 0 ? ' ⚠' : '';
+      const tip = 'Faktura ' + (invRec.invoice_number || invRec.month) +
+        (invRec.amount_due != null ? ' • do zapłaty: ' + invRec.amount_due.toFixed(2) + ' zł' : '') +
+        (invRec.deposit_used != null ? ' • depozyt: ' + invRec.deposit_used.toFixed(2) + ' zł' : '') +
+        (invRec.warnings_count > 0 ? ' • ostrzeżenia: ' + invRec.warnings_count : '');
+      const ico = invRec.reconciled ? '📄✓' : '📄…';
+      const col = invRec.reconciled ? '#27ae60' : '#e67e22';
+      invBadge = ' <span title="' + tip.replace(/"/g, '&quot;') + '" style="font-size:11px;cursor:help;color:' + col + '">' + ico + warn + '</span>';
+    }
+
+    const monthLabel = r.month_label + invBadge;
 
     const producedCell = r.is_current && r.projected_month_kwh != null
       ? kwh(r.produced_kwh) + '<br><span class="proj-hint">→ ' + kwh(r.projected_month_kwh) + ' proj.</span>'
@@ -1585,98 +1664,6 @@ function renderYearsTable(records, systemKwp) {
     years.length + ' lat danych' + (fullYears.length > 1 ? '; strzalki = najlepsza/najgorsza produkcja (pelne lata)' : '');
 }
 
-/* -- Invoice upload -- */
-async function uploadInvoices() {
-  const input = document.getElementById('invoiceFiles');
-  const msg   = document.getElementById('invoiceMsg');
-  msg.className = ''; msg.textContent = 'Wgrywanie…';
-  if (!input.files || input.files.length === 0) {
-    msg.className = 'err'; msg.textContent = 'Wybierz przynajmniej jeden plik PDF'; return;
-  }
-  const fd = new FormData();
-  for (const f of input.files) fd.append('files', f);
-  try {
-    const r = await fetch('api/invoice/upload', {method: 'POST', body: fd});
-    const d = await r.json();
-    if (d.ok) {
-      const ok  = (d.results || []).filter(x => x.ok);
-      const err = (d.results || []).filter(x => !x.ok);
-      let txt = 'Wgrano: ' + ok.map(x => x.month).join(', ');
-      if (err.length) txt += '; błąd: ' + err.map(x => x.filename + ': ' + x.error).join('; ');
-      msg.className = err.length ? 'err' : 'ok';
-      msg.textContent = txt;
-      setTimeout(loadData, 1500);
-    } else {
-      msg.className = 'err'; msg.textContent = 'Błąd: ' + (d.error || 'nieznany');
-    }
-  } catch(e) {
-    msg.className = 'err'; msg.textContent = 'Błąd połączenia';
-  }
-}
-
-function renderInvoiceTable(invoices, tariffDrift, fixedFeeDrift) {
-  // Drift banners
-  const tBanner = document.getElementById('tariffDriftBanner');
-  const fBanner = document.getElementById('fixedFeeDriftBanner');
-  if (tBanner) {
-    if (tariffDrift) {
-      let msgs = [];
-      if (tariffDrift.peak)    msgs.push('szczyt: skonfig. ' + tariffDrift.peak.configured + ' → faktura ' + tariffDrift.peak.invoice + ' zł/kWh');
-      if (tariffDrift.offpeak) msgs.push('poza szczytem: skonfig. ' + tariffDrift.offpeak.configured + ' → faktura ' + tariffDrift.offpeak.invoice + ' zł/kWh');
-      tBanner.textContent = '⚠ Zmiana stawek taryfowych: ' + msgs.join('; ') + '. Zaktualizuj tariff_peak_price / tariff_offpeak_price w konfiguracji dodatku.';
-      tBanner.style.display = '';
-    } else tBanner.style.display = 'none';
-  }
-  if (fBanner) {
-    if (fixedFeeDrift) {
-      fBanner.textContent = 'ℹ Opłaty stałe dystrybucji zmieniły się: YAML = ' + fixedFeeDrift.yaml_fixed_net + ' zł/mc net → faktura = ' + fixedFeeDrift.invoice_fixed_net + ' zł/mc net. Zaktualizuj fixed_net w packages/energy_simulation.yaml.';
-      fBanner.style.display = '';
-    } else fBanner.style.display = 'none';
-  }
-
-  const wrap = document.getElementById('invoiceTableWrap');
-  if (!wrap) return;
-  if (!invoices || invoices.length === 0) {
-    wrap.innerHTML = '<p style="color:var(--muted);font-size:13px">Brak wgranych faktur. Wgraj PDF, aby uzgodnić dane rozliczeniowe.</p>';
-    return;
-  }
-  const rows = [...invoices].sort((a,b) => b.month.localeCompare(a.month)).map(inv => {
-    const ok = inv.reconciled ? '✅' : '⏳';
-    const diffImp = inv.diff_imported_kwh != null ? (inv.diff_imported_kwh > 0 ? '+' : '') + inv.diff_imported_kwh.toFixed(0) : '—';
-    const diffExp = inv.diff_exported_kwh != null ? (inv.diff_exported_kwh > 0 ? '+' : '') + inv.diff_exported_kwh.toFixed(0) : '—';
-    const depStr = inv.deposit_used != null ? fmt(inv.deposit_used, 2, 'zł') : '—';
-    return '<tr>' +
-      '<td>' + inv.month + '</td>' +
-      '<td>' + (inv.invoice_number || '—') + '</td>' +
-      '<td style="text-align:right">' + (inv.imported_kwh != null ? inv.imported_kwh.toFixed(0) : '—') + ' kWh</td>' +
-      '<td style="text-align:right">' + (inv.exported_kwh != null ? inv.exported_kwh.toFixed(0) : '—') + ' kWh</td>' +
-      '<td style="text-align:right;color:' + (inv.diff_imported_kwh != null && Math.abs(inv.diff_imported_kwh) > 5 ? '#c0392b' : 'inherit') + '">' + diffImp + '</td>' +
-      '<td style="text-align:right;color:' + (inv.diff_exported_kwh != null && Math.abs(inv.diff_exported_kwh) > 5 ? '#c0392b' : 'inherit') + '">' + diffExp + '</td>' +
-      '<td style="text-align:right">' + (inv.amount_due != null ? fmt(inv.amount_due, 2, 'zł') : '—') + '</td>' +
-      '<td style="text-align:right">' + depStr + '</td>' +
-      '<td style="text-align:right;color:var(--muted)">' + (inv.peak_gross != null ? inv.peak_gross.toFixed(4) : '—') + '</td>' +
-      '<td style="text-align:right;color:var(--muted)">' + (inv.offpeak_gross != null ? inv.offpeak_gross.toFixed(4) : '—') + '</td>' +
-      '<td style="text-align:center">' + ok + '</td>' +
-    '</tr>';
-  }).join('');
-  wrap.innerHTML =
-    '<table style="width:100%;border-collapse:collapse;font-size:12px">' +
-    '<thead><tr style="border-bottom:2px solid var(--border)">' +
-      '<th style="text-align:left">Miesiąc</th>' +
-      '<th style="text-align:left">Nr faktury</th>' +
-      '<th style="text-align:right">Pobrano kWh</th>' +
-      '<th style="text-align:right">Oddano kWh</th>' +
-      '<th style="text-align:right" title="różnica faktura vs. sensor">Δ pobór</th>' +
-      '<th style="text-align:right" title="różnica faktura vs. sensor">Δ oddanie</th>' +
-      '<th style="text-align:right">Do zapłaty</th>' +
-      '<th style="text-align:right">Depozyt użyty</th>' +
-      '<th style="text-align:right">Szczyt zł/kWh</th>' +
-      '<th style="text-align:right">Poza szczytem</th>' +
-      '<th style="text-align:center">Uzgod.</th>' +
-    '</tr></thead>' +
-    '<tbody>' + rows + '</tbody></table>';
-}
-
 /* -- RCEm manual override -- */
 async function submitOverride() {
   const month = document.getElementById('ovMonth').value;
@@ -1747,13 +1734,330 @@ async function loadData() {
     renderEnergyBalChart(d.records);
     renderYearCompChart(d.records);
     renderProdRankChart(d.records);
-    renderHistTable([...d.records].reverse(), d.summary.month_closed);
+    renderHistTable([...d.records].reverse(), d.summary.month_closed, d.invoices || []);
     renderPredTable(d.predictions, d.summary, d.summary.avg_window);
     renderYearsTable(d.records, systemKwp);
-    renderInvoiceTable(d.invoices || [], d.tariff_drift, d.fixed_fee_drift);
+    renderInvoicesTab(d.invoices || [], d.tariff_drift, d.records);
   } catch (e) {
     document.getElementById('updated').textContent = 'Blad polaczenia';
     console.error(e);
+  }
+}
+
+/* -- Invoice upload -- */
+async function uploadInvoices() {
+  const input = document.getElementById('invoiceFiles');
+  const msg   = document.getElementById('invoiceMsg');
+  msg.className = ''; msg.textContent = 'Wgrywanie...';
+  if (!input.files || input.files.length === 0) {
+    msg.className = 'err'; msg.textContent = 'Wybierz przynajmniej jeden plik PDF'; return;
+  }
+  const fd = new FormData();
+  for (const f of input.files) fd.append('files', f);
+  try {
+    const r = await fetch('api/invoice/upload', {method: 'POST', body: fd});
+    const d = await r.json();
+    if (d.ok) {
+      const ok  = (d.results || []).filter(x => x.ok);
+      const err = (d.results || []).filter(x => !x.ok);
+      let txt = ok.length ? 'Wgrano: ' + ok.map(x => x.month).join(', ') : '';
+      if (err.length) txt += (txt ? '; ' : '') + 'Blad: ' + err.map(x => x.filename + ': ' + x.error).join('; ');
+      msg.className = err.length ? 'err' : 'ok';
+      msg.textContent = txt;
+      setTimeout(loadData, 1500);
+    } else {
+      msg.className = 'err'; msg.textContent = 'Blad: ' + (d.error || 'nieznany');
+    }
+  } catch(e) {
+    msg.className = 'err'; msg.textContent = 'Blad polaczenia';
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Faktury tab renderer
+   ───────────────────────────────────────────────────────────── */
+function renderInvoicesTab(invoices, tariffDrift, records) {
+  _renderInvKpiCards(invoices, tariffDrift, records);
+  _renderDriftBanner(tariffDrift);
+  _renderCoverageGrid(invoices, records);
+  renderDepositChart(invoices);
+  _renderInvoiceTable(invoices);
+}
+
+/* KPI summary cards */
+function _renderInvKpiCards(invoices, tariffDrift, records) {
+  const wrap = document.getElementById('invKpiCards');
+  if (!wrap) return;
+  const sorted = [...invoices].sort((a,b) => b.month.localeCompare(a.month));
+  const latest = sorted[0] || null;
+
+  const totalHistoric = (records || []).filter(r => !r.is_current).length;
+  const covered = invoices.filter(i => i.reconciled).length;
+  const coveragePct = totalHistoric > 0 ? Math.round(covered / totalHistoric * 100) : 0;
+  const hasDrift = tariffDrift && (tariffDrift.peak || tariffDrift.offpeak || tariffDrift.fixed_net);
+
+  const kpiStyle = 'min-width:160px;padding:12px 16px;background:var(--card);border-radius:var(--radius);box-shadow:var(--shadow);flex:1 1 160px';
+  const lbl = (t) => '<div style="font-size:11px;color:var(--muted);margin-bottom:4px">' + t + '</div>';
+  const val = (v, sml) => '<div style="font-size:18px;font-weight:700">' + v +
+    (sml ? '<span style="font-size:12px;font-weight:400;color:var(--muted);margin-left:4px">' + sml + '</span>' : '') +
+    '</div>';
+
+  let html = '';
+  // Deposit balance
+  const depBal = latest ? (latest.deposit_previous != null ? latest.deposit_previous.toFixed(2) + ' zł' : '—') : '—';
+  html += '<div style="' + kpiStyle + '">' + lbl('Saldo depozytu') + val(depBal) + '</div>';
+
+  // Last invoice
+  const lastInv = latest ? (latest.amount_due != null ? latest.amount_due.toFixed(2) + ' zł' : '—') : '—';
+  const lastMon = latest ? latest.month : '—';
+  html += '<div style="' + kpiStyle + '">' + lbl('Ostatnia faktura (' + lastMon + ')') + val(lastInv) + '</div>';
+
+  // Coverage
+  html += '<div style="' + kpiStyle + '">' + lbl('Pokrycie faktury') +
+    val(covered + ' / ' + totalHistoric, coveragePct + '%') + '</div>';
+
+  // Drift status
+  const driftTxt = hasDrift ? '⚠ zmiana stawek' : '✓ stawki OK';
+  const driftCol = hasDrift ? '#e67e22' : '#27ae60';
+  html += '<div style="' + kpiStyle + ';">' + lbl('Status taryfy') +
+    '<div style="font-size:15px;font-weight:700;color:' + driftCol + '">' + driftTxt + '</div></div>';
+
+  wrap.innerHTML = html;
+}
+
+/* Drift banner */
+function _renderDriftBanner(tariffDrift) {
+  const banner = document.getElementById('tariffDriftBanner');
+  if (!banner) return;
+  if (tariffDrift && (tariffDrift.peak || tariffDrift.offpeak || tariffDrift.fixed_net)) {
+    let msgs = [];
+    if (tariffDrift.peak)      msgs.push('szczyt: skonfig. ' + tariffDrift.peak.configured + ' → faktura ' + tariffDrift.peak.invoice + ' zł/kWh');
+    if (tariffDrift.offpeak)   msgs.push('poza szczytem: skonfig. ' + tariffDrift.offpeak.configured + ' → faktura ' + tariffDrift.offpeak.invoice + ' zł/kWh');
+    if (tariffDrift.fixed_net) msgs.push('opłaty stałe (net): oczekiwano ' + tariffDrift.fixed_net.expected + ' → faktura ' + tariffDrift.fixed_net.invoice + ' zł/mc');
+    banner.innerHTML = '⚠ Wykryto zmianę stawek: ' + msgs.join('; ') +
+      '. Zaktualizuj <b>tariff_peak_price / tariff_offpeak_price</b> w konfiguracji dodatku (jeśli dotyczy).';
+    banner.style.display = '';
+  } else {
+    banner.style.display = 'none';
+  }
+}
+
+/* Coverage grid */
+function _renderCoverageGrid(invoices, records) {
+  const wrap = document.getElementById('invCoverageGrid');
+  if (!wrap) return;
+
+  const PL_MONTHS_SHORT = ['Sty','Lut','Mar','Kwi','Maj','Cze','Lip','Sie','Wrz','Paź','Lis','Gru'];
+
+  // Build set of historic months from records (exclude current/live)
+  const historicMonths = new Set((records || []).filter(r => !r.is_current).map(r => r.month_key));
+  const invMap = {};
+  (invoices || []).forEach(i => { invMap[i.month] = i; });
+
+  // Determine years range
+  const allYears = new Set([...(records || []).map(r => r.month_key ? r.month_key.substring(0,4) : null).filter(Boolean)]);
+  if (!allYears.size) { wrap.innerHTML = '<p style="color:var(--muted);font-size:13px">Brak danych.</p>'; return; }
+  const years = [...allYears].sort();
+
+  const chipBase = 'display:inline-flex;align-items:center;justify-content:center;width:38px;height:28px;border-radius:4px;font-size:10px;font-weight:600;cursor:default;margin:1px;position:relative;';
+  let html = '<table style="border-collapse:separate;border-spacing:0;font-size:11px"><tbody>';
+
+  for (const y of years) {
+    html += '<tr><td style="padding-right:8px;font-weight:600;font-size:12px;white-space:nowrap">' + y + '</td>';
+    for (let m = 1; m <= 12; m++) {
+      const mk = y + '-' + String(m).padStart(2,'0');
+      const inHistory = historicMonths.has(mk);
+      const inv = invMap[mk];
+      let bg, color, title;
+      if (!inHistory) {
+        bg = 'var(--bg)'; color = '#bbb'; title = mk + ': brak danych';
+      } else if (!inv) {
+        bg = '#e2e8f0'; color = '#555'; title = mk + ': brak faktury';
+      } else if (inv.reconciled) {
+        bg = '#c6f6d5'; color = '#22543d'; title = mk + ': faktura uzgodniona';
+        if (inv.amount_due != null) title += ' • ' + inv.amount_due.toFixed(2) + ' zł';
+      } else {
+        bg = '#fef3c7'; color = '#92400e'; title = mk + ': faktura wgrana, oczekuje na zamknięcie miesiąca';
+      }
+      const warn = inv && inv.warnings_count > 0 ? '<span style="position:absolute;top:1px;right:2px;font-size:8px;color:#c0392b">⚠</span>' : '';
+      html += '<td><div style="' + chipBase + 'background:' + bg + ';color:' + color + '" title="' + title.replace(/"/g,'&quot;') + '">' +
+        PL_MONTHS_SHORT[m-1] + warn + '</div></td>';
+    }
+    html += '</tr>';
+  }
+  html += '</tbody></table>';
+  wrap.innerHTML = html;
+}
+
+/* Deposit trend chart */
+function renderDepositChart(invoices) {
+  const ctx = document.getElementById('depositChart');
+  if (!ctx) return;
+  const sorted = [...(invoices||[])].sort((a,b) => a.month.localeCompare(b.month));
+  const labels = sorted.map(i => i.month);
+  const data   = sorted.map(i => i.deposit_previous != null ? i.deposit_previous : null);
+  if (_depositChart) _depositChart.destroy();
+  _depositChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Saldo depozytu (zł)',
+        data,
+        borderColor: '#3182ce',
+        backgroundColor: 'rgba(49,130,206,0.08)',
+        tension: 0.3,
+        fill: true,
+        pointRadius: 4,
+        spanGaps: false,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { font: { size: 10 } } },
+        y: { ticks: { callback: v => v + ' zł' } },
+      }
+    }
+  });
+}
+
+/* Invoice table with click-to-expand detail rows */
+function _renderInvoiceTable(invoices) {
+  const wrap = document.getElementById('invoiceTableWrap');
+  if (!wrap) return;
+  if (!invoices || invoices.length === 0) {
+    wrap.innerHTML = '<p style="color:var(--muted);font-size:13px">Brak wgranych faktur. Wgraj PDF powyżej, aby uzgodnić dane rozliczeniowe.</p>';
+    return;
+  }
+
+  const n4 = v => v != null ? v.toFixed(4) : '-';
+  const n2 = v => v != null ? v.toFixed(2) : '-';
+  const n0 = v => v != null ? v.toFixed(0) : '-';
+
+  const sorted = [...invoices].sort((a,b) => b.month.localeCompare(a.month));
+  let rows = '';
+  sorted.forEach((inv, idx) => {
+    const chk = inv.reconciled
+      ? '<span style="color:#27ae60;font-weight:700">✓</span>'
+      : '<span style="color:#e67e22">…</span>';
+    const dI  = inv.diff_imported_kwh != null ? (inv.diff_imported_kwh >= 0 ? '+' : '') + inv.diff_imported_kwh.toFixed(0) : '—';
+    const dE  = inv.diff_exported_kwh != null ? (inv.diff_exported_kwh >= 0 ? '+' : '') + inv.diff_exported_kwh.toFixed(0) : '—';
+    const dIcol = (Math.abs(inv.diff_imported_kwh||0) > 5) ? '#c0392b' : 'inherit';
+    const dEcol = (Math.abs(inv.diff_exported_kwh||0) > 5) ? '#c0392b' : 'inherit';
+
+    let warnCell = '';
+    if (inv.warnings_count > 0) {
+      const warnTip = (inv.warnings||[]).join('\n').replace(/"/g,'&quot;');
+      warnCell = '<span title="' + warnTip + '" style="cursor:help;color:#c0392b">⚠ ' + inv.warnings_count + '</span>';
+    }
+
+    rows += '<tr onclick="toggleInvoiceDetail(' + idx + ')" style="cursor:pointer">' +
+      '<td>' + inv.month + (inv.billing_period_raw ? '<br><span style="font-size:10px;color:var(--muted)">' + inv.billing_period_raw + '</span>' : '') + '</td>' +
+      '<td style="color:var(--muted)">' + (inv.invoice_number || '—') + '</td>' +
+      '<td style="text-align:right">' + n0(inv.imported_kwh) + '</td>' +
+      '<td style="text-align:right">' + n0(inv.exported_kwh) + '</td>' +
+      '<td style="text-align:right;color:' + dIcol + '">' + dI + '</td>' +
+      '<td style="text-align:right;color:' + dEcol + '">' + dE + '</td>' +
+      '<td style="text-align:right">' + (inv.amount_due != null ? inv.amount_due.toFixed(2) + ' zł' : '—') + '</td>' +
+      '<td style="text-align:right">' + (inv.deposit_used != null ? inv.deposit_used.toFixed(2) + ' zł' : '—') + '</td>' +
+      '<td style="text-align:right;font-size:11px">' + n4(inv.peak_gross) + '</td>' +
+      '<td style="text-align:right;font-size:11px">' + n4(inv.offpeak_gross) + '</td>' +
+      '<td style="text-align:center">' + chk + '</td>' +
+      '<td style="text-align:center">' + warnCell + '</td>' +
+    '</tr>' +
+    '<tr id="inv-detail-' + idx + '" style="display:none;background:var(--bg)">' +
+      '<td colspan="12" style="padding:10px 14px">' +
+        '<div style="display:flex;gap:24px;flex-wrap:wrap;font-size:12px">' +
+          '<div><b>Sprzedaż energii (net zł/kWh)</b><br>' +
+            'Szczyt: ' + n4(inv.energy_peak_net) + '<br>' +
+            'Poza szczytem: ' + n4(inv.energy_offpeak_net) +
+          '</div>' +
+          '<div><b>Dystrybucja zmienna (net zł/kWh)</b><br>' +
+            'Skł. zmienny szczyt: ' + n4(inv.dist_var_peak_net) + '<br>' +
+            'Skł. zmienny poza: ' + n4(inv.dist_var_offpeak_net) + '<br>' +
+            'Jakościowa: ' + n4(inv.dist_jakosciowa_net) + '<br>' +
+            'OZE: ' + n4(inv.dist_oze_net) + '<br>' +
+            'Kogeneracja: ' + n4(inv.dist_kogeneracja_net) +
+          '</div>' +
+          '<div><b>Opłaty stałe (net zł/mc)</b><br>' +
+            'Mocowa: ' + n2(inv.fixed_mocowa_net) + '<br>' +
+            'Abonament: ' + n2(inv.fixed_abonament_net) + '<br>' +
+            'Skł. stały siec.: ' + n2(inv.fixed_stalysieciowy_net) +
+            (inv.fixed_total_net != null ? '<br><b>Suma: ' + inv.fixed_total_net.toFixed(2) + ' zł</b>' : '') +
+          '</div>' +
+          '<div><b>Depozyt prosumencki (zł)</b><br>' +
+            'Bieżący okres: ' + n2(inv.deposit_current) + '<br>' +
+            'Z poprzednich: ' + n2(inv.deposit_previous) + '<br>' +
+            'Rozliczony: ' + n2(inv.deposit_used) +
+          '</div>' +
+          '<div><b>Import szczyt/poza (kWh)</b><br>' +
+            'Szczyt: ' + n0(inv.imported_kwh_peak) + '<br>' +
+            'Poza: ' + n0(inv.imported_kwh_offpeak) + '<br>' +
+            'Blended gross: ' + n4(inv.blended_gross) + ' zł/kWh<br>' +
+            'Śr. cena: ' + n4(inv.avg_price) + ' zł/kWh' +
+          '</div>' +
+          (inv.warnings && inv.warnings.length > 0
+            ? '<div><b style="color:#c0392b">Ostrzeżenia parsera</b><br>' +
+              inv.warnings.map(w => '⚠ ' + w).join('<br>') + '</div>'
+            : '') +
+        '</div>' +
+      '</td>' +
+    '</tr>';
+  });
+
+  wrap.innerHTML =
+    '<table style="width:100%;border-collapse:collapse;font-size:12px">' +
+    '<thead><tr style="border-bottom:2px solid var(--border);font-size:11px">' +
+      '<th style="text-align:left">Miesiąc</th>' +
+      '<th style="text-align:left">Nr FV</th>' +
+      '<th style="text-align:right">Pobr. kWh</th>' +
+      '<th style="text-align:right">Odd. kWh</th>' +
+      '<th style="text-align:right">Δ pobr.</th>' +
+      '<th style="text-align:right">Δ odd.</th>' +
+      '<th style="text-align:right">Do zapłaty</th>' +
+      '<th style="text-align:right">Depozyt uzyt.</th>' +
+      '<th style="text-align:right">Szczyt zł/kWh</th>' +
+      '<th style="text-align:right">Poza szczytem</th>' +
+      '<th style="text-align:center">Uzgod.</th>' +
+      '<th style="text-align:center">⚠</th>' +
+    '</tr></thead><tbody>' + rows + '</tbody></table>';
+}
+
+function toggleInvoiceDetail(idx) {
+  const row = document.getElementById('inv-detail-' + idx);
+  if (row) row.style.display = row.style.display === 'none' ? '' : 'none';
+}
+
+/* Invoice debug raw-text view */
+async function runInvoiceDebug() {
+  const input = document.getElementById('debugPdfFile');
+  const out   = document.getElementById('debugOutput');
+  if (!input || !input.files || !input.files.length) {
+    out.innerHTML = '<p style="color:var(--muted);font-size:13px">Wybierz plik PDF.</p>';
+    return;
+  }
+  out.innerHTML = '<p style="font-size:13px;color:var(--muted)">Parsowanie…</p>';
+  const fd = new FormData();
+  fd.append('files', input.files[0]);
+  try {
+    const r = await fetch('api/invoice/debug', {method: 'POST', body: fd});
+    const d = await r.json();
+    let html = '';
+    if (d.warnings && d.warnings.length > 0) {
+      html += '<div style="padding:8px 12px;background:#fff3cd;border-left:4px solid #f0ad4e;border-radius:4px;margin-bottom:8px;font-size:12px">' +
+        '<b>Ostrzeżenia (' + d.warnings.length + '):</b><br>' +
+        d.warnings.map(w => '⚠ ' + w).join('<br>') + '</div>';
+    }
+    if (!d.ok) {
+      html += '<div style="padding:8px 12px;background:#fed7d7;border-left:4px solid #c0392b;border-radius:4px;margin-bottom:8px;font-size:12px">Błąd parsera: ' + (d.error||'nieznany') + '</div>';
+    }
+    html += '<pre style="font-size:10px;white-space:pre-wrap;word-break:break-all;background:var(--bg);padding:10px;border-radius:4px;max-height:400px;overflow-y:auto">' +
+      (d.text || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</pre>';
+    out.innerHTML = html;
+  } catch(e) {
+    out.innerHTML = '<p style="color:#c0392b;font-size:13px">Błąd połączenia: ' + e.message + '</p>';
   }
 }
 

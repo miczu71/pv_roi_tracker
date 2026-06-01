@@ -101,3 +101,11 @@ def get(month_key: str, path: Path = DEFAULT_PATH) -> Optional[dict]:
 def pending(path: Path = DEFAULT_PATH) -> list[dict]:
     """Return all unreconciled invoice records."""
     return [v for v in load(path).values() if not v.get('reconciled', False)]
+
+
+def warnings_for(month_key: str, path: Path = DEFAULT_PATH) -> list:
+    """Return the warnings list for a stored invoice, or [] if missing/old record."""
+    rec = get(month_key, path)
+    if rec is None:
+        return []
+    return rec.get('warnings', [])

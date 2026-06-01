@@ -100,6 +100,7 @@ _PATCHABLE_FIELDS = {
     'self_consumed_kwh', 'buy_price_pln_kwh', 'feedin_price_pln_kwh',
     'self_consumed_savings_pln', 'feedin_revenue_pln',
     'purchased_kwh_peak', 'purchased_kwh_offpeak',
+    'battery_arbitrage_savings_pln',
 }
 
 
@@ -121,33 +122,19 @@ def patch_month_field(
 
 
 def reconcile_invoice(
-    data,   # InvoiceData — avoid circular import; duck-typed
+    data,   # InvoiceData — duck-typed to avoid circular import
     path: Path = DEFAULT_PATH,
 ) -> bool:
-    """
-    Reconcile a closed month with billed invoice figures.
-
-    Updates kWh fields from the invoice (billed truth), recomputes derived
-    savings consistently, and sets the period-correct buy price from the
-    invoice's own blended gross marginal rate.
-
-    Returns False if the month is not yet present in historic.json (not closed).
-    """
+    """Update a closed month with billed invoice figures and recompute derived fields."""
     year, month = data.year, data.month
 
     def _apply(m: dict) -> None:
-        # kWh ground truth
-        m['imported_kwh']        = data.imported_kwh        # alias: purchased_kwh
-        m['purchased_kwh']       = data.imported_kwh
-        m['purchased_kwh_peak']  = data.imported_kwh_peak
+        m['purchased_kwh']         = data.imported_kwh
+        m['purchased_kwh_peak']    = data.imported_kwh_peak
         m['purchased_kwh_offpeak'] = data.imported_kwh_offpeak
-        m['exported_kwh']        = data.exported_kwh
-
-        # Period-correct buy price from this invoice's own blended marginal rate
+        m['exported_kwh']          = data.exported_kwh
         if data.blended_gross is not None:
             m['buy_price_pln_kwh'] = data.blended_gross
-
-        # Recompute self-consumed kWh and savings
         produced = m.get('produced_kwh')
         if produced is not None:
             sc = max(0.0, produced - data.exported_kwh)
@@ -155,20 +142,16 @@ def reconcile_invoice(
             buy = m.get('buy_price_pln_kwh')
             if buy is not None:
                 m['self_consumed_savings_pln'] = round(sc * buy, 2)
-
-        # Recompute feed-in revenue (RCEm unchanged)
         rcem = m.get('feedin_price_pln_kwh')
         if rcem is not None:
             m['feedin_revenue_pln'] = round(data.exported_kwh * rcem, 2)
-
-        # Recompute purchase cost
         buy = m.get('buy_price_pln_kwh')
         if buy is not None:
             m['purchase_cost_pln'] = round(data.imported_kwh * buy, 2)
 
     found = _mutate_month(year, month, path, _apply)
     if found:
-        logger.info('Reconciled invoice for %d-%02d with billed kWh', year, month)
+        logger.info('Reconciled invoice for %d-%02d', year, month)
     else:
         logger.debug('reconcile_invoice: %d-%02d not in historic.json yet', year, month)
     return found
@@ -178,28 +161,17 @@ def reconcile_pending_invoices(
     invoice_path: Path,
     historic_path: Path = DEFAULT_PATH,
 ) -> int:
-    """
-    Apply all stored-but-unreconciled invoices to historic.json.
-
-    Intended to run at startup and after month-close so that invoices
-    uploaded before the month was snapshotted get applied automatically.
-    Returns the number of months successfully reconciled.
-    """
+    """Apply all stored-but-unreconciled invoices to historic.json at startup/month-close."""
     from . import invoice_store
     from .invoice_parser import InvoiceData
 
     count = 0
     for rec in invoice_store.pending(invoice_path):
         try:
-            # Reconstruct InvoiceData from the stored dict (fields match dataclass)
-            fields = {
-                k: rec.get(k)
-                for k in InvoiceData.__dataclass_fields__
-            }
+            fields = {k: rec.get(k) for k in InvoiceData.__dataclass_fields__}
             data = InvoiceData(**fields)  # type: ignore[arg-type]
             if reconcile_invoice(data, historic_path):
-                invoice_store.mark_reconciled(
-                    f'{data.year}-{data.month:02d}', invoice_path)
+                invoice_store.mark_reconciled(f'{data.year}-{data.month:02d}', invoice_path)
                 count += 1
         except Exception:
             logger.exception('Failed to auto-reconcile pending invoice %s-%s',
