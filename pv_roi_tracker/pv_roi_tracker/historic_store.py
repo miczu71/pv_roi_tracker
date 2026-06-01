@@ -100,6 +100,7 @@ _PATCHABLE_FIELDS = {
     'self_consumed_kwh', 'buy_price_pln_kwh', 'feedin_price_pln_kwh',
     'self_consumed_savings_pln', 'feedin_revenue_pln',
     'purchased_kwh_peak', 'purchased_kwh_offpeak',
+    'battery_arbitrage_savings_pln',
 }
 
 
