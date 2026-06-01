@@ -2134,11 +2134,12 @@ function _renderInvoiceTable(invoices) {
       warnCell = '<span title="' + warnTip + '" style="cursor:help;color:#c0392b">⚠ ' + inv.warnings_count + '</span>';
     }
 
+    const keyAttr = JSON.stringify(inv.key).replace(/"/g, '&quot;');
     const actionBtns =
-      '<button onclick="event.stopPropagation();openTrainModal(' + JSON.stringify(inv.key) + ')" ' +
+      '<button onclick="event.stopPropagation();openTrainModal(' + keyAttr + ')" ' +
         'style="font-size:11px;padding:2px 7px;margin-right:3px;background:#3182ce;color:#fff;border:none;border-radius:3px;cursor:pointer" ' +
         'title="Trenuj parser na tym układzie faktury">Trenuj</button>' +
-      '<button onclick="event.stopPropagation();removeInvoice(' + JSON.stringify(inv.key) + ')" ' +
+      '<button onclick="event.stopPropagation();removeInvoice(' + keyAttr + ')" ' +
         'style="font-size:11px;padding:2px 7px;background:#e53e3e;color:#fff;border:none;border-radius:3px;cursor:pointer" ' +
         'title="Usuń fakturę i przywróć dane sprzed uzgodnienia">Usuń</button>';
 
