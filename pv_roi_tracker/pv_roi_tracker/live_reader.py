@@ -19,7 +19,9 @@ logger = logging.getLogger(__name__)
 
 _BASE = 'http://supervisor/core/api/states'
 _TOKEN = os.environ.get('SUPERVISOR_TOKEN', '')
-_SYSTEM_KWP = float(os.environ.get('SYSTEM_KWP', '6.72'))
+_SYSTEM_KWP           = float(os.environ.get('SYSTEM_KWP', '6.72'))
+_TARIFF_PEAK_PRICE    = float(os.environ.get('TARIFF_PEAK_PRICE', '1.23'))
+_TARIFF_OFFPEAK_PRICE = float(os.environ.get('TARIFF_OFFPEAK_PRICE', '0.63'))
 
 
 def _get_state(entity_id: str) -> Optional[float]:
@@ -95,8 +97,16 @@ def read_current_month(
     consumed  = _get_state('sensor.house_consumption_energy_monthly')
     peak      = _get_state('sensor.monthly_energy_peak')
     offpeak   = _get_state('sensor.monthly_energy_offpeak')
-    buy_price = _get_state('sensor.srednia_cena_energii_w_miesiacu')
     arbitrage = _get_state('sensor.battery_arbitrage_savings_monthly')
+
+    # Buy price: blend config tariff rates from peak/offpeak split when available;
+    # fall back to the HA average-price template sensor.
+    if peak is not None and offpeak is not None and (peak + offpeak) > 0:
+        buy_price: Optional[float] = round(
+            (peak * _TARIFF_PEAK_PRICE + offpeak * _TARIFF_OFFPEAK_PRICE)
+            / (peak + offpeak), 4)
+    else:
+        buy_price = _get_state('sensor.srednia_cena_energii_w_miesiacu')
 
     if produced is None:
         logger.warning('sensor.inverter_yield_monthly unavailable — skipping current-month record')

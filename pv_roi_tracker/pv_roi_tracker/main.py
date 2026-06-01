@@ -26,7 +26,10 @@ logger = logging.getLogger(__name__)
 HISTORIC_PATH          = Path(os.environ.get('HISTORIC_PATH', '/data/historic.json'))
 RCEM_HISTORY_PATH      = Path(os.environ.get('RCEM_HISTORY_PATH', '/data/rcem_history.json'))
 RCEM_CORRECTIONS_PATH  = Path(os.environ.get('RCEM_CORRECTIONS_PATH', '/data/rcem_corrections.json'))
-BACKUP_SHARE       = Path(os.environ.get('BACKUP_SHARE', '/share/pv_roi_tracker'))
+INVOICE_PATH           = Path(os.environ.get('INVOICE_PATH', '/data/invoices.json'))
+BACKUP_SHARE           = Path(os.environ.get('BACKUP_SHARE', '/share/pv_roi_tracker'))
+TARIFF_PEAK_PRICE      = float(os.environ.get('TARIFF_PEAK_PRICE', '1.23'))
+TARIFF_OFFPEAK_PRICE   = float(os.environ.get('TARIFF_OFFPEAK_PRICE', '0.63'))
 GROSS_INVESTMENT   = float(os.environ.get('GROSS_INVESTMENT', '51900.0'))
 SUBSIDY            = float(os.environ.get('SUBSIDY', '28714.0'))
 SYSTEM_KWP         = float(os.environ.get('SYSTEM_KWP', '6.72'))
@@ -62,7 +65,7 @@ def _backup_data() -> None:
     import shutil
     try:
         BACKUP_SHARE.mkdir(parents=True, exist_ok=True)
-        for src in [HISTORIC_PATH, RCEM_HISTORY_PATH, RCEM_CORRECTIONS_PATH]:
+        for src in [HISTORIC_PATH, RCEM_HISTORY_PATH, RCEM_CORRECTIONS_PATH, INVOICE_PATH]:
             if src.exists():
                 shutil.copy2(src, BACKUP_SHARE / src.name)
         logger.info('Data backed up to %s', BACKUP_SHARE)
@@ -75,6 +78,7 @@ def main() -> None:
     from apscheduler.triggers.cron import CronTrigger
 
     from . import concat, historic_store, live_reader, rcem_scraper, roi, cpi_fetcher
+    from . import invoice_store
     from .month_close import close_month
     from .publisher import MQTTPublisher
     from . import __version__
@@ -105,6 +109,19 @@ def main() -> None:
         return ok
 
     _web.set_historic_patch_callback(_historic_patch)
+
+    def _invoice_reconcile(parsed_list: list) -> None:
+        for data in parsed_list:
+            filename = getattr(data, '_filename', '')
+            reconciled = historic_store.reconcile_invoice(data, HISTORIC_PATH)
+            invoice_store.upsert(data, filename=filename,
+                                 reconciled=reconciled, path=INVOICE_PATH)
+            logger.info('Invoice %d-%02d ingested (reconciled=%s)', data.year, data.month, reconciled)
+        poll_and_publish()
+
+    _web.set_invoice_reconcile_callback(_invoice_reconcile)
+    _web.set_invoice_path(INVOICE_PATH)
+    _web.set_tariff_config(TARIFF_PEAK_PRICE, TARIFF_OFFPEAK_PRICE)
 
     from datetime import date
 
@@ -191,6 +208,7 @@ def main() -> None:
     def month_close_job() -> None:
         try:
             close_month(historic_path=HISTORIC_PATH, rcem_history_path=RCEM_HISTORY_PATH)
+            historic_store.reconcile_pending_invoices(INVOICE_PATH, HISTORIC_PATH)
             poll_and_publish()
         except Exception:
             logger.exception('Month-close error')
@@ -227,6 +245,9 @@ def main() -> None:
     logger.info('PV ROI Tracker v%s started — poll every %d min', __version__, POLL_INTERVAL)
 
     _backup_data()   # ensure /share copy is current on every start
+
+    # Startup: apply any invoices uploaded before their month was closed
+    historic_store.reconcile_pending_invoices(INVOICE_PATH, HISTORIC_PATH)
 
     # Startup: heal any months whose feedin_price is missing from historic.json
     # but whose RCEm price is already in rcem_history.json (can happen after a crash).

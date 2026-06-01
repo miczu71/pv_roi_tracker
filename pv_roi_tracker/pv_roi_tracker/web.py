@@ -22,6 +22,10 @@ log = logging.getLogger(__name__)
 _lock = threading.Lock()
 _rcem_override_callback = None
 _historic_patch_callback = None
+_invoice_reconcile_callback = None
+_invoice_path = None
+_tariff_peak    = 1.23
+_tariff_offpeak = 0.63
 
 
 def set_rcem_override_callback(fn) -> None:
@@ -33,6 +37,20 @@ def set_historic_patch_callback(fn) -> None:
     global _historic_patch_callback
     _historic_patch_callback = fn
 
+
+def set_invoice_reconcile_callback(fn) -> None:
+    global _invoice_reconcile_callback
+    _invoice_reconcile_callback = fn
+
+
+def set_invoice_path(path) -> None:
+    global _invoice_path
+    _invoice_path = path
+
+
+def set_tariff_config(peak: float, offpeak: float) -> None:
+    global _tariff_peak, _tariff_offpeak
+    _tariff_peak, _tariff_offpeak = peak, offpeak
 
 
 _state: dict = {
@@ -272,7 +290,105 @@ def api_data():
         },
         'records': records_out,
         'predictions': _build_predictions(result),
+        'invoices': _build_invoices_data(records),
+        'tariff_drift': _build_tariff_drift(),
     })
+
+
+def _build_invoices_data(records):
+    if _invoice_path is None:
+        return []
+    try:
+        from . import invoice_store as _istore
+        stored = _istore.load(_invoice_path)
+    except Exception:
+        return []
+    out = []
+    for mk, inv in sorted(stored.items()):
+        try:
+            iy, im = int(mk[:4]), int(mk[5:])
+            hist_rec = next((r for r in records if r.year == iy and r.month == im), None)
+            diff_imp = diff_exp = None
+            if hist_rec:
+                if hist_rec.purchased_kwh is not None and inv.get('imported_kwh') is not None:
+                    diff_imp = round(inv['imported_kwh'] - hist_rec.purchased_kwh, 2)
+                if hist_rec.exported_kwh is not None and inv.get('exported_kwh') is not None:
+                    diff_exp = round(inv['exported_kwh'] - hist_rec.exported_kwh, 2)
+            out.append({
+                'month': mk,
+                'amount_due': inv.get('amount_due_pln'),
+                'deposit_previous': inv.get('deposit_previous_pln'),
+                'deposit_used': inv.get('deposit_used_pln'),
+                'imported_kwh': inv.get('imported_kwh'),
+                'exported_kwh': inv.get('exported_kwh'),
+                'diff_imported_kwh': diff_imp,
+                'diff_exported_kwh': diff_exp,
+                'peak_gross': inv.get('peak_gross'),
+                'offpeak_gross': inv.get('offpeak_gross'),
+                'fixed_total_net': inv.get('fixed_total_net'),
+                'avg_price': inv.get('avg_price_pln_kwh'),
+                'reconciled': inv.get('reconciled', False),
+                'invoice_number': inv.get('invoice_number'),
+            })
+        except Exception:
+            pass
+    return out
+
+
+def _build_tariff_drift():
+    if _invoice_path is None:
+        return None
+    try:
+        from . import invoice_store as _istore
+        stored = _istore.load(_invoice_path)
+        if not stored:
+            return None
+        latest = stored[max(stored)]
+        drift = {}
+        pk = latest.get('peak_gross')
+        op = latest.get('offpeak_gross')
+        if pk is not None and abs(pk - _tariff_peak) > 0.02:
+            drift['peak'] = {'configured': _tariff_peak, 'invoice': round(pk, 4)}
+        if op is not None and abs(op - _tariff_offpeak) > 0.02:
+            drift['offpeak'] = {'configured': _tariff_offpeak, 'invoice': round(op, 4)}
+        return drift or None
+    except Exception:
+        return None
+
+
+@app.route('/api/invoice/upload', methods=['POST'])
+def invoice_upload():
+    if _invoice_reconcile_callback is None:
+        return jsonify({'ok': False, 'error': 'not initialized'}), 503
+    files = request.files.getlist('files') or request.files.getlist('file')
+    if not files:
+        return jsonify({'ok': False, 'error': 'no file(s) attached (field name: files)'}), 400
+    from .invoice_parser import parse_invoice, InvoiceParseError
+    results = []
+    parsed_list = []
+    for f in files:
+        fname = f.filename or 'upload'
+        try:
+            data = parse_invoice(f.read())
+            data._filename = fname  # type: ignore[attr-defined]
+            parsed_list.append(data)
+            results.append({'filename': fname, 'month': f'{data.year}-{data.month:02d}',
+                             'imported_kwh': data.imported_kwh, 'exported_kwh': data.exported_kwh,
+                             'peak_gross': data.peak_gross, 'offpeak_gross': data.offpeak_gross,
+                             'amount_due': data.amount_due_pln, 'deposit_used': data.deposit_used_pln,
+                             'ok': True})
+        except InvoiceParseError as exc:
+            results.append({'filename': fname, 'ok': False, 'error': str(exc)})
+        except Exception as exc:
+            log.exception('Invoice parse error: %s', fname)
+            results.append({'filename': fname, 'ok': False, 'error': str(exc)})
+    if parsed_list:
+        try:
+            _invoice_reconcile_callback(parsed_list)
+        except Exception as exc:
+            log.exception('Invoice reconcile callback failed')
+            return jsonify({'ok': False, 'error': str(exc), 'results': results}), 500
+    return jsonify({'ok': True, 'results': results})
 
 
 @app.route('/api/rcem/override', methods=['POST'])
@@ -638,6 +754,21 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
         </div>
       </div>
     </div>
+    <!-- Faktury Tauron -->
+    <div class="override-wrap" style="margin-top:18px" id="invoiceSection">
+      <h3>Faktury Tauron</h3>
+      <div id="tariffDriftBanner" style="display:none;margin-bottom:8px;padding:8px 12px;background:#fff3cd;border-left:4px solid #f0ad4e;border-radius:4px;font-size:13px"></div>
+      <div class="override-form" style="align-items:flex-start;gap:12px">
+        <label style="display:flex;flex-direction:column;gap:4px;font-size:13px">
+          Wgraj faktury PDF (jedna lub wiele):
+          <input type="file" id="invoiceFiles" accept=".pdf" multiple style="margin-top:4px">
+        </label>
+        <button onclick="uploadInvoices()" style="align-self:flex-end">Wgraj i uzgodnij</button>
+        <span id="invoiceMsg" style="align-self:flex-end;font-size:12px"></span>
+      </div>
+      <div id="invoiceTableWrap" style="margin-top:12px;overflow-x:auto"></div>
+    </div>
+
     <div class="override-wrap" style="margin-top:18px">
       <h3>Reczne nadpisanie ceny RCEm<span id="rcemBadge" class="rcem-badge"></span></h3>
       <div class="override-form">
@@ -1519,10 +1650,87 @@ async function loadData() {
     renderHistTable([...d.records].reverse(), d.summary.month_closed);
     renderPredTable(d.predictions, d.summary, d.summary.avg_window);
     renderYearsTable(d.records, systemKwp);
+    renderInvoiceSection(d.invoices || [], d.tariff_drift);
   } catch (e) {
     document.getElementById('updated').textContent = 'Blad polaczenia';
     console.error(e);
   }
+}
+
+/* -- Invoice upload -- */
+async function uploadInvoices() {
+  const input = document.getElementById('invoiceFiles');
+  const msg   = document.getElementById('invoiceMsg');
+  msg.className = ''; msg.textContent = 'Wgrywanie...';
+  if (!input.files || input.files.length === 0) {
+    msg.className = 'err'; msg.textContent = 'Wybierz przynajmniej jeden plik PDF'; return;
+  }
+  const fd = new FormData();
+  for (const f of input.files) fd.append('files', f);
+  try {
+    const r = await fetch('api/invoice/upload', {method: 'POST', body: fd});
+    const d = await r.json();
+    if (d.ok) {
+      const ok  = (d.results || []).filter(x => x.ok);
+      const err = (d.results || []).filter(x => !x.ok);
+      let txt = ok.length ? 'Wgrano: ' + ok.map(x => x.month).join(', ') : '';
+      if (err.length) txt += (txt ? '; ' : '') + 'Blad: ' + err.map(x => x.filename + ': ' + x.error).join('; ');
+      msg.className = err.length ? 'err' : 'ok';
+      msg.textContent = txt;
+      setTimeout(loadData, 1500);
+    } else {
+      msg.className = 'err'; msg.textContent = 'Blad: ' + (d.error || 'nieznany');
+    }
+  } catch(e) {
+    msg.className = 'err'; msg.textContent = 'Blad polaczenia';
+  }
+}
+
+function renderInvoiceSection(invoices, tariffDrift) {
+  const banner = document.getElementById('tariffDriftBanner');
+  if (banner) {
+    if (tariffDrift && (tariffDrift.peak || tariffDrift.offpeak)) {
+      let msgs = [];
+      if (tariffDrift.peak)    msgs.push('szczyt: skonfig. ' + tariffDrift.peak.configured + ' -> faktura ' + tariffDrift.peak.invoice + ' zl/kWh');
+      if (tariffDrift.offpeak) msgs.push('poza szczytem: skonfig. ' + tariffDrift.offpeak.configured + ' -> faktura ' + tariffDrift.offpeak.invoice + ' zl/kWh');
+      banner.textContent = 'Zmiana stawek taryfowych: ' + msgs.join('; ') + '. Zaktualizuj tariff_peak_price / tariff_offpeak_price w konfiguracji dodatku.';
+      banner.style.display = '';
+    } else banner.style.display = 'none';
+  }
+  const wrap = document.getElementById('invoiceTableWrap');
+  if (!wrap) return;
+  if (!invoices || invoices.length === 0) {
+    wrap.innerHTML = '<p style="color:var(--muted);font-size:13px">Brak wgranych faktur. Wgraj PDF, aby uzgodnic dane rozliczeniowe.</p>';
+    return;
+  }
+  const rows = [...invoices].sort((a,b) => b.month.localeCompare(a.month)).map(inv => {
+    const chk = inv.reconciled ? 'OK' : '...';
+    const dI  = inv.diff_imported_kwh != null ? (inv.diff_imported_kwh > 0 ? '+' : '') + inv.diff_imported_kwh.toFixed(0) : '-';
+    const dE  = inv.diff_exported_kwh != null ? (inv.diff_exported_kwh > 0 ? '+' : '') + inv.diff_exported_kwh.toFixed(0) : '-';
+    return '<tr>' +
+      '<td>' + inv.month + '</td>' +
+      '<td style="color:var(--muted)">' + (inv.invoice_number || '-') + '</td>' +
+      '<td style="text-align:right">' + (inv.imported_kwh != null ? inv.imported_kwh.toFixed(0) : '-') + '</td>' +
+      '<td style="text-align:right">' + (inv.exported_kwh != null ? inv.exported_kwh.toFixed(0) : '-') + '</td>' +
+      '<td style="text-align:right;color:' + (Math.abs(inv.diff_imported_kwh||0) > 5 ? '#c0392b' : 'inherit') + '">' + dI + '</td>' +
+      '<td style="text-align:right;color:' + (Math.abs(inv.diff_exported_kwh||0) > 5 ? '#c0392b' : 'inherit') + '">' + dE + '</td>' +
+      '<td style="text-align:right">' + (inv.amount_due != null ? fmt(inv.amount_due, 2, 'zl') : '-') + '</td>' +
+      '<td style="text-align:right">' + (inv.deposit_used != null ? fmt(inv.deposit_used, 2, 'zl') : '-') + '</td>' +
+      '<td style="text-align:right;font-size:11px">' + (inv.peak_gross != null ? inv.peak_gross.toFixed(4) : '-') + '</td>' +
+      '<td style="text-align:right;font-size:11px">' + (inv.offpeak_gross != null ? inv.offpeak_gross.toFixed(4) : '-') + '</td>' +
+      '<td style="text-align:center">' + chk + '</td>' +
+    '</tr>';
+  }).join('');
+  wrap.innerHTML =
+    '<table style="width:100%;border-collapse:collapse;font-size:12px">' +
+    '<thead><tr style="border-bottom:2px solid var(--border);font-size:11px">' +
+      '<th style="text-align:left">Miesiac</th><th style="text-align:left">Nr FV</th>' +
+      '<th style="text-align:right">Pobr. kWh</th><th style="text-align:right">Odd. kWh</th>' +
+      '<th style="text-align:right">delta pobr.</th><th style="text-align:right">delta odd.</th>' +
+      '<th style="text-align:right">Do zaplaty</th><th style="text-align:right">Depozyt uzyt.</th>' +
+      '<th style="text-align:right">Szczyt zl/kWh</th><th style="text-align:right">Poza szczytem</th>' +
+      '<th style="text-align:center">Uzgod.</th>' +
+    '</tr></thead><tbody>' + rows + '</tbody></table>';
 }
 
 /* -- Pre-fill override month to last month -- */
