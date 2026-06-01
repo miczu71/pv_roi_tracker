@@ -132,6 +132,50 @@ def _patterns_for(field_key: str) -> list:
     return builtins + [p for p in learned if p not in builtins]
 
 
+def find_field_spans(text: str, parsed_fields: dict) -> dict:
+    """
+    For each field key backed by _BUILTIN_PATTERNS, find the text span of the
+    first regex match, provided the field has a non-None value in parsed_fields.
+
+    Returns {field_key: {'start': int, 'end': int, 'text': str}}.
+    Fields with no match are absent from the result (not None).
+
+    Also checks for the billing period (special-cased in _parse_text).
+    """
+    spans: dict = {}
+
+    # Fields backed by _patterns_for
+    for field_key in _BUILTIN_PATTERNS:
+        if parsed_fields.get(field_key) is None:
+            continue
+        for pattern in _patterns_for(field_key):
+            m = re.search(pattern, text, re.IGNORECASE)
+            if m:
+                # Use the widest match: from the start of the full match to its end
+                spans[field_key] = {
+                    'start': m.start(),
+                    'end': m.end(),
+                    'text': text[m.start():m.end()],
+                }
+                break
+
+    # Billing period — special pattern (year/month extracted from it)
+    year = parsed_fields.get('year')
+    month = parsed_fields.get('month')
+    if year is not None and month is not None:
+        bp_m = re.search(
+            r'Okres rozliczeniowy\s+\d{2}\.\d{2}\.\d{4}[^\n]*',
+            text)
+        if bp_m:
+            spans['billing_period'] = {
+                'start': bp_m.start(),
+                'end': bp_m.end(),
+                'text': text[bp_m.start():bp_m.end()],
+            }
+
+    return spans
+
+
 # ── InvoiceParseError ─────────────────────────────────────────────────────────
 
 class InvoiceParseError(ValueError):

@@ -510,14 +510,21 @@ def invoice_train_form():
         raw_text = rec.get('raw_text', '')
         # Re-parse from stored raw_text if available (to apply any newly learned patterns)
         fields: dict = {}
+        spans: dict = {}
         if raw_text:
             try:
-                from .invoice_parser import _parse_text, InvoiceParseError
-                parsed = _parse_text(raw_text)
+                from .invoice_parser import _parse_text, find_field_spans, InvoiceParseError
                 from dataclasses import asdict
+                parsed = _parse_text(raw_text)
                 fields = asdict(parsed)
+                spans = find_field_spans(raw_text, fields)
             except Exception:
-                fields = {}
+                # Even if parse failed entirely, try to get spans for whatever was extracted
+                try:
+                    from .invoice_parser import find_field_spans
+                    spans = find_field_spans(raw_text, fields)
+                except Exception:
+                    pass
         # Fall back to stored values for any field not parsed
         for fk in ['year', 'month', 'imported_kwh', 'exported_kwh', 'imported_kwh_peak',
                    'imported_kwh_offpeak', 'energy_peak_net', 'energy_offpeak_net',
@@ -527,7 +534,8 @@ def invoice_train_form():
             if fields.get(fk) is None and rec.get(fk) is not None:
                 fields[fk] = rec[fk]
         return jsonify({'ok': True, 'key': key, 'raw_text': raw_text,
-                        'filename': rec.get('filename', ''), 'fields': fields})
+                        'filename': rec.get('filename', ''), 'fields': fields,
+                        'spans': spans})
     except Exception as exc:
         log.exception('train_form failed')
         return jsonify({'ok': False, 'error': str(exc)}), 500
@@ -841,6 +849,12 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
 .rcem-badge.pending  { background: #e0e7ff; color: #3730a3; }
 .rcem-badge.retrying { background: #fef3c7; color: #92400e; }
 .rcem-badge.error    { background: #fee2e2; color: #991b1b; }
+
+/* -- Train modal source highlighting -- */
+.tx-span { border-radius: 2px; cursor: pointer; transition: outline 0.08s; }
+.tx-span:hover, .tx-active { outline: 2px solid #2b6cb0 !important; position: relative; z-index: 1; }
+.tf-found { border-left: 3px solid transparent; transition: background 0.1s; }
+.tf-active { background: #ebf8ff !important; }
 
 </style>
 </head>
@@ -2248,25 +2262,36 @@ async function removeInvoice(key) {
 /* ── Train modal ───────────────────────────────────────────────────────────── */
 let _trainModal = null;
 
+// Per-field pastel colour palette (cycles if more fields than colours)
+const _TX_COLOURS = [
+  '#bee3f8','#c6f6d5','#fefcbf','#fed7e2','#e9d8fd','#feebc8',
+  '#b2f5ea','#c3dafe','#fbd38d','#d6bcfa','#9ae6b4','#90cdf4',
+];
+
+function _txColour(idx) { return _TX_COLOURS[idx % _TX_COLOURS.length]; }
+
 function _ensureTrainModal() {
   if (_trainModal) return _trainModal;
   const overlay = document.createElement('div');
   overlay.id = 'trainOverlay';
-  overlay.style.cssText = 'display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1000;overflow-y:auto;padding:24px';
+  overlay.style.cssText = 'display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1000;overflow-y:auto;padding:16px';
   overlay.innerHTML =
-    '<div style="background:var(--card);border-radius:8px;max-width:900px;margin:0 auto;padding:24px;position:relative">' +
-      '<button onclick="closeTrainModal()" style="position:absolute;top:12px;right:14px;font-size:18px;background:none;border:none;cursor:pointer;color:var(--muted)">✕</button>' +
-      '<h3 style="margin:0 0 14px;font-size:15px">Trenuj parser — uzupełnij dane faktury</h3>' +
-      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">' +
-        '<div>' +
-          '<div style="font-size:12px;font-weight:600;margin-bottom:4px;color:var(--muted)">Surowy tekst PDF</div>' +
-          '<pre id="trainRawText" style="font-size:10px;white-space:pre-wrap;word-break:break-all;background:var(--bg);padding:10px;border-radius:4px;height:400px;overflow-y:auto;margin:0"></pre>' +
+    '<div style="background:var(--card);border-radius:8px;max-width:1100px;margin:0 auto;padding:20px;position:relative">' +
+      '<button onclick="closeTrainModal()" style="position:absolute;top:10px;right:12px;font-size:18px;background:none;border:none;cursor:pointer;color:var(--muted)">✕</button>' +
+      '<h3 style="margin:0 0 12px;font-size:14px">Trenuj parser — skoryguj dane i naucz nowy układ</h3>' +
+      '<div style="display:grid;grid-template-columns:55% 43%;gap:16px;align-items:start">' +
+        '<div style="display:flex;flex-direction:column;gap:6px">' +
+          '<div style="font-size:11px;font-weight:600;color:var(--muted)">Surowy tekst PDF <span style="font-weight:400">(najechaj na pole, aby podświetlić)</span></div>' +
+          '<pre id="trainRawText" style="font-size:10px;white-space:pre-wrap;word-break:break-all;background:var(--bg);padding:10px;border-radius:4px;height:460px;overflow-y:auto;margin:0;line-height:1.5"></pre>' +
         '</div>' +
-        '<div id="trainFieldsWrap" style="overflow-y:auto;height:440px"></div>' +
+        '<div style="display:flex;flex-direction:column;gap:4px">' +
+          '<div style="font-size:11px;font-weight:600;color:var(--muted);margin-bottom:2px">Pola faktury <span style="font-weight:400">● znalezione &nbsp; ○ brakuje</span></div>' +
+          '<div id="trainFieldsWrap" style="overflow-y:auto;height:460px;padding-right:4px"></div>' +
+        '</div>' +
       '</div>' +
-      '<div style="margin-top:14px;display:flex;gap:10px;align-items:center">' +
-        '<button id="trainSaveBtn" onclick="submitTrain()" style="background:#3182ce;color:#fff;border:none;padding:8px 18px;border-radius:4px;cursor:pointer;font-size:13px">Zapisz i naucz parser</button>' +
-        '<button onclick="closeTrainModal()" style="background:var(--bg);border:1px solid var(--border);padding:8px 14px;border-radius:4px;cursor:pointer;font-size:13px">Anuluj</button>' +
+      '<div style="margin-top:12px;display:flex;gap:10px;align-items:center">' +
+        '<button id="trainSaveBtn" onclick="submitTrain()" style="background:#3182ce;color:#fff;border:none;padding:7px 16px;border-radius:4px;cursor:pointer;font-size:13px">Zapisz i naucz parser</button>' +
+        '<button onclick="closeTrainModal()" style="background:var(--bg);border:1px solid var(--border);padding:7px 12px;border-radius:4px;cursor:pointer;font-size:13px">Anuluj</button>' +
         '<span id="trainMsg" style="font-size:12px;margin-left:8px"></span>' +
       '</div>' +
     '</div>';
@@ -2283,7 +2308,7 @@ async function openTrainModal(key) {
   const rawEl = document.getElementById('trainRawText');
   const fieldsEl = document.getElementById('trainFieldsWrap');
   const msg = document.getElementById('trainMsg');
-  rawEl.textContent = 'Ładowanie…';
+  rawEl.innerHTML = '<span style="color:var(--muted)">Ładowanie…</span>';
   fieldsEl.innerHTML = '';
   msg.textContent = '';
   _trainCurrentKey = key;
@@ -2294,44 +2319,151 @@ async function openTrainModal(key) {
     const r = await fetch('api/invoice/train_form?key=' + encodeURIComponent(key));
     const d = await r.json();
     if (!d.ok) { rawEl.textContent = 'Błąd: ' + (d.error||'nieznany'); return; }
-    rawEl.textContent = d.raw_text || '(brak tekstu PDF — wpisz wartości ręcznie)';
     _trainCurrentData = d;
-    const f = d.fields || {};
+    const f      = d.fields || {};
+    const spans  = d.spans  || {};
+    const rawTxt = d.raw_text || '';
 
+    // ── Field definitions (field_key, label, input type, span_key_override?)
     const FIELDS = [
-      ['year',             'Rok (np. 2025)',           'number'],
-      ['month',            'Miesiąc (1-12)',            'number'],
-      ['imported_kwh',     'Pobrano z sieci (kWh)',     'number'],
-      ['exported_kwh',     'Wprowadzono do sieci (kWh)','number'],
-      ['imported_kwh_peak','Import szczyt (kWh)',       'number'],
-      ['imported_kwh_offpeak','Import poza szczytem (kWh)','number'],
-      ['energy_peak_net',  'Energia szczyt net (zł/kWh)','number'],
-      ['energy_offpeak_net','Energia poza net (zł/kWh)', 'number'],
-      ['amount_due_pln',   'Do zapłaty (zł)',           'number'],
-      ['avg_price_pln_kwh','Śr. cena (zł/kWh)',         'number'],
-      ['deposit_current_pln','Depozyt bieżący (zł)',    'number'],
-      ['deposit_previous_pln','Depozyt poprzednie (zł)','number'],
-      ['deposit_used_pln', 'Depozyt rozliczony (zł)',   'number'],
-      ['fixed_mocowa_net', 'Opł. mocowa net (zł/mc)',   'number'],
-      ['fixed_abonament_net','Abonament net (zł/mc)',   'number'],
-      ['fixed_stalysieciowy_net','Skł. stały siec. net (zł/mc)','number'],
-      ['invoice_number',   'Nr faktury',                'text'],
+      ['year',                  'Rok (np. 2025)',              'number', 'billing_period'],
+      ['month',                 'Miesiąc (1-12)',              'number', 'billing_period'],
+      ['imported_kwh',          'Pobrano z sieci (kWh)',       'number'],
+      ['exported_kwh',          'Wprowadzono do sieci (kWh)',  'number'],
+      ['imported_kwh_peak',     'Import szczyt (kWh)',         'number', 'imp_peak'],
+      ['imported_kwh_offpeak',  'Import poza szczytem (kWh)', 'number', 'imp_offpeak'],
+      ['energy_peak_net',       'Energia szczyt net (zł/kWh)','number'],
+      ['energy_offpeak_net',    'Energia poza net (zł/kWh)',  'number'],
+      ['amount_due_pln',        'Do zapłaty (zł)',             'number', 'amount_due'],
+      ['avg_price_pln_kwh',     'Śr. cena (zł/kWh)',          'number', 'avg_price'],
+      ['deposit_current_pln',   'Depozyt bieżący (zł)',       'number', 'deposit_current'],
+      ['deposit_previous_pln',  'Depozyt poprzednie (zł)',    'number', 'deposit_previous'],
+      ['deposit_used_pln',      'Depozyt rozliczony (zł)',    'number', 'deposit_used'],
+      ['fixed_mocowa_net',      'Opł. mocowa net (zł/mc)',    'number', 'fixed_mocowa'],
+      ['fixed_abonament_net',   'Abonament net (zł/mc)',      'number', 'fixed_abonament'],
+      ['fixed_stalysieciowy_net','Skł. stały siec. net (zł/mc)','number','fixed_stalysieciowy'],
+      ['invoice_number',        'Nr faktury',                 'text'],
     ];
 
-    let html = '<div style="display:flex;flex-direction:column;gap:8px">';
-    FIELDS.forEach(([fk, label, type]) => {
-      const val = f[fk] != null ? f[fk] : '';
-      html += '<label style="font-size:12px;display:flex;flex-direction:column;gap:2px">' +
-        '<span style="color:var(--muted)">' + label + '</span>' +
-        '<input id="tf_' + fk + '" type="' + type + '" step="any" value="' + String(val).replace(/"/g,'&quot;') + '" ' +
-          'style="padding:4px 6px;border:1px solid var(--border);border-radius:3px;font-size:12px">' +
+    // Assign a colour index to each unique span key
+    const spanColourIdx = {};
+    let colIdx = 0;
+    FIELDS.forEach(([fk, , , sk]) => {
+      const spanKey = sk || fk;
+      if (!(spanKey in spanColourIdx)) spanColourIdx[spanKey] = colIdx++;
+    });
+
+    // ── Build annotated raw-text HTML
+    rawEl.innerHTML = _buildAnnotatedText(rawTxt, spans, spanColourIdx);
+
+    // ── Build field form
+    let html = '<div style="display:flex;flex-direction:column;gap:6px">';
+    FIELDS.forEach(([fk, label, type, spanKeyOverride]) => {
+      const spanKey = spanKeyOverride || fk;
+      const colour  = _txColour(spanColourIdx[spanKey] || 0);
+      const span    = spans[spanKey];
+      const hasSpan = !!span;
+      const hasVal  = f[fk] != null && f[fk] !== '';
+      const val     = hasVal ? f[fk] : '';
+
+      // Status dot + snippet
+      let dot, inputStyle, snippet = '';
+      if (hasSpan) {
+        dot = '<span style="color:#276749;font-size:14px" title="Auto-wykryto">●</span>';
+        inputStyle = 'border-left:3px solid ' + colour + ';background:#fff';
+        const snip = span.text.replace(/\n/g,' ').trim().substring(0, 45);
+        snippet = '<small style="color:#276749;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block" title="' + snip.replace(/"/g,'&quot;') + '">' + _hesc(snip) + '</small>';
+      } else if (hasVal) {
+        dot = '<span style="color:#c05621;font-size:14px" title="Wartość z zapisu (nie z parsowania)">●</span>';
+        inputStyle = 'border-left:3px solid #f6ad55;background:#fff';
+      } else {
+        dot = '<span style="color:#c53030;font-size:14px" title="Nie znaleziono">○</span>';
+        inputStyle = 'background:#fff5f5';
+      }
+
+      html += '<label id="tfl_' + fk + '" class="tf-found" ' +
+        'style="font-size:12px;display:flex;flex-direction:column;gap:1px;padding:3px 4px;border-radius:3px" ' +
+        'onmouseenter="_trainHover(\'' + fk + '\',\'' + spanKey + '\',true)" ' +
+        'onmouseleave="_trainHover(\'' + fk + '\',\'' + spanKey + '\',false)">' +
+        '<span style="display:flex;align-items:center;gap:4px;color:var(--muted)">' + dot + ' ' + label + '</span>' +
+        snippet +
+        '<input id="tf_' + fk + '" type="' + type + '" step="any" ' +
+          'value="' + String(val).replace(/"/g,'&quot;') + '" ' +
+          'style="padding:3px 5px;border:1px solid var(--border);border-radius:3px;font-size:12px;' + inputStyle + '">' +
       '</label>';
     });
     html += '</div>';
     fieldsEl.innerHTML = html;
+
   } catch(e) {
     rawEl.textContent = 'Błąd połączenia: ' + e.message;
   }
+}
+
+/* Build raw-text HTML with coloured span markers */
+function _hesc(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function _buildAnnotatedText(text, spans, colourIdx) {
+  if (!text) return '<span style="color:var(--muted)">(brak tekstu PDF — wpisz wartości ręcznie)</span>';
+
+  // Build a list of {start, end, spanKey} sorted by start, resolving overlaps
+  const intervals = Object.entries(spans)
+    .map(([sk, sp]) => ({sk, start: sp.start, end: sp.end}))
+    .sort((a,b) => a.start - b.start);
+
+  // Remove overlaps: if interval B starts before A ends, trim A
+  const clean = [];
+  let lastEnd = 0;
+  for (const iv of intervals) {
+    if (iv.start < lastEnd) continue; // skip overlapping
+    clean.push(iv);
+    lastEnd = iv.end;
+  }
+
+  // Build HTML
+  let html = '';
+  let pos = 0;
+  for (const iv of clean) {
+    if (iv.start > pos) html += _hesc(text.slice(pos, iv.start));
+    const bg = _txColour(colourIdx[iv.sk] || 0);
+    html += '<span id="ts-' + iv.sk + '" data-field="' + iv.sk + '" class="tx-span" ' +
+      'style="background:' + bg + '" ' +
+      'onmouseenter="_trainHoverSpan(\'' + iv.sk + '\',true)" ' +
+      'onmouseleave="_trainHoverSpan(\'' + iv.sk + '\',false)">' +
+      _hesc(text.slice(iv.start, iv.end)) +
+      '</span>';
+    pos = iv.end;
+  }
+  if (pos < text.length) html += _hesc(text.slice(pos));
+  return html;
+}
+
+/* Bidirectional hover — called from form field labels */
+function _trainHover(fk, spanKey, on) {
+  const lbl = document.getElementById('tfl_' + fk);
+  if (lbl) lbl.classList.toggle('tf-active', on);
+  const sp = document.getElementById('ts-' + spanKey);
+  if (sp) {
+    sp.classList.toggle('tx-active', on);
+    if (on) sp.scrollIntoView({behavior: 'smooth', block: 'center'});
+  }
+}
+
+/* Bidirectional hover — called from text spans */
+function _trainHoverSpan(spanKey, on) {
+  const sp = document.getElementById('ts-' + spanKey);
+  if (sp) sp.classList.toggle('tx-active', on);
+  // Highlight every form field that shares this span key
+  document.querySelectorAll('[id^="tfl_"]').forEach(lbl => {
+    // Find the label whose onmouseenter references this spanKey
+    const oe = lbl.getAttribute('onmouseenter') || '';
+    if (oe.includes("'" + spanKey + "'")) {
+      lbl.classList.toggle('tf-active', on);
+      if (on) lbl.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+    }
+  });
 }
 
 function closeTrainModal() {
