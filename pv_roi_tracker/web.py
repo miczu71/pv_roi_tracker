@@ -1947,7 +1947,7 @@ function renderInvoicesTab(invoices, tariffDrift, records, layoutsSummary) {
 function _renderInvKpiCards(invoices, tariffDrift, records) {
   const wrap = document.getElementById('invKpiCards');
   if (!wrap) return;
-  const sorted = [...invoices].sort((a,b) => b.month.localeCompare(a.month));
+  const sorted = [...invoices].filter(i => i.month).sort((a,b) => b.month.localeCompare(a.month));
   const latest = sorted[0] || null;
 
   const totalHistoric = (records || []).filter(r => !r.is_current).length;
@@ -2052,7 +2052,7 @@ function _renderCoverageGrid(invoices, records) {
 function renderDepositChart(invoices) {
   const ctx = document.getElementById('depositChart');
   if (!ctx) return;
-  const sorted = [...(invoices||[])].sort((a,b) => a.month.localeCompare(b.month));
+  const sorted = [...(invoices||[])].filter(i => i.month).sort((a,b) => a.month.localeCompare(b.month));
   const labels = sorted.map(i => i.month);
   const data   = sorted.map(i => i.deposit_previous != null ? i.deposit_previous : null);
   if (_depositChart) _depositChart.destroy();
