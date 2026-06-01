@@ -1912,12 +1912,16 @@ async function uploadInvoices() {
     const r = await fetch('api/invoice/upload', {method: 'POST', body: fd});
     const d = await r.json();
     if (d.ok) {
-      const ok  = (d.results || []).filter(x => x.ok);
-      const err = (d.results || []).filter(x => !x.ok);
-      let txt = ok.length ? 'Wgrano: ' + ok.map(x => x.month).join(', ') : '';
-      if (err.length) txt += (txt ? '; ' : '') + 'Blad: ' + err.map(x => x.filename + ': ' + x.error).join('; ');
-      msg.className = err.length ? 'err' : 'ok';
-      msg.textContent = txt;
+      const ok      = (d.results || []).filter(x => x.ok);
+      const stubs   = (d.results || []).filter(x => !x.ok && x.needs_training);
+      const hardErr = (d.results || []).filter(x => !x.ok && !x.needs_training);
+      let parts = [];
+      if (ok.length)      parts.push('Wgrano: ' + ok.map(x => x.month).join(', '));
+      if (stubs.length)   parts.push('⚠ Dodano do treningu: ' + stubs.map(x => x.filename).join(', ') + ' — kliknij Trenuj w tabeli poniżej');
+      if (hardErr.length) parts.push('Błąd: ' + hardErr.map(x => x.filename + ': ' + x.error).join('; '));
+      msg.className = hardErr.length ? 'err' : (stubs.length ? '' : 'ok');
+      msg.style.color = stubs.length && !hardErr.length ? '#b7791f' : '';
+      msg.textContent = parts.join('; ') || 'Gotowe';
       setTimeout(loadData, 1500);
     } else {
       msg.className = 'err'; msg.textContent = 'Blad: ' + (d.error || 'nieznany');
