@@ -20,5 +20,6 @@ export COMPARISON_YIELD_RATE=$(jq -r '.comparison_yield_rate // "0.055"' "$CONFI
 export HISTORIC_PATH="/data/historic.json"
 export RCEM_HISTORY_PATH="/data/rcem_history.json"
 export RCEM_CORRECTIONS_PATH="/data/rcem_corrections.json"
+export INVOICE_LAYOUTS_PATH="/data/invoice_layouts.json"
 
 exec python3 -m pv_roi_tracker.main

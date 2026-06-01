@@ -27,7 +27,10 @@ HISTORIC_PATH          = Path(os.environ.get('HISTORIC_PATH', '/data/historic.js
 RCEM_HISTORY_PATH      = Path(os.environ.get('RCEM_HISTORY_PATH', '/data/rcem_history.json'))
 RCEM_CORRECTIONS_PATH  = Path(os.environ.get('RCEM_CORRECTIONS_PATH', '/data/rcem_corrections.json'))
 INVOICE_PATH           = Path(os.environ.get('INVOICE_PATH', '/data/invoices.json'))
-BACKUP_SHARE       = Path(os.environ.get('BACKUP_SHARE', '/share/pv_roi_tracker'))
+INVOICE_LAYOUTS_PATH   = Path(os.environ.get('INVOICE_LAYOUTS_PATH', '/data/invoice_layouts.json'))
+BACKUP_SHARE           = Path(os.environ.get('BACKUP_SHARE', '/share/pv_roi_tracker'))
+TARIFF_PEAK_PRICE      = float(os.environ.get('TARIFF_PEAK_PRICE', '1.23'))
+TARIFF_OFFPEAK_PRICE   = float(os.environ.get('TARIFF_OFFPEAK_PRICE', '0.63'))
 GROSS_INVESTMENT   = float(os.environ.get('GROSS_INVESTMENT', '51900.0'))
 SUBSIDY            = float(os.environ.get('SUBSIDY', '28714.0'))
 SYSTEM_KWP         = float(os.environ.get('SYSTEM_KWP', '6.72'))
@@ -39,8 +42,6 @@ MQTT_PASSWORD      = os.environ.get('MQTT_PASSWORD', '')
 DISCOUNT_RATE      = float(os.environ.get('DISCOUNT_RATE_REAL', '0.04'))
 INFLATION_RATE     = float(os.environ.get('INFLATION_RATE', '0.05'))
 COMPARISON_YIELD   = float(os.environ.get('COMPARISON_YIELD_RATE', '0.055'))
-TARIFF_PEAK_PRICE    = float(os.environ.get('TARIFF_PEAK_PRICE', '1.23'))
-TARIFF_OFFPEAK_PRICE = float(os.environ.get('TARIFF_OFFPEAK_PRICE', '0.63'))
 
 
 def _notify_ha(title: str, message: str) -> None:
@@ -65,7 +66,7 @@ def _backup_data() -> None:
     import shutil
     try:
         BACKUP_SHARE.mkdir(parents=True, exist_ok=True)
-        for src in [HISTORIC_PATH, RCEM_HISTORY_PATH, RCEM_CORRECTIONS_PATH, INVOICE_PATH]:
+        for src in [HISTORIC_PATH, RCEM_HISTORY_PATH, RCEM_CORRECTIONS_PATH, INVOICE_PATH, INVOICE_LAYOUTS_PATH]:
             if src.exists():
                 shutil.copy2(src, BACKUP_SHARE / src.name)
         logger.info('Data backed up to %s', BACKUP_SHARE)
@@ -78,7 +79,7 @@ def main() -> None:
     from apscheduler.triggers.cron import CronTrigger
 
     from . import concat, historic_store, live_reader, rcem_scraper, roi, cpi_fetcher
-    from . import invoice_store
+    from . import invoice_store, invoice_layouts, invoice_parser
     from .month_close import close_month
     from .publisher import MQTTPublisher
     from . import __version__
@@ -110,18 +111,75 @@ def main() -> None:
 
     _web.set_historic_patch_callback(_historic_patch)
 
-    def _invoice_reconcile(parsed_list: list) -> None:
-        """Callback from web upload: reconcile each parsed InvoiceData."""
+    # Inject learned layouts into the parser at startup
+    invoice_parser.set_layouts_provider(
+        lambda fk: invoice_layouts.learned_for(fk, INVOICE_LAYOUTS_PATH)
+    )
+
+    def _invoice_reconcile(parsed_list: list, raw_texts: dict = None) -> None:
         for data in parsed_list:
             filename = getattr(data, '_filename', '')
+            snap = historic_store.snapshot_month(data.year, data.month, HISTORIC_PATH)
             reconciled = historic_store.reconcile_invoice(data, HISTORIC_PATH)
-            invoice_store.upsert(data, filename=filename,
-                                 reconciled=reconciled, path=INVOICE_PATH)
+            raw_text = (raw_texts or {}).get(filename, '') if data.warnings else None
+            invoice_store.upsert(data, filename=filename, reconciled=reconciled,
+                                 pre_reconcile=snap, raw_text=raw_text, path=INVOICE_PATH)
             logger.info('Invoice %d-%02d ingested (reconciled=%s)', data.year, data.month, reconciled)
         poll_and_publish()
 
     _web.set_invoice_reconcile_callback(_invoice_reconcile)
+
+    def _invoice_remove(key: str) -> dict:
+        """Remove an invoice and revert its historic.json snapshot if present."""
+        record = invoice_store.remove(key, INVOICE_PATH)
+        if record and record.get('pre_reconcile') and record.get('year') and record.get('month'):
+            historic_store.restore_month(record['year'], record['month'],
+                                         record['pre_reconcile'], HISTORIC_PATH)
+        poll_and_publish()
+        return record or {}
+
+    _web.set_invoice_remove_callback(_invoice_remove)
+
+    def _invoice_train(key: str, year: int, month: int, fields: dict,
+                       raw_text: str, filename: str) -> dict:
+        """Train on a corrected invoice: derive layout patterns + reconcile."""
+        from .invoice_parser import InvoiceData
+        # Derive and store layout patterns from corrected field values
+        learn_result = invoice_layouts.derive_and_store_patterns(
+            raw_text, fields, INVOICE_LAYOUTS_PATH)
+        learned_fields = [k for k, v in learn_result.items() if v]
+
+        # Build InvoiceData from the corrected fields
+        inv_fields = {f: fields.get(f) for f in InvoiceData.__dataclass_fields__}
+        inv_fields['year'] = year
+        inv_fields['month'] = month
+        # Ensure required fields have defaults
+        inv_fields.setdefault('warnings', [])
+        try:
+            data = InvoiceData(**inv_fields)  # type: ignore[arg-type]
+        except Exception as exc:
+            logger.exception('Train: failed to construct InvoiceData')
+            return {'ok': False, 'error': str(exc)}
+
+        snap = historic_store.snapshot_month(year, month, HISTORIC_PATH)
+        reconciled = historic_store.reconcile_invoice(data, HISTORIC_PATH)
+        invoice_store.upsert(data, filename=filename, reconciled=reconciled,
+                              pre_reconcile=snap, path=INVOICE_PATH)
+        # Remove the stub if it was one
+        if key.startswith('unparsed-'):
+            invoice_store.remove(key, INVOICE_PATH)
+        invoice_layouts.record_example({
+            'invoice_number': fields.get('invoice_number'),
+            'source_filename': filename,
+            'learned_fields': learned_fields,
+        }, INVOICE_LAYOUTS_PATH)
+        logger.info('Trained invoice %d-%02d; learned fields: %s', year, month, learned_fields)
+        poll_and_publish()
+        return {'ok': True, 'learned_fields': learned_fields, 'reconciled': reconciled}
+
+    _web.set_invoice_train_callback(_invoice_train)
     _web.set_invoice_path(INVOICE_PATH)
+    _web.set_layouts_path(INVOICE_LAYOUTS_PATH)
     _web.set_tariff_config(TARIFF_PEAK_PRICE, TARIFF_OFFPEAK_PRICE)
 
     from datetime import date
@@ -209,7 +267,6 @@ def main() -> None:
     def month_close_job() -> None:
         try:
             close_month(historic_path=HISTORIC_PATH, rcem_history_path=RCEM_HISTORY_PATH)
-            # Apply any invoice that was uploaded before the month was closed
             historic_store.reconcile_pending_invoices(INVOICE_PATH, HISTORIC_PATH)
             poll_and_publish()
         except Exception:

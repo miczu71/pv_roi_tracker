@@ -12,9 +12,12 @@ pypdf mangles Polish diacritics in certain PDFs (ł→ø, ą→a, etc.) so all
 regex patterns match on diacritic-neutral substrings or ASCII-safe text.
 
 Resilience design:
-  • Each field uses a *list* of candidate patterns (multi-pattern fallback):
+  • Each field has a *list* of built-in candidate patterns (multi-pattern fallback):
     the first match wins, so future label changes only need a new pattern
     prepended to the list rather than a code rewrite.
+  • An injectable layouts-provider (set_layouts_provider) appends *learned*
+    patterns after the built-ins. Built-ins always take priority; learned
+    patterns only activate when built-ins produce None for a field.
   • Missing *optional* fields produce a human-readable warning in
     InvoiceData.warnings rather than silently returning None.
   • Post-extraction sanity checks (_validate) catch wrong matches:
@@ -26,8 +29,110 @@ from __future__ import annotations
 
 import re
 from dataclasses import asdict, dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 
+# ── Layouts provider (injectable, default = no learned patterns) ──────────────
+
+_layouts_provider: Callable[[str], list] = lambda field_key: []
+
+
+def set_layouts_provider(fn: Callable[[str], list]) -> None:
+    """
+    Inject a function that returns learned regex patterns for a field key.
+    Called at add-on startup by main.py so the parser picks up saved layouts.
+    """
+    global _layouts_provider
+    _layouts_provider = fn
+
+
+# ── Built-in candidate patterns (ordered: most specific / current first) ─────
+# Keys match invoice_layouts.LEARNABLE_FIELDS.
+
+_BUILTIN_PATTERNS: dict[str, list] = {
+    'imp_total': [
+        r'Pobrano z sieci\s+([\d,]+)',
+        r'Pobrane z sieci\s+([\d,]+)',
+        r'Pobran[ae] z sieci\s+([\d,]+)',
+        r'Energia pobrana z sieci\s+([\d,]+)',
+    ],
+    'exp_total': [
+        r'Wprowadzono do sieci\s+([\d,]+)',
+        r'Wprowadzone do sieci\s+([\d,]+)',
+        r'Oddano do sieci\s+([\d,]+)',
+        r'Energia wprowadzona do sieci\s+([\d,]+)',
+    ],
+    'imp_peak': [
+        r'(?:Energia czynna\s+)?szczytowa\s+([\d,]+)\s+kWh\s+[\d,]+',
+        r'(?:Energia czynna\s+)?szczyt\s+([\d,]+)\s+kWh\s+[\d,]+',
+        r'strefa szczytow\w*\s+([\d,]+)\s+kWh',
+    ],
+    'imp_offpeak': [
+        r'(?:Energia czynna\s+)?pozaszczytowa\s+([\d,]+)\s+kWh\s+[\d,]+',
+        r'(?:Energia czynna\s+)?poza szczytem\s+([\d,]+)\s+kWh\s+[\d,]+',
+        r'strefa poza\s*szczytow\w*\s+([\d,]+)\s+kWh',
+    ],
+    'energy_peak_net': [
+        r'(?:Energia czynna\s+)?szczytowa\s+[\d,]+\s+kWh\s+([\d,]+)',
+        r'(?:Energia czynna\s+)?szczyt\s+[\d,]+\s+kWh\s+([\d,]+)',
+    ],
+    'energy_offpeak_net': [
+        r'(?:Energia czynna\s+)?pozaszczytowa\s+[\d,]+\s+kWh\s+([\d,]+)',
+        r'(?:Energia czynna\s+)?poza szczytem\s+[\d,]+\s+kWh\s+([\d,]+)',
+    ],
+    'invoice_number': [
+        r'Numer faktury\s+([\w/]+)',
+        r'Nr faktury\s+([\w/]+)',
+        r'Faktura\s+nr\s+([\w/]+)',
+    ],
+    'amount_due': [
+        r'Razem \(3-6\)\s+([\d,]+)',
+        r'Razem do zap.aty\s+([\d,]+)',
+        r'Do zap.aty\s+([\d,]+)',
+    ],
+    'avg_price': [
+        r'[Śś]rednia cena za 1 kWh to\s+([\d,]+)',
+        r'rednia cena za 1 kWh to\s+([\d,]+)',
+        r'[Śś]rednia cena 1 kWh\s+([\d,]+)',
+        r'[Śś]r\.\s+cena\s+([\d,]+)',
+    ],
+    'deposit_current': [
+        r'Depozyt prosumencki w rozliczanym okresie[^\d]+([\d,]+)',
+        r'Depozyt prosumencki w bie.*?okresie[^\d]+([\d,]+)',
+        r'4\.\s*Depozyt prosumencki[^\d]+([\d,]+)',
+    ],
+    'deposit_previous': [
+        r'Depozyt prosumencki z okres.w poprzednich[^\d]+([\d,]+)',
+        r'5\.\s*Depozyt prosumencki z poprz[^\d]+([\d,]+)',
+    ],
+    'deposit_used': [
+        r'Rozliczenie depozytu \(\d\+\d\)\s+([\d,]+)',
+        r'Rozliczenie depozytu\s+([\d,]+)',
+        r'6\.\s*Rozliczenie depozytu[^\d]+([\d,]+)',
+    ],
+    'fixed_mocowa': [
+        r'Op.ata mocowa\s+\d+\s+mc\s+[\d,]+\s+([\d,]+)',
+        r'Op.ata mocow\w*\s+\d+\s+mc\s+([\d,]+)',
+    ],
+    'fixed_abonament': [
+        r'Stawka op.aty abonamentowej\s+\d+\s+mc\s+[\d,]+\s+([\d,]+)',
+        r'Op.ata abonamentow\w*\s+\d+\s+mc\s+[\d,]+\s+([\d,]+)',
+        r'Abonament\s+\d+\s+mc\s+[\d,]+\s+([\d,]+)',
+    ],
+    'fixed_stalysieciowy': [
+        r'Sk.adnik sta.y stawki sieciowej\s+\d+\s+mc\s+[\d,]+\s+([\d,]+)',
+        r'Sk.adnik sta.y sieciow\w*\s+\d+\s+mc\s+[\d,]+\s+([\d,]+)',
+    ],
+}
+
+
+def _patterns_for(field_key: str) -> list:
+    """Built-in patterns first, then any learned patterns for this field."""
+    builtins = _BUILTIN_PATTERNS.get(field_key, [])
+    learned = _layouts_provider(field_key)
+    return builtins + [p for p in learned if p not in builtins]
+
+
+# ── InvoiceParseError ─────────────────────────────────────────────────────────
 
 class InvoiceParseError(ValueError):
     """Raised when the PDF is not a recognisable Tauron invoice."""
@@ -97,7 +202,7 @@ def _n(s: str) -> float:
 
 
 def _first(pattern: str, text: str, group: int = 1) -> Optional[str]:
-    m = re.search(pattern, text)
+    m = re.search(pattern, text, re.IGNORECASE)
     return m.group(group) if m else None
 
 
@@ -265,50 +370,22 @@ def _parse_text(text: str) -> InvoiceData:
         r'Okres rozliczeniowy\s+(\d{2}\.\d{2}\.\d{4} - \d{2}\.\d{2}\.\d{4})', text)
 
     # ── Invoice number ────────────────────────────────────────────────────────
-    invoice_number = _first_multi([
-        r'Numer faktury\s+([\w/]+)',
-        r'Nr faktury\s+([\w/]+)',
-        r'Faktura\s+nr\s+([\w/]+)',
-    ], text)
+    invoice_number = _first_multi(_patterns_for('invoice_number'), text)
 
     # ── Import / export totals ────────────────────────────────────────────────
-    imp_total = _first_float_multi([
-        r'Pobrano z sieci\s+([\d,]+)',
-        r'Pobrane z sieci\s+([\d,]+)',
-        r'Pobran[ae] z sieci\s+([\d,]+)',
-        r'Energia pobrana z sieci\s+([\d,]+)',
-    ], text)
+    imp_total = _first_float_multi(_patterns_for('imp_total'), text)
     if imp_total is None:
         raise InvoiceParseError('Imported kWh (Pobrano z sieci) not found')
 
-    exp_total = _first_float_multi([
-        r'Wprowadzono do sieci\s+([\d,]+)',
-        r'Wprowadzone do sieci\s+([\d,]+)',
-        r'Oddano do sieci\s+([\d,]+)',
-        r'Energia wprowadzona do sieci\s+([\d,]+)',
-    ], text)
+    exp_total = _first_float_multi(_patterns_for('exp_total'), text)
     if exp_total is None:
         raise InvoiceParseError('Exported kWh (Wprowadzono do sieci) not found')
 
     # ── Peak / offpeak import from Sprzedaż section ───────────────────────────
-    imp_peak = _first_float_multi([
-        r'(?:Energia czynna\s+)?szczytowa\s+([\d,]+)\s+kWh\s+[\d,]+',
-        r'(?:Energia czynna\s+)?szczyt\s+([\d,]+)\s+kWh\s+[\d,]+',
-        r'strefa szczytow\w*\s+([\d,]+)\s+kWh',
-    ], text)
-    imp_offpeak = _first_float_multi([
-        r'(?:Energia czynna\s+)?pozaszczytowa\s+([\d,]+)\s+kWh\s+[\d,]+',
-        r'(?:Energia czynna\s+)?poza szczytem\s+([\d,]+)\s+kWh\s+[\d,]+',
-        r'strefa poza\s*szczytow\w*\s+([\d,]+)\s+kWh',
-    ], text)
-    energy_peak_net = _first_float_multi([
-        r'(?:Energia czynna\s+)?szczytowa\s+[\d,]+\s+kWh\s+([\d,]+)',
-        r'(?:Energia czynna\s+)?szczyt\s+[\d,]+\s+kWh\s+([\d,]+)',
-    ], text)
-    energy_offpeak_net = _first_float_multi([
-        r'(?:Energia czynna\s+)?pozaszczytowa\s+[\d,]+\s+kWh\s+([\d,]+)',
-        r'(?:Energia czynna\s+)?poza szczytem\s+[\d,]+\s+kWh\s+([\d,]+)',
-    ], text)
+    imp_peak          = _first_float_multi(_patterns_for('imp_peak'), text)
+    imp_offpeak       = _first_float_multi(_patterns_for('imp_offpeak'), text)
+    energy_peak_net   = _first_float_multi(_patterns_for('energy_peak_net'), text)
+    energy_offpeak_net = _first_float_multi(_patterns_for('energy_offpeak_net'), text)
 
     if imp_peak is None:
         warnings.append('import szczytowy (kWh) nie znaleziony')
@@ -320,9 +397,6 @@ def _parse_text(text: str) -> InvoiceData:
         warnings.append('cena energii pozaszczytowej (net) nie znaleziona — poza-szczyt gross nieobliczony')
 
     # ── Peak / offpeak export from meter reading section ──────────────────────
-    # Layout (two lines after the (oddanie) counter line):
-    #   szczyt 30.04.2026 (Zdalny) 230,0000
-    #   pozaszczytowa 30.04.2026 (Zdalny) 238,0000
     _exp_m = re.search(r'\(oddanie\)-\d+\nszczyt\s+[\d.]+\s+\([^\)]+\)\s+([\d,]+)', text)
     exp_peak = _n(_exp_m.group(1)) if _exp_m else None
     _exp_m2 = re.search(r'\(oddanie\)-\d+\n[^\n]+\npozaszczytowa\s+[\d.]+\s+\([^\)]+\)\s+([\d,]+)', text)
@@ -334,7 +408,6 @@ def _parse_text(text: str) -> InvoiceData:
     dist_text = dist_section_m.group(0) if dist_section_m else text
 
     def _dist_peak(section_patterns: list) -> Optional[float]:
-        """Find heading matching any section_pattern, return price on next szczytow* line."""
         for sp in section_patterns:
             m = re.search(sp + r'\s+szczyt\w*\s+\d+\s+kWh\s+([\d,]+)', dist_text, re.IGNORECASE)
             if m:
@@ -343,7 +416,6 @@ def _parse_text(text: str) -> InvoiceData:
 
     def _dist_offpeak(section_patterns: list) -> Optional[float]:
         for sp in section_patterns:
-            # Simpler two-line approach: find heading, skip peak line, grab next kWh price
             m2 = re.search(
                 sp + r'\s+\S+\s+\d+\s+kWh\s+[\d,]+[^\n]+\n\s*\S+\s+\d+\s+kWh\s+([\d,]+)',
                 dist_text, re.IGNORECASE)
@@ -351,18 +423,11 @@ def _parse_text(text: str) -> InvoiceData:
                 return _n(m2.group(1))
         return None
 
-    # Składnik zmienny stawki sieciowej (ł→ø in pypdf → match with .)
     _sksn_patterns = [r'Sk.adnik zmienny stawki sieciowej', r'Sk.adnik zmienny sieciow\w*']
     dist_var_peak_net    = _dist_peak(_sksn_patterns)
     dist_var_offpeak_net = _dist_offpeak(_sksn_patterns)
-
-    # Stawka jakościowa
     dist_jakosciowa_net  = _dist_peak([r'Stawka jako.ciow\w*', r'Jako.ciow\w*'])
-
-    # Opłata OZE
     dist_oze_net         = _dist_peak([r'Op.ata OZE', r'Stawka OZE'])
-
-    # Opłata kogeneracyjna
     dist_kogeneracja_net = _dist_peak([r'Op.ata kogeneracyjna', r'Kogeneracyjna'])
 
     if dist_var_peak_net is None:
@@ -376,20 +441,10 @@ def _parse_text(text: str) -> InvoiceData:
     if dist_kogeneracja_net is None:
         warnings.append('opłata kogeneracyjna nie znaleziona (użyto 0)')
 
-    # ── Fixed monthly charges (1 mc lines) ───────────────────────────────────
-    fixed_mocowa_net      = _first_float_multi([
-        r'Op.ata mocowa\s+\d+\s+mc\s+[\d,]+\s+([\d,]+)',
-        r'Op.ata mocow\w*\s+\d+\s+mc\s+([\d,]+)',
-    ], dist_text)
-    fixed_abonament_net   = _first_float_multi([
-        r'Stawka op.aty abonamentowej\s+\d+\s+mc\s+[\d,]+\s+([\d,]+)',
-        r'Op.ata abonamentow\w*\s+\d+\s+mc\s+[\d,]+\s+([\d,]+)',
-        r'Abonament\s+\d+\s+mc\s+[\d,]+\s+([\d,]+)',
-    ], dist_text)
-    fixed_stalysieciowy_net = _first_float_multi([
-        r'Sk.adnik sta.y stawki sieciowej\s+\d+\s+mc\s+[\d,]+\s+([\d,]+)',
-        r'Sk.adnik sta.y sieciow\w*\s+\d+\s+mc\s+[\d,]+\s+([\d,]+)',
-    ], dist_text)
+    # ── Fixed monthly charges ─────────────────────────────────────────────────
+    fixed_mocowa_net        = _first_float_multi(_patterns_for('fixed_mocowa'), dist_text)
+    fixed_abonament_net     = _first_float_multi(_patterns_for('fixed_abonament'), dist_text)
+    fixed_stalysieciowy_net = _first_float_multi(_patterns_for('fixed_stalysieciowy'), dist_text)
 
     if fixed_mocowa_net is None:
         warnings.append('opłata mocowa nie znaleziona')
@@ -405,20 +460,9 @@ def _parse_text(text: str) -> InvoiceData:
         warnings.append('fixed_total_net nieobliczony — brakuje co najmniej jednej opłaty stałej')
 
     # ── Prosument deposit ─────────────────────────────────────────────────────
-    deposit_current_pln  = _first_float_multi([
-        r'Depozyt prosumencki w rozliczanym okresie[^\d]+([\d,]+)',
-        r'Depozyt prosumencki w bie.*?okresie[^\d]+([\d,]+)',
-        r'4\.\s*Depozyt prosumencki[^\d]+([\d,]+)',
-    ], text)
-    deposit_previous_pln = _first_float_multi([
-        r'Depozyt prosumencki z okres.w poprzednich[^\d]+([\d,]+)',
-        r'5\.\s*Depozyt prosumencki z poprz[^\d]+([\d,]+)',
-    ], text)
-    deposit_used_pln     = _first_float_multi([
-        r'Rozliczenie depozytu \(\d\+\d\)\s+([\d,]+)',
-        r'Rozliczenie depozytu\s+([\d,]+)',
-        r'6\.\s*Rozliczenie depozytu[^\d]+([\d,]+)',
-    ], text)
+    deposit_current_pln  = _first_float_multi(_patterns_for('deposit_current'), text)
+    deposit_previous_pln = _first_float_multi(_patterns_for('deposit_previous'), text)
+    deposit_used_pln     = _first_float_multi(_patterns_for('deposit_used'), text)
 
     if deposit_current_pln is None:
         warnings.append('depozyt prosumencki bieżący nie znaleziony')
@@ -428,17 +472,8 @@ def _parse_text(text: str) -> InvoiceData:
         warnings.append('rozliczenie depozytu nie znalezione')
 
     # ── Amount due ────────────────────────────────────────────────────────────
-    amount_due_pln = _first_float_multi([
-        r'Razem \(3-6\)\s+([\d,]+)',
-        r'Razem do zap.aty\s+([\d,]+)',
-        r'Do zap.aty\s+([\d,]+)',
-    ], text)
-    avg_price_pln_kwh = _first_float_multi([
-        r'[Śś]rednia cena za 1 kWh to\s+([\d,]+)',
-        r'rednia cena za 1 kWh to\s+([\d,]+)',
-        r'[Śś]rednia cena 1 kWh\s+([\d,]+)',
-        r'[Śś]r\.\s+cena\s+([\d,]+)',
-    ], text)
+    amount_due_pln    = _first_float_multi(_patterns_for('amount_due'), text)
+    avg_price_pln_kwh = _first_float_multi(_patterns_for('avg_price'), text)
 
     if amount_due_pln is None:
         warnings.append('kwota do zapłaty (Razem) nie znaleziona')
@@ -478,11 +513,10 @@ def _parse_text(text: str) -> InvoiceData:
             blended_gross = round(
                 (imp_peak * peak_gross + imp_offpeak * offpeak_gross) / total_imp, 4)
     elif peak_gross is not None and offpeak_gross is not None:
-        # No split available — use arithmetic mean as approximation
         blended_gross = round((peak_gross + offpeak_gross) / 2, 4)
         warnings.append('blended_gross: podział szczyt/poza-szczyt niedostępny — użyto średniej arytmetycznej')
 
-    # De-duplicate warnings generated in multiple places (e.g. peak_gross warned twice)
+    # De-duplicate warnings
     seen: set = set()
     unique_warnings: list = []
     for w in warnings:
@@ -523,6 +557,5 @@ def _parse_text(text: str) -> InvoiceData:
         warnings=unique_warnings,
     )
 
-    # Append sanity-check results
     data.warnings.extend(_validate(data))
     return data

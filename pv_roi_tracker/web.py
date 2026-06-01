@@ -23,7 +23,10 @@ _lock = threading.Lock()
 _rcem_override_callback = None
 _historic_patch_callback = None
 _invoice_reconcile_callback = None
+_invoice_remove_callback = None
+_invoice_train_callback = None
 _invoice_path = None
+_layouts_path = None
 _tariff_peak    = 1.23
 _tariff_offpeak = 0.63
 
@@ -46,6 +49,21 @@ def set_invoice_reconcile_callback(fn) -> None:
 def set_invoice_path(path) -> None:
     global _invoice_path
     _invoice_path = path
+
+
+def set_invoice_remove_callback(fn) -> None:
+    global _invoice_remove_callback
+    _invoice_remove_callback = fn
+
+
+def set_invoice_train_callback(fn) -> None:
+    global _invoice_train_callback
+    _invoice_train_callback = fn
+
+
+def set_layouts_path(path) -> None:
+    global _layouts_path
+    _layouts_path = path
 
 
 def set_tariff_config(peak: float, offpeak: float) -> None:
@@ -293,6 +311,7 @@ def api_data():
         'predictions': _build_predictions(result),
         'invoices': _build_invoices_data(records),
         'tariff_drift': _build_tariff_drift(),
+        'layouts_summary': _build_layouts_summary(),
     })
 
 
@@ -305,19 +324,30 @@ def _build_invoices_data(records):
     except Exception:
         return []
     out = []
-    for mk, inv in sorted(stored.items()):
+    for key, inv in sorted(stored.items(), key=lambda kv: kv[0]):
         try:
-            iy, im = int(mk[:4]), int(mk[5:])
-            hist_rec = next((r for r in records if r.year == iy and r.month == im), None)
+            # Synthetic keys like "unparsed-<ts>-<name>" — month unknown yet
+            is_stub = key.startswith('unparsed-')
             diff_imp = diff_exp = None
-            if hist_rec:
-                if hist_rec.purchased_kwh is not None and inv.get('imported_kwh') is not None:
-                    diff_imp = round(inv['imported_kwh'] - hist_rec.purchased_kwh, 2)
-                if hist_rec.exported_kwh is not None and inv.get('exported_kwh') is not None:
-                    diff_exp = round(inv['exported_kwh'] - hist_rec.exported_kwh, 2)
+            if not is_stub:
+                try:
+                    iy, im = int(key[:4]), int(key[5:])
+                    hist_rec = next((r for r in records if r.year == iy and r.month == im), None)
+                    if hist_rec:
+                        if hist_rec.purchased_kwh is not None and inv.get('imported_kwh') is not None:
+                            diff_imp = round(inv['imported_kwh'] - hist_rec.purchased_kwh, 2)
+                        if hist_rec.exported_kwh is not None and inv.get('exported_kwh') is not None:
+                            diff_exp = round(inv['exported_kwh'] - hist_rec.exported_kwh, 2)
+                except (ValueError, TypeError):
+                    pass
             inv_warnings = inv.get('warnings', [])
             out.append({
-                'month': mk,
+                'key': key,
+                'month': key if not is_stub else None,
+                'is_stub': is_stub,
+                'needs_training': inv.get('needs_training', False),
+                'parse_error': inv.get('parse_error'),
+                'has_raw_text': bool(inv.get('raw_text')),
                 'amount_due': inv.get('amount_due_pln'),
                 'deposit_current': inv.get('deposit_current_pln'),
                 'deposit_previous': inv.get('deposit_previous_pln'),
@@ -335,6 +365,7 @@ def _build_invoices_data(records):
                 'avg_price': inv.get('avg_price_pln_kwh'),
                 'reconciled': inv.get('reconciled', False),
                 'invoice_number': inv.get('invoice_number'),
+                'filename': inv.get('filename'),
                 'billing_period_raw': inv.get('billing_period_raw'),
                 'warnings': inv_warnings,
                 'warnings_count': len(inv_warnings),
@@ -389,15 +420,21 @@ def invoice_upload():
     files = request.files.getlist('files') or request.files.getlist('file')
     if not files:
         return jsonify({'ok': False, 'error': 'no file(s) attached (field name: files)'}), 400
-    from .invoice_parser import parse_invoice, InvoiceParseError
+    from .invoice_parser import parse_invoice, parse_invoice_debug, InvoiceParseError
     results = []
     parsed_list = []
+    raw_texts: dict = {}  # fname → raw text (for warnings-aware storage)
     for f in files:
         fname = f.filename or 'upload'
+        pdf_bytes = f.read()
         try:
-            data = parse_invoice(f.read())
+            data = parse_invoice(pdf_bytes)
             data._filename = fname  # type: ignore[attr-defined]
             parsed_list.append(data)
+            if data.warnings:
+                # Store raw text so Train can work later
+                debug = parse_invoice_debug(pdf_bytes)
+                raw_texts[fname] = debug.get('text', '')
             results.append({'filename': fname, 'month': f'{data.year}-{data.month:02d}',
                              'imported_kwh': data.imported_kwh, 'exported_kwh': data.exported_kwh,
                              'peak_gross': data.peak_gross, 'offpeak_gross': data.offpeak_gross,
@@ -405,13 +442,25 @@ def invoice_upload():
                              'warnings': data.warnings,
                              'ok': True})
         except InvoiceParseError as exc:
-            results.append({'filename': fname, 'ok': False, 'error': str(exc)})
+            # Store failed parse as a stub so user can train later
+            error_msg = str(exc)
+            stub_key = None
+            if _invoice_path is not None:
+                try:
+                    debug = parse_invoice_debug(pdf_bytes)
+                    raw_text = debug.get('text', '')
+                    from . import invoice_store as _is
+                    stub_key = _is.upsert_stub(fname, raw_text, error_msg, _invoice_path)
+                except Exception:
+                    log.exception('Failed to store stub for %s', fname)
+            results.append({'filename': fname, 'ok': False, 'needs_training': True,
+                             'error': error_msg, 'stub_key': stub_key})
         except Exception as exc:
             log.exception('Invoice parse error: %s', fname)
             results.append({'filename': fname, 'ok': False, 'error': str(exc)})
     if parsed_list:
         try:
-            _invoice_reconcile_callback(parsed_list)
+            _invoice_reconcile_callback(parsed_list, raw_texts)
         except Exception as exc:
             log.exception('Invoice reconcile callback failed')
             return jsonify({'ok': False, 'error': str(exc), 'results': results}), 500
@@ -428,6 +477,109 @@ def invoice_debug():
     f = files[0]
     result = parse_invoice_debug(f.read())
     return jsonify(result)
+
+
+@app.route('/api/invoice/remove', methods=['POST'])
+def invoice_remove():
+    """Remove an invoice (and revert its historic.json snapshot)."""
+    if _invoice_remove_callback is None:
+        return jsonify({'ok': False, 'error': 'not initialized'}), 503
+    data = request.get_json(silent=True) or {}
+    key = str(data.get('key', ''))
+    if not key:
+        return jsonify({'ok': False, 'error': 'key required'}), 400
+    try:
+        record = _invoice_remove_callback(key)
+        return jsonify({'ok': True, 'removed_key': key, 'had_snapshot': bool((record or {}).get('pre_reconcile'))})
+    except Exception as exc:
+        log.exception('Invoice remove failed')
+        return jsonify({'ok': False, 'error': str(exc)}), 500
+
+
+@app.route('/api/invoice/train_form')
+def invoice_train_form():
+    """Return raw_text + best-effort field values for a given invoice key."""
+    key = request.args.get('key', '')
+    if not key or _invoice_path is None:
+        return jsonify({'ok': False, 'error': 'key required'}), 400
+    try:
+        from . import invoice_store as _istore
+        rec = _istore.get(key, _invoice_path)
+        if rec is None:
+            return jsonify({'ok': False, 'error': 'invoice not found'}), 404
+        raw_text = rec.get('raw_text', '')
+        # Re-parse from stored raw_text if available (to apply any newly learned patterns)
+        fields: dict = {}
+        if raw_text:
+            try:
+                from .invoice_parser import _parse_text, InvoiceParseError
+                parsed = _parse_text(raw_text)
+                from dataclasses import asdict
+                fields = asdict(parsed)
+            except Exception:
+                fields = {}
+        # Fall back to stored values for any field not parsed
+        for fk in ['year', 'month', 'imported_kwh', 'exported_kwh', 'imported_kwh_peak',
+                   'imported_kwh_offpeak', 'energy_peak_net', 'energy_offpeak_net',
+                   'amount_due_pln', 'avg_price_pln_kwh', 'deposit_current_pln',
+                   'deposit_previous_pln', 'deposit_used_pln', 'fixed_mocowa_net',
+                   'fixed_abonament_net', 'fixed_stalysieciowy_net', 'invoice_number']:
+            if fields.get(fk) is None and rec.get(fk) is not None:
+                fields[fk] = rec[fk]
+        return jsonify({'ok': True, 'key': key, 'raw_text': raw_text,
+                        'filename': rec.get('filename', ''), 'fields': fields})
+    except Exception as exc:
+        log.exception('train_form failed')
+        return jsonify({'ok': False, 'error': str(exc)}), 500
+
+
+@app.route('/api/invoice/train', methods=['POST'])
+def invoice_train():
+    """Accept corrected field values, derive layout patterns, and reconcile the invoice."""
+    if _invoice_train_callback is None:
+        return jsonify({'ok': False, 'error': 'not initialized'}), 503
+    data = request.get_json(silent=True) or {}
+    key = str(data.get('key', ''))
+    try:
+        year  = int(data.get('year', 0))
+        month = int(data.get('month', 0))
+    except (TypeError, ValueError):
+        return jsonify({'ok': False, 'error': 'year and month must be integers'}), 400
+    if not key or not (1 <= month <= 12) or year < 2000:
+        return jsonify({'ok': False, 'error': 'key, valid year and month required'}), 400
+    fields = data.get('fields', {})
+    raw_text = data.get('raw_text', '')
+    filename = data.get('filename', '')
+    try:
+        result = _invoice_train_callback(key, year, month, fields, raw_text, filename)
+        return jsonify(result)
+    except Exception as exc:
+        log.exception('Invoice train failed')
+        return jsonify({'ok': False, 'error': str(exc)}), 500
+
+
+@app.route('/api/invoice/layouts/clear', methods=['POST'])
+def invoice_layouts_clear():
+    """Reset all learned layout patterns."""
+    if _layouts_path is None:
+        return jsonify({'ok': False, 'error': 'not initialized'}), 503
+    try:
+        from . import invoice_layouts as _il
+        _il.clear(_layouts_path)
+        return jsonify({'ok': True})
+    except Exception as exc:
+        log.exception('Layouts clear failed')
+        return jsonify({'ok': False, 'error': str(exc)}), 500
+
+
+def _build_layouts_summary() -> Optional[dict]:
+    if _layouts_path is None:
+        return None
+    try:
+        from . import invoice_layouts as _il
+        return _il.summary(_layouts_path)
+    except Exception:
+        return None
 
 
 @app.route('/api/rcem/override', methods=['POST'])
@@ -824,6 +976,8 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
           </div>
           <div id="invoiceTableWrap" style="overflow-x:auto"></div>
         </div>
+        <!-- Trained layouts panel -->
+        <div id="invLayoutsPanel" style="margin-bottom:16px;padding:10px 12px;background:var(--bg);border-radius:4px;border:1px solid var(--border)"></div>
         <!-- Raw-text debug view -->
         <details style="margin-bottom:16px">
           <summary style="cursor:pointer;font-size:13px;color:var(--muted)">Diagnoza parsera PDF (debug)</summary>
@@ -1737,7 +1891,7 @@ async function loadData() {
     renderHistTable([...d.records].reverse(), d.summary.month_closed, d.invoices || []);
     renderPredTable(d.predictions, d.summary, d.summary.avg_window);
     renderYearsTable(d.records, systemKwp);
-    renderInvoicesTab(d.invoices || [], d.tariff_drift, d.records);
+    renderInvoicesTab(d.invoices || [], d.tariff_drift, d.records, d.layouts_summary);
   } catch (e) {
     document.getElementById('updated').textContent = 'Blad polaczenia';
     console.error(e);
@@ -1776,12 +1930,13 @@ async function uploadInvoices() {
 /* ─────────────────────────────────────────────────────────────
    Faktury tab renderer
    ───────────────────────────────────────────────────────────── */
-function renderInvoicesTab(invoices, tariffDrift, records) {
+function renderInvoicesTab(invoices, tariffDrift, records, layoutsSummary) {
   _renderInvKpiCards(invoices, tariffDrift, records);
   _renderDriftBanner(tariffDrift);
   _renderCoverageGrid(invoices, records);
   renderDepositChart(invoices);
   _renderInvoiceTable(invoices);
+  _renderLayoutsPanel(layoutsSummary);
 }
 
 /* KPI summary cards */
@@ -1936,73 +2091,107 @@ function _renderInvoiceTable(invoices) {
   const n2 = v => v != null ? v.toFixed(2) : '-';
   const n0 = v => v != null ? v.toFixed(0) : '-';
 
-  const sorted = [...invoices].sort((a,b) => b.month.localeCompare(a.month));
+  const sorted = [...invoices].sort((a,b) => {
+    // stubs sort before real months; real months sort newest-first
+    if (a.is_stub && !b.is_stub) return -1;
+    if (!a.is_stub && b.is_stub) return 1;
+    const ka = a.month || a.key || '';
+    const kb = b.month || b.key || '';
+    return kb.localeCompare(ka);
+  });
+
   let rows = '';
   sorted.forEach((inv, idx) => {
-    const chk = inv.reconciled
-      ? '<span style="color:#27ae60;font-weight:700">✓</span>'
-      : '<span style="color:#e67e22">…</span>';
+    const isStub = inv.is_stub || inv.needs_training;
+    let statusCell, monthCell;
+
+    if (isStub) {
+      statusCell = '<span style="background:#fed7d7;color:#c0392b;padding:2px 6px;border-radius:3px;font-size:11px;font-weight:600">wymaga treningu</span>';
+      const errTip = (inv.parse_error || '').replace(/"/g,'&quot;');
+      monthCell = '<span style="color:var(--muted);font-size:11px" title="' + errTip + '">' +
+        (inv.filename || inv.key || '?') + '</span>';
+    } else {
+      const chk = inv.reconciled
+        ? '<span style="color:#27ae60;font-weight:700">✓</span>'
+        : '<span style="color:#e67e22">…</span>';
+      statusCell = chk;
+      monthCell = (inv.month || '?') +
+        (inv.billing_period_raw ? '<br><span style="font-size:10px;color:var(--muted)">' + inv.billing_period_raw + '</span>' : '');
+    }
+
     const dI  = inv.diff_imported_kwh != null ? (inv.diff_imported_kwh >= 0 ? '+' : '') + inv.diff_imported_kwh.toFixed(0) : '—';
     const dE  = inv.diff_exported_kwh != null ? (inv.diff_exported_kwh >= 0 ? '+' : '') + inv.diff_exported_kwh.toFixed(0) : '—';
-    const dIcol = (Math.abs(inv.diff_imported_kwh||0) > 5) ? '#c0392b' : 'inherit';
-    const dEcol = (Math.abs(inv.diff_exported_kwh||0) > 5) ? '#c0392b' : 'inherit';
+    const dIcol = (!isStub && Math.abs(inv.diff_imported_kwh||0) > 5) ? '#c0392b' : 'inherit';
+    const dEcol = (!isStub && Math.abs(inv.diff_exported_kwh||0) > 5) ? '#c0392b' : 'inherit';
 
     let warnCell = '';
-    if (inv.warnings_count > 0) {
+    if (!isStub && (inv.warnings_count || 0) > 0) {
       const warnTip = (inv.warnings||[]).join('\n').replace(/"/g,'&quot;');
       warnCell = '<span title="' + warnTip + '" style="cursor:help;color:#c0392b">⚠ ' + inv.warnings_count + '</span>';
     }
 
-    rows += '<tr onclick="toggleInvoiceDetail(' + idx + ')" style="cursor:pointer">' +
-      '<td>' + inv.month + (inv.billing_period_raw ? '<br><span style="font-size:10px;color:var(--muted)">' + inv.billing_period_raw + '</span>' : '') + '</td>' +
+    const actionBtns =
+      '<button onclick="event.stopPropagation();openTrainModal(' + JSON.stringify(inv.key) + ')" ' +
+        'style="font-size:11px;padding:2px 7px;margin-right:3px;background:#3182ce;color:#fff;border:none;border-radius:3px;cursor:pointer" ' +
+        'title="Trenuj parser na tym układzie faktury">Trenuj</button>' +
+      '<button onclick="event.stopPropagation();removeInvoice(' + JSON.stringify(inv.key) + ')" ' +
+        'style="font-size:11px;padding:2px 7px;background:#e53e3e;color:#fff;border:none;border-radius:3px;cursor:pointer" ' +
+        'title="Usuń fakturę i przywróć dane sprzed uzgodnienia">Usuń</button>';
+
+    rows += '<tr onclick="toggleInvoiceDetail(' + idx + ')" style="cursor:pointer' + (isStub ? ';background:#fff5f5' : '') + '">' +
+      '<td>' + monthCell + '</td>' +
       '<td style="color:var(--muted)">' + (inv.invoice_number || '—') + '</td>' +
-      '<td style="text-align:right">' + n0(inv.imported_kwh) + '</td>' +
-      '<td style="text-align:right">' + n0(inv.exported_kwh) + '</td>' +
-      '<td style="text-align:right;color:' + dIcol + '">' + dI + '</td>' +
-      '<td style="text-align:right;color:' + dEcol + '">' + dE + '</td>' +
+      '<td style="text-align:right">' + (isStub ? '—' : n0(inv.imported_kwh)) + '</td>' +
+      '<td style="text-align:right">' + (isStub ? '—' : n0(inv.exported_kwh)) + '</td>' +
+      '<td style="text-align:right;color:' + dIcol + '">' + (isStub ? '—' : dI) + '</td>' +
+      '<td style="text-align:right;color:' + dEcol + '">' + (isStub ? '—' : dE) + '</td>' +
       '<td style="text-align:right">' + (inv.amount_due != null ? inv.amount_due.toFixed(2) + ' zł' : '—') + '</td>' +
       '<td style="text-align:right">' + (inv.deposit_used != null ? inv.deposit_used.toFixed(2) + ' zł' : '—') + '</td>' +
-      '<td style="text-align:right;font-size:11px">' + n4(inv.peak_gross) + '</td>' +
-      '<td style="text-align:right;font-size:11px">' + n4(inv.offpeak_gross) + '</td>' +
-      '<td style="text-align:center">' + chk + '</td>' +
+      '<td style="text-align:right;font-size:11px">' + (isStub ? '—' : n4(inv.peak_gross)) + '</td>' +
+      '<td style="text-align:right;font-size:11px">' + (isStub ? '—' : n4(inv.offpeak_gross)) + '</td>' +
+      '<td style="text-align:center">' + statusCell + '</td>' +
       '<td style="text-align:center">' + warnCell + '</td>' +
+      '<td style="text-align:right;white-space:nowrap">' + actionBtns + '</td>' +
     '</tr>' +
     '<tr id="inv-detail-' + idx + '" style="display:none;background:var(--bg)">' +
-      '<td colspan="12" style="padding:10px 14px">' +
-        '<div style="display:flex;gap:24px;flex-wrap:wrap;font-size:12px">' +
-          '<div><b>Sprzedaż energii (net zł/kWh)</b><br>' +
-            'Szczyt: ' + n4(inv.energy_peak_net) + '<br>' +
-            'Poza szczytem: ' + n4(inv.energy_offpeak_net) +
-          '</div>' +
-          '<div><b>Dystrybucja zmienna (net zł/kWh)</b><br>' +
-            'Skł. zmienny szczyt: ' + n4(inv.dist_var_peak_net) + '<br>' +
-            'Skł. zmienny poza: ' + n4(inv.dist_var_offpeak_net) + '<br>' +
-            'Jakościowa: ' + n4(inv.dist_jakosciowa_net) + '<br>' +
-            'OZE: ' + n4(inv.dist_oze_net) + '<br>' +
-            'Kogeneracja: ' + n4(inv.dist_kogeneracja_net) +
-          '</div>' +
-          '<div><b>Opłaty stałe (net zł/mc)</b><br>' +
-            'Mocowa: ' + n2(inv.fixed_mocowa_net) + '<br>' +
-            'Abonament: ' + n2(inv.fixed_abonament_net) + '<br>' +
-            'Skł. stały siec.: ' + n2(inv.fixed_stalysieciowy_net) +
-            (inv.fixed_total_net != null ? '<br><b>Suma: ' + inv.fixed_total_net.toFixed(2) + ' zł</b>' : '') +
-          '</div>' +
-          '<div><b>Depozyt prosumencki (zł)</b><br>' +
-            'Bieżący okres: ' + n2(inv.deposit_current) + '<br>' +
-            'Z poprzednich: ' + n2(inv.deposit_previous) + '<br>' +
-            'Rozliczony: ' + n2(inv.deposit_used) +
-          '</div>' +
-          '<div><b>Import szczyt/poza (kWh)</b><br>' +
-            'Szczyt: ' + n0(inv.imported_kwh_peak) + '<br>' +
-            'Poza: ' + n0(inv.imported_kwh_offpeak) + '<br>' +
-            'Blended gross: ' + n4(inv.blended_gross) + ' zł/kWh<br>' +
-            'Śr. cena: ' + n4(inv.avg_price) + ' zł/kWh' +
-          '</div>' +
-          (inv.warnings && inv.warnings.length > 0
-            ? '<div><b style="color:#c0392b">Ostrzeżenia parsera</b><br>' +
-              inv.warnings.map(w => '⚠ ' + w).join('<br>') + '</div>'
-            : '') +
-        '</div>' +
+      '<td colspan="13" style="padding:10px 14px">' +
+        (isStub
+          ? '<div style="font-size:12px;color:#c0392b"><b>Błąd parsowania:</b> ' + (inv.parse_error||'').replace(/</g,'&lt;') + '</div>' +
+            '<div style="font-size:12px;color:var(--muted);margin-top:4px">Kliknij <b>Trenuj</b>, aby ręcznie uzupełnić dane i nauczyć parser tego układu.</div>'
+          : '<div style="display:flex;gap:24px;flex-wrap:wrap;font-size:12px">' +
+            '<div><b>Sprzedaż energii (net zł/kWh)</b><br>' +
+              'Szczyt: ' + n4(inv.energy_peak_net) + '<br>' +
+              'Poza szczytem: ' + n4(inv.energy_offpeak_net) +
+            '</div>' +
+            '<div><b>Dystrybucja zmienna (net zł/kWh)</b><br>' +
+              'Skł. zmienny szczyt: ' + n4(inv.dist_var_peak_net) + '<br>' +
+              'Skł. zmienny poza: ' + n4(inv.dist_var_offpeak_net) + '<br>' +
+              'Jakościowa: ' + n4(inv.dist_jakosciowa_net) + '<br>' +
+              'OZE: ' + n4(inv.dist_oze_net) + '<br>' +
+              'Kogeneracja: ' + n4(inv.dist_kogeneracja_net) +
+            '</div>' +
+            '<div><b>Opłaty stałe (net zł/mc)</b><br>' +
+              'Mocowa: ' + n2(inv.fixed_mocowa_net) + '<br>' +
+              'Abonament: ' + n2(inv.fixed_abonament_net) + '<br>' +
+              'Skł. stały siec.: ' + n2(inv.fixed_stalysieciowy_net) +
+              (inv.fixed_total_net != null ? '<br><b>Suma: ' + inv.fixed_total_net.toFixed(2) + ' zł</b>' : '') +
+            '</div>' +
+            '<div><b>Depozyt prosumencki (zł)</b><br>' +
+              'Bieżący okres: ' + n2(inv.deposit_current) + '<br>' +
+              'Z poprzednich: ' + n2(inv.deposit_previous) + '<br>' +
+              'Rozliczony: ' + n2(inv.deposit_used) +
+            '</div>' +
+            '<div><b>Import szczyt/poza (kWh)</b><br>' +
+              'Szczyt: ' + n0(inv.imported_kwh_peak) + '<br>' +
+              'Poza: ' + n0(inv.imported_kwh_offpeak) + '<br>' +
+              'Blended gross: ' + n4(inv.blended_gross) + ' zł/kWh<br>' +
+              'Śr. cena: ' + n4(inv.avg_price) + ' zł/kWh' +
+            '</div>' +
+            (inv.warnings && inv.warnings.length > 0
+              ? '<div><b style="color:#c0392b">Ostrzeżenia parsera</b><br>' +
+                inv.warnings.map(w => '⚠ ' + w).join('<br>') + '</div>'
+              : '') +
+          '</div>') +
       '</td>' +
     '</tr>';
   });
@@ -2010,7 +2199,7 @@ function _renderInvoiceTable(invoices) {
   wrap.innerHTML =
     '<table style="width:100%;border-collapse:collapse;font-size:12px">' +
     '<thead><tr style="border-bottom:2px solid var(--border);font-size:11px">' +
-      '<th style="text-align:left">Miesiąc</th>' +
+      '<th style="text-align:left">Miesiąc / plik</th>' +
       '<th style="text-align:left">Nr FV</th>' +
       '<th style="text-align:right">Pobr. kWh</th>' +
       '<th style="text-align:right">Odd. kWh</th>' +
@@ -2020,14 +2209,215 @@ function _renderInvoiceTable(invoices) {
       '<th style="text-align:right">Depozyt uzyt.</th>' +
       '<th style="text-align:right">Szczyt zł/kWh</th>' +
       '<th style="text-align:right">Poza szczytem</th>' +
-      '<th style="text-align:center">Uzgod.</th>' +
+      '<th style="text-align:center">Status</th>' +
       '<th style="text-align:center">⚠</th>' +
+      '<th style="text-align:right">Akcje</th>' +
     '</tr></thead><tbody>' + rows + '</tbody></table>';
 }
 
 function toggleInvoiceDetail(idx) {
   const row = document.getElementById('inv-detail-' + idx);
   if (row) row.style.display = row.style.display === 'none' ? '' : 'none';
+}
+
+/* ── Remove invoice ────────────────────────────────────────────────────────── */
+async function removeInvoice(key) {
+  if (!confirm('Usunąć fakturę "' + key + '"?\nDane miesiąca zostaną przywrócone do stanu sprzed uzgodnienia.')) return;
+  try {
+    const r = await fetch('api/invoice/remove', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({key})
+    });
+    const d = await r.json();
+    if (d.ok) {
+      setTimeout(loadData, 800);
+    } else {
+      alert('Błąd usuwania: ' + (d.error || 'nieznany'));
+    }
+  } catch(e) {
+    alert('Błąd połączenia: ' + e.message);
+  }
+}
+
+/* ── Train modal ───────────────────────────────────────────────────────────── */
+let _trainModal = null;
+
+function _ensureTrainModal() {
+  if (_trainModal) return _trainModal;
+  const overlay = document.createElement('div');
+  overlay.id = 'trainOverlay';
+  overlay.style.cssText = 'display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1000;overflow-y:auto;padding:24px';
+  overlay.innerHTML =
+    '<div style="background:var(--card);border-radius:8px;max-width:900px;margin:0 auto;padding:24px;position:relative">' +
+      '<button onclick="closeTrainModal()" style="position:absolute;top:12px;right:14px;font-size:18px;background:none;border:none;cursor:pointer;color:var(--muted)">✕</button>' +
+      '<h3 style="margin:0 0 14px;font-size:15px">Trenuj parser — uzupełnij dane faktury</h3>' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">' +
+        '<div>' +
+          '<div style="font-size:12px;font-weight:600;margin-bottom:4px;color:var(--muted)">Surowy tekst PDF</div>' +
+          '<pre id="trainRawText" style="font-size:10px;white-space:pre-wrap;word-break:break-all;background:var(--bg);padding:10px;border-radius:4px;height:400px;overflow-y:auto;margin:0"></pre>' +
+        '</div>' +
+        '<div id="trainFieldsWrap" style="overflow-y:auto;height:440px"></div>' +
+      '</div>' +
+      '<div style="margin-top:14px;display:flex;gap:10px;align-items:center">' +
+        '<button id="trainSaveBtn" onclick="submitTrain()" style="background:#3182ce;color:#fff;border:none;padding:8px 18px;border-radius:4px;cursor:pointer;font-size:13px">Zapisz i naucz parser</button>' +
+        '<button onclick="closeTrainModal()" style="background:var(--bg);border:1px solid var(--border);padding:8px 14px;border-radius:4px;cursor:pointer;font-size:13px">Anuluj</button>' +
+        '<span id="trainMsg" style="font-size:12px;margin-left:8px"></span>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+  _trainModal = overlay;
+  return overlay;
+}
+
+let _trainCurrentKey = '';
+let _trainCurrentData = {};
+
+async function openTrainModal(key) {
+  const overlay = _ensureTrainModal();
+  const rawEl = document.getElementById('trainRawText');
+  const fieldsEl = document.getElementById('trainFieldsWrap');
+  const msg = document.getElementById('trainMsg');
+  rawEl.textContent = 'Ładowanie…';
+  fieldsEl.innerHTML = '';
+  msg.textContent = '';
+  _trainCurrentKey = key;
+  _trainCurrentData = {};
+  overlay.style.display = '';
+
+  try {
+    const r = await fetch('api/invoice/train_form?key=' + encodeURIComponent(key));
+    const d = await r.json();
+    if (!d.ok) { rawEl.textContent = 'Błąd: ' + (d.error||'nieznany'); return; }
+    rawEl.textContent = d.raw_text || '(brak tekstu PDF — wpisz wartości ręcznie)';
+    _trainCurrentData = d;
+    const f = d.fields || {};
+
+    const FIELDS = [
+      ['year',             'Rok (np. 2025)',           'number'],
+      ['month',            'Miesiąc (1-12)',            'number'],
+      ['imported_kwh',     'Pobrano z sieci (kWh)',     'number'],
+      ['exported_kwh',     'Wprowadzono do sieci (kWh)','number'],
+      ['imported_kwh_peak','Import szczyt (kWh)',       'number'],
+      ['imported_kwh_offpeak','Import poza szczytem (kWh)','number'],
+      ['energy_peak_net',  'Energia szczyt net (zł/kWh)','number'],
+      ['energy_offpeak_net','Energia poza net (zł/kWh)', 'number'],
+      ['amount_due_pln',   'Do zapłaty (zł)',           'number'],
+      ['avg_price_pln_kwh','Śr. cena (zł/kWh)',         'number'],
+      ['deposit_current_pln','Depozyt bieżący (zł)',    'number'],
+      ['deposit_previous_pln','Depozyt poprzednie (zł)','number'],
+      ['deposit_used_pln', 'Depozyt rozliczony (zł)',   'number'],
+      ['fixed_mocowa_net', 'Opł. mocowa net (zł/mc)',   'number'],
+      ['fixed_abonament_net','Abonament net (zł/mc)',   'number'],
+      ['fixed_stalysieciowy_net','Skł. stały siec. net (zł/mc)','number'],
+      ['invoice_number',   'Nr faktury',                'text'],
+    ];
+
+    let html = '<div style="display:flex;flex-direction:column;gap:8px">';
+    FIELDS.forEach(([fk, label, type]) => {
+      const val = f[fk] != null ? f[fk] : '';
+      html += '<label style="font-size:12px;display:flex;flex-direction:column;gap:2px">' +
+        '<span style="color:var(--muted)">' + label + '</span>' +
+        '<input id="tf_' + fk + '" type="' + type + '" step="any" value="' + String(val).replace(/"/g,'&quot;') + '" ' +
+          'style="padding:4px 6px;border:1px solid var(--border);border-radius:3px;font-size:12px">' +
+      '</label>';
+    });
+    html += '</div>';
+    fieldsEl.innerHTML = html;
+  } catch(e) {
+    rawEl.textContent = 'Błąd połączenia: ' + e.message;
+  }
+}
+
+function closeTrainModal() {
+  const overlay = document.getElementById('trainOverlay');
+  if (overlay) overlay.style.display = 'none';
+}
+
+async function submitTrain() {
+  const msg = document.getElementById('trainMsg');
+  msg.textContent = 'Zapisywanie…';
+  const FIELD_KEYS = ['year','month','imported_kwh','exported_kwh','imported_kwh_peak',
+    'imported_kwh_offpeak','energy_peak_net','energy_offpeak_net','amount_due_pln',
+    'avg_price_pln_kwh','deposit_current_pln','deposit_previous_pln','deposit_used_pln',
+    'fixed_mocowa_net','fixed_abonament_net','fixed_stalysieciowy_net','invoice_number'];
+
+  const fields = {};
+  FIELD_KEYS.forEach(fk => {
+    const el = document.getElementById('tf_' + fk);
+    if (!el) return;
+    const v = el.value.trim();
+    if (v === '') { fields[fk] = null; return; }
+    if (el.type === 'number') {
+      const n = parseFloat(v.replace(',', '.'));
+      fields[fk] = isNaN(n) ? null : n;
+    } else {
+      fields[fk] = v;
+    }
+  });
+
+  const year = fields['year'];
+  const month = fields['month'];
+  if (!year || !month) { msg.textContent = 'Rok i miesiąc są wymagane.'; return; }
+
+  try {
+    const r = await fetch('api/invoice/train', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        key: _trainCurrentKey,
+        year: parseInt(year),
+        month: parseInt(month),
+        fields,
+        raw_text: _trainCurrentData.raw_text || '',
+        filename: _trainCurrentData.filename || '',
+      })
+    });
+    const d = await r.json();
+    if (d.ok) {
+      const lf = (d.learned_fields || []).length;
+      msg.style.color = '#27ae60';
+      msg.textContent = 'Zapisano! Nauczono ' + lf + ' wzorców' + (lf ? ': ' + d.learned_fields.join(', ') : '') + '.';
+      setTimeout(() => { closeTrainModal(); loadData(); }, 1500);
+    } else {
+      msg.style.color = '#c0392b';
+      msg.textContent = 'Błąd: ' + (d.error || 'nieznany');
+    }
+  } catch(e) {
+    msg.style.color = '#c0392b';
+    msg.textContent = 'Błąd połączenia: ' + e.message;
+  }
+}
+
+/* ── Trained-layouts panel renderer ──────────────────────────────────────── */
+function _renderLayoutsPanel(summary) {
+  const wrap = document.getElementById('invLayoutsPanel');
+  if (!wrap) return;
+  if (!summary) { wrap.style.display = 'none'; return; }
+  wrap.style.display = '';
+  const fc = summary.field_counts || {};
+  const fields = Object.keys(fc);
+  const exCount = summary.examples || 0;
+  if (!fields.length && !exCount) {
+    wrap.innerHTML = '<p style="font-size:12px;color:var(--muted)">Brak wytrenowanych układów.</p>';
+    return;
+  }
+  let html = '<div style="font-size:12px">';
+  html += '<b>' + exCount + '</b> wytrenowane sesje; wzorce dla pól: ';
+  html += fields.map(f => '<span style="background:var(--bg);border:1px solid var(--border);border-radius:3px;padding:1px 6px;margin:0 2px">' + f + ' (' + fc[f] + ')</span>').join('') || '—';
+  html += ' <button onclick="clearLayouts()" style="margin-left:12px;font-size:11px;padding:2px 8px;background:#e53e3e;color:#fff;border:none;border-radius:3px;cursor:pointer">Wyczyść wytrenowane układy</button>';
+  html += '</div>';
+  wrap.innerHTML = html;
+}
+
+async function clearLayouts() {
+  if (!confirm('Wyczyścić wszystkie wytrenowane wzorce?\nBędziesz musiał(-a) ponownie nauczyć parser nowych układów.')) return;
+  try {
+    const r = await fetch('api/invoice/layouts/clear', {method:'POST'});
+    const d = await r.json();
+    if (d.ok) setTimeout(loadData, 500);
+    else alert('Błąd: ' + (d.error||'nieznany'));
+  } catch(e) { alert('Błąd połączenia'); }
 }
 
 /* Invoice debug raw-text view */

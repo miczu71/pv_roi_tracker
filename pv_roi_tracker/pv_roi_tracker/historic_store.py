@@ -100,8 +100,41 @@ _PATCHABLE_FIELDS = {
     'self_consumed_kwh', 'buy_price_pln_kwh', 'feedin_price_pln_kwh',
     'self_consumed_savings_pln', 'feedin_revenue_pln',
     'purchased_kwh_peak', 'purchased_kwh_offpeak',
-    'battery_arbitrage_savings_pln',
+    'battery_arbitrage_savings_pln', 'purchase_cost_pln',
 }
+
+# Fields overwritten by reconcile_invoice — captured for revert snapshots
+_RECONCILE_FIELDS = (
+    'purchased_kwh', 'purchased_kwh_peak', 'purchased_kwh_offpeak',
+    'exported_kwh', 'buy_price_pln_kwh', 'self_consumed_kwh',
+    'self_consumed_savings_pln', 'feedin_revenue_pln', 'purchase_cost_pln',
+)
+
+
+def snapshot_month(year: int, month: int, path: Path = DEFAULT_PATH) -> Optional[dict]:
+    """
+    Capture the current values of the reconcilable fields for a month.
+    Returns a snapshot dict (may contain None values), or None if month not found.
+    """
+    doc = _load_document(path)
+    for m in doc.get('months', []):
+        if m['year'] == year and m['month'] == month:
+            return {f: m.get(f) for f in _RECONCILE_FIELDS}
+    return None
+
+
+def restore_month(year: int, month: int, snapshot: dict, path: Path = DEFAULT_PATH) -> bool:
+    """
+    Write back a pre-reconcile snapshot to a month record.
+    Returns True if the month was found and restored.
+    """
+    def _apply(m: dict) -> None:
+        for field_key, value in snapshot.items():
+            m[field_key] = value
+    found = _mutate_month(year, month, path, _apply)
+    if found:
+        logger.info('Restored pre-reconcile snapshot for %d-%02d', year, month)
+    return found
 
 
 def patch_month_field(
