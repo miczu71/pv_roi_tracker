@@ -74,6 +74,8 @@ _BUILTIN_PATTERNS: dict[str, list] = {
         r'strefa szczytow\w*\s+([\d,]+)\s+kWh',
         # Old format (stary wzór): Energia czynna header / zone kWh qty price
         r'Energia czynna\s+szczytowa\s+kWh\s+([\d,]+)\s+[\d,]+',
+        # G11 single-zone: całodobowa maps to "peak" slot
+        r'Energia czynna\s+ca.odobowa\s+kWh\s+([\d,]+)\s+[\d,]+',
     ],
     'imp_offpeak': [
         # New format: zone qty kWh price
@@ -82,6 +84,7 @@ _BUILTIN_PATTERNS: dict[str, list] = {
         r'strefa poza\s*szczytow\w*\s+([\d,]+)\s+kWh',
         # Old format: offpeak is the second row after Energia czynna / szczytowa
         r'Energia czynna\s+szczytowa\s+kWh\s+[\d,]+\s+[\d,]+[^\n]+\npozaszczytowa\s+kWh\s+([\d,]+)',
+        # G11: no offpeak zone — intentionally no pattern; None is suppressed by _is_single_zone
     ],
     'energy_peak_net': [
         # New format: zone qty kWh price
@@ -89,6 +92,8 @@ _BUILTIN_PATTERNS: dict[str, list] = {
         r'(?:Energia czynna\s+)?szczyt\s+[\d,]+\s+kWh\s+([\d,]+)',
         # Old format: zone kWh qty price
         r'Energia czynna\s+szczytowa\s+kWh\s+[\d,]+\s+([\d,]+)',
+        # G11 single-zone: całodobowa price → peak slot
+        r'Energia czynna\s+ca.odobowa\s+kWh\s+[\d,]+\s+([\d,]+)',
     ],
     'energy_offpeak_net': [
         # New format: zone qty kWh price
@@ -96,6 +101,7 @@ _BUILTIN_PATTERNS: dict[str, list] = {
         r'(?:Energia czynna\s+)?poza szczytem\s+[\d,]+\s+kWh\s+([\d,]+)',
         # Old format: offpeak price is second value after Energia czynna header
         r'Energia czynna\s+szczytowa\s+kWh\s+[\d,]+\s+[\d,]+[^\n]+\npozaszczytowa\s+kWh\s+[\d,]+\s+([\d,]+)',
+        # G11: no offpeak — intentionally no pattern
     ],
     'invoice_number': [
         # Old format: "FAKTURA VAT NR T/K1/…" header in ZAŁĄCZNIK
@@ -532,6 +538,13 @@ def _parse_text(text: str) -> InvoiceData:
     # ── Invoice number ────────────────────────────────────────────────────────
     invoice_number = _first_multi(_patterns_for('invoice_number'), text)
 
+    # ── Single-zone tariff detection (G11) ───────────────────────────────────
+    # G11 uses "całodobowa" instead of "szczytowa/pozaszczytowa"; offpeak doesn't exist.
+    _is_single_zone = bool(
+        re.search(r'ca.odobowa\s+kWh', text, re.IGNORECASE)
+        and not re.search(r'(?:szczytowa|pozaszczytowa)\s+kWh', text, re.IGNORECASE)
+    )
+
     # ── Import / export totals ────────────────────────────────────────────────
     imp_total = _first_float_multi(_patterns_for('imp_total'), text)
     if imp_total is None:
@@ -549,19 +562,21 @@ def _parse_text(text: str) -> InvoiceData:
 
     if imp_peak is None:
         warnings.append('import szczytowy (kWh) nie znaleziony')
-    if imp_offpeak is None:
+    if imp_offpeak is None and not _is_single_zone:
         warnings.append('import pozaszczytowy (kWh) nie znaleziony')
     if energy_peak_net is None:
         warnings.append('cena energii szczytowej (net) nie znaleziona — szczyt gross nieobliczony')
-    if energy_offpeak_net is None:
+    if energy_offpeak_net is None and not _is_single_zone:
         warnings.append('cena energii pozaszczytowej (net) nie znaleziona — poza-szczyt gross nieobliczony')
 
     # ── Peak / offpeak export from meter reading section ──────────────────────
     # New format: "(oddanie)-<serial>\nszczyt <date> (Z) <kwh>"
     # Old format: "(oddanie)\nnr <serial>\nszczyt <date> (Z) <kwh>"
+    # G11:        "(oddanie)\nnr <serial>\ncałodobowa <date> (Z) <kwh>"
     _exp_m = (
         re.search(r'\(oddanie\)-\d+\nszczyt\s+[\d./]+\s+\([^\)]+\)\s+([\d,]+)', text)
         or re.search(r'\(oddanie\)\s*\n\s*\w+\s+\d+\s*\nszczyt\s+[\d./]+\s+\([^\)]+\)\s+([\d,]+)', text)
+        or re.search(r'\(oddanie\)\s*\n\s*\w+\s+\d+\s*\nca.odobowa\s+[\d./]+\s+\([^\)]+\)\s+([\d,]+)', text)
     )
     exp_peak = _n(_exp_m.group(1)) if _exp_m else None
     _exp_m2 = (
@@ -576,15 +591,17 @@ def _parse_text(text: str) -> InvoiceData:
     dist_text = dist_section_m.group(0) if dist_section_m else text
 
     def _dist_peak(section_patterns: list) -> Optional[float]:
+        # Match both two-zone (szczyt) and single-zone (całodobowa / G11) tariffs
         for sp in section_patterns:
-            # New format: label zone qty kWh price_net
-            m = re.search(sp + r'\s+szczyt\w*\s+\d+\s+kWh\s+([\d,]+)', dist_text, re.IGNORECASE)
-            if m:
-                return _n(m.group(1))
-            # Old format: label\nzone kWh qty [optional-coeff] price_net
-            m = re.search(sp + r'\s+szczyt\w*\s+kWh\s+\d+(?:\s+\d+)?\s+([\d,]+)', dist_text, re.IGNORECASE)
-            if m:
-                return _n(m.group(1))
+            for _zone in (r'szczyt\w*', r'ca.odobowa'):
+                # New format: label zone qty kWh price_net
+                m = re.search(sp + r'\s+' + _zone + r'\s+\d+\s+kWh\s+([\d,]+)', dist_text, re.IGNORECASE)
+                if m:
+                    return _n(m.group(1))
+                # Old/oldest format: label\nzone kWh qty [optional-coeff] price_net
+                m = re.search(sp + r'\s+' + _zone + r'\s+kWh\s+\d+(?:\s+\d+)?\s+([\d,]+)', dist_text, re.IGNORECASE)
+                if m:
+                    return _n(m.group(1))
         return None
 
     def _dist_offpeak(section_patterns: list) -> Optional[float]:
@@ -613,7 +630,7 @@ def _parse_text(text: str) -> InvoiceData:
 
     if dist_var_peak_net is None:
         warnings.append('składnik zmienny sieciowy szczytowy nie znaleziony — szczyt gross nieobliczony')
-    if dist_var_offpeak_net is None:
+    if dist_var_offpeak_net is None and not _is_single_zone:
         warnings.append('składnik zmienny sieciowy pozaszczytowy nie znaleziony — poza-szczyt gross nieobliczony')
     if dist_jakosciowa_net is None:
         warnings.append('stawka jakościowa nie znaleziona (użyto 0)')
@@ -684,7 +701,7 @@ def _parse_text(text: str) -> InvoiceData:
                            + (dist_oze_net or 0.0)
                            + (dist_kogeneracja_net or 0.0))
         offpeak_gross = round(offpeak_var_net * VAT, 4)
-    else:
+    elif not _is_single_zone:
         warnings.append('offpeak_gross nieobliczony — brakuje ceny energii lub składnika zmiennego')
 
     if (peak_gross is not None and offpeak_gross is not None
@@ -696,6 +713,8 @@ def _parse_text(text: str) -> InvoiceData:
     elif peak_gross is not None and offpeak_gross is not None:
         blended_gross = round((peak_gross + offpeak_gross) / 2, 4)
         warnings.append('blended_gross: podział szczyt/poza-szczyt niedostępny — użyto średniej arytmetycznej')
+    elif _is_single_zone and peak_gross is not None:
+        blended_gross = peak_gross  # G11: single zone — blended equals the single gross rate
 
     # De-duplicate warnings
     seen: set = set()

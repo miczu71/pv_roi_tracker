@@ -508,6 +508,134 @@ class TestOldestFormat:
         assert field_warns == [], f'Unexpected field warnings: {field_warns}'
 
 
+# ── G11 single-zone tariff (całodobowa, no peak/offpeak split) ────────────────
+
+def _make_g11_format_text() -> str:
+    """Synthetic text mimicking a G11 tariff invoice (e.g. T/K1/0023008/25)."""
+    return (
+        'FAKTURA VAT NR T/K1/0023008/25 - Oryginał dokumentu wystawiony w formie elektronicznej\n'
+        'Za okres od 01/12/2024 do 31/12/2024\n'
+        '1. Sprzeda.y energii elektrycznej 370,24 23 85,16 455,40 676\n'
+        '2. .wiadczonych us.ug dystrybucji 214,57 23 49,35 263,92 676\n'
+        '3. Wynik rozliczenia ( 1 + 2 ) 584,81 23 134,51 719,32\n'
+        '5. Depozyt prosumencki w rozliczanym okresie (z.) 0,00\n'
+        '6. Depozyt prosumencki z okres.w poprzednich (z.) 244,24\n'
+        '7. Rozliczenie depozytu ( 4 + 5 + 6 ) 244,24\n'
+        '8. Do zap.aty (z.) ( 3 - 7 ) 475,08\n'
+        'Do zap.aty: 475,08 z.\n'
+        'Licznik energii elektrycznej (oddanie)\n'
+        'nr 312186091817\n'
+        'ca.odobowa 31/12/2024 (Z) 29,0000\n'
+        'Rozliczenie za okres 01/12/2024 - 31/12/2024\n'
+        'Grupa taryfowa G11\n'
+        'Energia czynna\n'
+        'ca.odobowa kWh 676 0,50500 341,38 23 78,52 419,90\n'
+        'Sk.adnik sta.y stawki\n'
+        'sieciowej mc 1 10,34000 10,34 23 2,38 12,72\n'
+        'Stawka jako.ciowa\n'
+        'ca.odobowa kWh 676 0,03140 21,23 23 4,88 26,11\n'
+        'Sk.adnik zmienny stawki\n'
+        'sieciowej\n'
+        'ca.odobowa kWh 676 0,25730 173,93 23 40,00 213,93\n'
+        'Op.ata OZE\n'
+        'ca.odobowa kWh 676 1 0,00000 0,00 23 0,00 0,00\n'
+        'Op.ata kogeneracyjna\n'
+        'ca.odobowa kWh 676 1 0,00618 4,18 23 0,96 5,14\n'
+        'Stawka op.aty\n'
+        'abonamentowej z./mc 1 4,56000 4,56 23 1,05 5,61\n'
+        'Op.ata mocowa z./mc 1 0,00000 0,00 23 0,00 0,00\n'
+        '2. Og..em: 584,81 134,51 719,32 676 29\n'
+        '3. rednia cena brutto 1 kWh 1,06 z./kWh\n'
+    )
+
+
+class TestG11Format:
+    """Parser handles G11 single-zone (całodobowa) tariff invoices."""
+
+    @pytest.fixture(scope='class')
+    def parsed(self):
+        return _parse_text(_make_g11_format_text())
+
+    def test_billing_period(self, parsed):
+        assert parsed.year == 2024
+        assert parsed.month == 12
+
+    def test_billing_period_no_warning(self, parsed):
+        assert not any('wydedukowano' in w for w in parsed.warnings)
+
+    def test_invoice_number(self, parsed):
+        assert parsed.invoice_number == 'T/K1/0023008/25'
+
+    def test_imported_kwh(self, parsed):
+        assert parsed.imported_kwh == pytest.approx(676.0)
+
+    def test_exported_kwh(self, parsed):
+        assert parsed.exported_kwh == pytest.approx(29.0)
+
+    def test_imp_peak_is_total(self, parsed):
+        # całodobowa maps to peak slot
+        assert parsed.imported_kwh_peak == pytest.approx(676.0)
+
+    def test_imp_offpeak_none(self, parsed):
+        assert parsed.imported_kwh_offpeak is None
+
+    def test_exp_peak_is_total(self, parsed):
+        assert parsed.exported_kwh_peak == pytest.approx(29.0)
+
+    def test_energy_peak_net(self, parsed):
+        assert parsed.energy_peak_net == pytest.approx(0.50500, abs=0.0001)
+
+    def test_energy_offpeak_net_none(self, parsed):
+        assert parsed.energy_offpeak_net is None
+
+    def test_dist_var_peak(self, parsed):
+        assert parsed.dist_var_peak_net == pytest.approx(0.25730, abs=0.0001)
+
+    def test_dist_var_offpeak_none(self, parsed):
+        assert parsed.dist_var_offpeak_net is None
+
+    def test_dist_jakosciowa(self, parsed):
+        assert parsed.dist_jakosciowa_net == pytest.approx(0.03140, abs=0.0001)
+
+    def test_dist_oze_zero(self, parsed):
+        assert parsed.dist_oze_net == pytest.approx(0.0, abs=0.0001)
+
+    def test_dist_kogeneracja(self, parsed):
+        assert parsed.dist_kogeneracja_net == pytest.approx(0.00618, abs=0.0001)
+
+    def test_fixed_mocowa_zero(self, parsed):
+        assert parsed.fixed_mocowa_net == pytest.approx(0.0, abs=0.001)
+
+    def test_fixed_abonament(self, parsed):
+        assert parsed.fixed_abonament_net == pytest.approx(4.56, abs=0.01)
+
+    def test_fixed_stalysieciowy(self, parsed):
+        assert parsed.fixed_stalysieciowy_net == pytest.approx(10.34, abs=0.01)
+
+    def test_peak_gross_computed(self, parsed):
+        expected = (0.50500 + 0.25730 + 0.03140 + 0.00000 + 0.00618) * 1.23
+        assert parsed.peak_gross == pytest.approx(expected, abs=0.001)
+
+    def test_offpeak_gross_none(self, parsed):
+        assert parsed.offpeak_gross is None
+
+    def test_blended_gross_equals_peak(self, parsed):
+        assert parsed.blended_gross == parsed.peak_gross
+
+    def test_deposit_previous(self, parsed):
+        assert parsed.deposit_previous_pln == pytest.approx(244.24, abs=0.01)
+
+    def test_amount_due(self, parsed):
+        assert parsed.amount_due_pln == pytest.approx(475.08, abs=0.01)
+
+    def test_avg_price(self, parsed):
+        assert parsed.avg_price_pln_kwh == pytest.approx(1.06, abs=0.01)
+
+    def test_no_field_warnings(self, parsed):
+        field_warns = [w for w in parsed.warnings if 'nie znalezion' in w or 'nieobliczony' in w]
+        assert field_warns == [], f'Unexpected field warnings: {field_warns}'
+
+
 # ── Real PDF tests (skipped if PDF absent) ────────────────────────────────────
 
 @pytest.mark.skipif(not _SAMPLE_PDF_PATH.exists(),
