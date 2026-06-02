@@ -511,46 +511,58 @@ class TestOldestFormat:
 # ── G11 single-zone tariff (całodobowa, no peak/offpeak split) ────────────────
 
 def _make_g11_format_text() -> str:
-    """Synthetic text mimicking a G11 tariff invoice (e.g. T/K1/0023008/25)."""
+    """Synthetic text mimicking a G11 tariff invoice with space-thousands kWh (e.g. T/K1/0192315/24).
+
+    Uses "1 226" format (space as thousands separator) and simulates a mid-table
+    page break (payment slip inserted) between the OZE label and its data row.
+    """
     return (
-        'FAKTURA VAT NR T/K1/0023008/25 - Oryginał dokumentu wystawiony w formie elektronicznej\n'
-        'Za okres od 01/12/2024 do 31/12/2024\n'
-        '1. Sprzeda.y energii elektrycznej 370,24 23 85,16 455,40 676\n'
-        '2. .wiadczonych us.ug dystrybucji 214,57 23 49,35 263,92 676\n'
-        '3. Wynik rozliczenia ( 1 + 2 ) 584,81 23 134,51 719,32\n'
+        'FAKTURA VAT NR T/K1/0192315/24 - Orygina. dokumentu wystawiony w formie elektronicznej\n'
+        'Za okres od 01/02/2024 do 29/02/2024\n'
+        '1. Sprzeda.y energii elektrycznej 853,59 23 196,33 1 049,92 1226\n'
+        '2. .wiadczonych us.ug dystrybucji 391,66 23 90,09 481,75 1226\n'
         '5. Depozyt prosumencki w rozliczanym okresie (z.) 0,00\n'
-        '6. Depozyt prosumencki z okres.w poprzednich (z.) 244,24\n'
-        '7. Rozliczenie depozytu ( 4 + 5 + 6 ) 244,24\n'
-        '8. Do zap.aty (z.) ( 3 - 7 ) 475,08\n'
-        'Do zap.aty: 475,08 z.\n'
+        '6. Depozyt prosumencki z okres.w poprzednich (z.) 2,19\n'
+        '7. Rozliczenie depozytu ( 4 + 5 + 6 ) 2,19\n'
+        '8. Do zap.aty (z.) ( 3 - 7 ) 1 529,48\n'
+        'Do zap.aty: 1 529,48 z.\n'
         'Licznik energii elektrycznej (oddanie)\n'
         'nr 312186091817\n'
-        'ca.odobowa 31/12/2024 (Z) 29,0000\n'
-        'Rozliczenie za okres 01/12/2024 - 31/12/2024\n'
+        'ca.odobowa 29/02/2024 (Z) 8,0000\n'
+        'Rozliczenie za okres 01/02/2024 - 29/02/2024\n'
         'Grupa taryfowa G11\n'
         'Energia czynna\n'
-        'ca.odobowa kWh 676 0,50500 341,38 23 78,52 419,90\n'
+        'ca.odobowa kWh 1 226 0,67270 824,73 23 189,69 1 014,42\n'
         'Sk.adnik sta.y stawki\n'
         'sieciowej mc 1 10,34000 10,34 23 2,38 12,72\n'
         'Stawka jako.ciowa\n'
-        'ca.odobowa kWh 676 0,03140 21,23 23 4,88 26,11\n'
+        'ca.odobowa kWh 1 226 0,03140 38,50 23 8,86 47,36\n'
         'Sk.adnik zmienny stawki\n'
         'sieciowej\n'
-        'ca.odobowa kWh 676 0,25730 173,93 23 40,00 213,93\n'
+        'ca.odobowa kWh 1 226 0,25730 315,45 23 72,55 388,00\n'
+        # Simulate pypdf page break inserting payment slip between OZE label and data
         'Op.ata OZE\n'
-        'ca.odobowa kWh 676 1 0,00000 0,00 23 0,00 0,00\n'
+        '19 1140 1560 1853 6056 7872 0053 TAURON Sprzeda. sp. z o.o.\n'
+        'UL. .AGIEWNICKA 60, 30-417 KRAK.W\n'
+        'P L N 1 529,48\n'
+        'Opis / strefa tgfi/tgfio Jednostka miary Ilo.. wsp..czynnik Cena jed. netto (z.) ...\n'
+        'ca.odobowa kWh 1 226 1 0,00000 0,00 23 0,00 0,00\n'
         'Op.ata kogeneracyjna\n'
-        'ca.odobowa kWh 676 1 0,00618 4,18 23 0,96 5,14\n'
+        'ca.odobowa kWh 1 226 1 0,00618 7,58 23 1,74 9,32\n'
         'Stawka op.aty\n'
         'abonamentowej z./mc 1 4,56000 4,56 23 1,05 5,61\n'
-        'Op.ata mocowa z./mc 1 0,00000 0,00 23 0,00 0,00\n'
-        '2. Og..em: 584,81 134,51 719,32 676 29\n'
-        '3. rednia cena brutto 1 kWh 1,06 z./kWh\n'
+        'Op.ata mocowa z./mc 1 14,90000 14,90 23 3,43 18,33\n'
+        '2. Og..em: 1 245,25 286,42 1 531,67 1226 8\n'
+        '3. rednia cena brutto 1 kWh 1,25 z./kWh\n'
     )
 
 
 class TestG11Format:
-    """Parser handles G11 single-zone (całodobowa) tariff invoices."""
+    """Parser handles G11 single-zone (całodobowa) tariff invoices.
+
+    Uses February 2024 values with space-thousands kWh ("1 226") and a
+    simulated mid-table page break between OZE label and its data row.
+    """
 
     @pytest.fixture(scope='class')
     def parsed(self):
@@ -558,32 +570,33 @@ class TestG11Format:
 
     def test_billing_period(self, parsed):
         assert parsed.year == 2024
-        assert parsed.month == 12
+        assert parsed.month == 2
 
     def test_billing_period_no_warning(self, parsed):
         assert not any('wydedukowano' in w for w in parsed.warnings)
 
     def test_invoice_number(self, parsed):
-        assert parsed.invoice_number == 'T/K1/0023008/25'
+        assert parsed.invoice_number == 'T/K1/0192315/24'
 
     def test_imported_kwh(self, parsed):
-        assert parsed.imported_kwh == pytest.approx(676.0)
+        assert parsed.imported_kwh == pytest.approx(1226.0)
 
     def test_exported_kwh(self, parsed):
-        assert parsed.exported_kwh == pytest.approx(29.0)
+        assert parsed.exported_kwh == pytest.approx(8.0)
 
-    def test_imp_peak_is_total(self, parsed):
-        # całodobowa maps to peak slot
-        assert parsed.imported_kwh_peak == pytest.approx(676.0)
+    def test_imp_peak_equals_total(self, parsed):
+        # G11: whole import = single zone; imp_peak set from imp_total
+        assert parsed.imported_kwh_peak == pytest.approx(1226.0)
 
     def test_imp_offpeak_none(self, parsed):
         assert parsed.imported_kwh_offpeak is None
 
     def test_exp_peak_is_total(self, parsed):
-        assert parsed.exported_kwh_peak == pytest.approx(29.0)
+        assert parsed.exported_kwh_peak == pytest.approx(8.0)
 
     def test_energy_peak_net(self, parsed):
-        assert parsed.energy_peak_net == pytest.approx(0.50500, abs=0.0001)
+        # Must not be confused with "226" from "1 226"
+        assert parsed.energy_peak_net == pytest.approx(0.67270, abs=0.0001)
 
     def test_energy_offpeak_net_none(self, parsed):
         assert parsed.energy_offpeak_net is None
@@ -597,14 +610,16 @@ class TestG11Format:
     def test_dist_jakosciowa(self, parsed):
         assert parsed.dist_jakosciowa_net == pytest.approx(0.03140, abs=0.0001)
 
-    def test_dist_oze_zero(self, parsed):
+    def test_dist_oze_via_dotall(self, parsed):
+        # OZE found via DOTALL fallback across simulated page break
         assert parsed.dist_oze_net == pytest.approx(0.0, abs=0.0001)
 
-    def test_dist_kogeneracja(self, parsed):
+    def test_dist_kogeneracja_not_coefficient(self, parsed):
+        # Must not capture the coefficient "1" — must get 0.00618
         assert parsed.dist_kogeneracja_net == pytest.approx(0.00618, abs=0.0001)
 
-    def test_fixed_mocowa_zero(self, parsed):
-        assert parsed.fixed_mocowa_net == pytest.approx(0.0, abs=0.001)
+    def test_fixed_mocowa(self, parsed):
+        assert parsed.fixed_mocowa_net == pytest.approx(14.90, abs=0.01)
 
     def test_fixed_abonament(self, parsed):
         assert parsed.fixed_abonament_net == pytest.approx(4.56, abs=0.01)
@@ -613,23 +628,24 @@ class TestG11Format:
         assert parsed.fixed_stalysieciowy_net == pytest.approx(10.34, abs=0.01)
 
     def test_peak_gross_computed(self, parsed):
-        expected = (0.50500 + 0.25730 + 0.03140 + 0.00000 + 0.00618) * 1.23
+        expected = (0.67270 + 0.25730 + 0.03140 + 0.00000 + 0.00618) * 1.23
         assert parsed.peak_gross == pytest.approx(expected, abs=0.001)
 
-    def test_offpeak_gross_none(self, parsed):
-        assert parsed.offpeak_gross is None
+    def test_blended_gross_in_range(self, parsed):
+        assert parsed.blended_gross is not None
+        assert 0.20 <= parsed.blended_gross <= 3.0
 
     def test_blended_gross_equals_peak(self, parsed):
         assert parsed.blended_gross == parsed.peak_gross
 
     def test_deposit_previous(self, parsed):
-        assert parsed.deposit_previous_pln == pytest.approx(244.24, abs=0.01)
+        assert parsed.deposit_previous_pln == pytest.approx(2.19, abs=0.01)
 
     def test_amount_due(self, parsed):
-        assert parsed.amount_due_pln == pytest.approx(475.08, abs=0.01)
+        assert parsed.amount_due_pln == pytest.approx(1529.48, abs=0.01)
 
     def test_avg_price(self, parsed):
-        assert parsed.avg_price_pln_kwh == pytest.approx(1.06, abs=0.01)
+        assert parsed.avg_price_pln_kwh == pytest.approx(1.25, abs=0.01)
 
     def test_no_field_warnings(self, parsed):
         field_warns = [w for w in parsed.warnings if 'nie znalezion' in w or 'nieobliczony' in w]

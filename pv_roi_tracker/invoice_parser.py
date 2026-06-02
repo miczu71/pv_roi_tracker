@@ -54,18 +54,19 @@ _BUILTIN_PATTERNS: dict[str, list] = {
         r'Pobrane z sieci\s+([\d,]+)',
         r'Pobran[ae] z sieci\s+([\d,]+)',
         r'Energia pobrana z sieci\s+([\d,]+)',
-        # Oldest format (2025): no "Pobrano z sieci" summary — extract from invoice table row 1
-        r'Sprzeda.y energii elektrycznej\s+[\d,]+\s+\d+\s+[\d,]+\s+[\d,]+\s+([\d,]+)',
+        # Oldest format (2025): no "Pobrano z sieci" summary — kWh is last column of row 1.
+        # Monetary values may use space thousands (e.g. "1 049,92"); kWh is an integer.
+        r'Sprzeda.y energii elektrycznej\s+[\d,]+\s+\d+\s+[\d,]+\s+[\d ]+,[\d]+\s+(\d+)',
         # Oldest format fallback: "Ogółem: net vat brutto import export" summary row
-        r'Og..em:\s+[\d,]+\s+[\d,]+\s+[\d,]+\s+([\d,]+)\s+[\d,]+',
+        r'Og..em:\s+[\d ]+,[\d]+\s+[\d,]+\s+[\d ]+,[\d]+\s+(\d+)\s+\d+',
     ],
     'exp_total': [
         r'Wprowadzono do sieci\s+([\d,]+)',
         r'Wprowadzone do sieci\s+([\d,]+)',
         r'Oddano do sieci\s+([\d,]+)',
         r'Energia wprowadzona do sieci\s+([\d,]+)',
-        # Oldest format: last number in "Ogółem: net vat brutto import export" row
-        r'Og..em:\s+[\d,]+\s+[\d,]+\s+[\d,]+\s+[\d,]+\s+([\d,]+)',
+        # Oldest format: last integer in "Ogółem: net vat brutto import export" row
+        r'Og..em:\s+[\d ]+,[\d]+\s+[\d,]+\s+[\d ]+,[\d]+\s+\d+\s+(\d+)',
     ],
     'imp_peak': [
         # New format: zone qty kWh price
@@ -92,8 +93,8 @@ _BUILTIN_PATTERNS: dict[str, list] = {
         r'(?:Energia czynna\s+)?szczyt\s+[\d,]+\s+kWh\s+([\d,]+)',
         # Old format: zone kWh qty price
         r'Energia czynna\s+szczytowa\s+kWh\s+[\d,]+\s+([\d,]+)',
-        # G11 single-zone: całodobowa price → peak slot
-        r'Energia czynna\s+ca.odobowa\s+kWh\s+[\d,]+\s+([\d,]+)',
+        # G11 single-zone: skip space-separated quantity groups (e.g. "1 226"), then price
+        r'Energia czynna\s+ca.odobowa\s+kWh\s+(?:\d+\s+)+([\d,]+)',
     ],
     'energy_offpeak_net': [
         # New format: zone qty kWh price
@@ -112,11 +113,12 @@ _BUILTIN_PATTERNS: dict[str, list] = {
         r'Faktura\s+nr\s+([\w/]+)',
     ],
     'amount_due': [
-        r'Razem \(3-6\)\s+([\d,]+)',
-        r'Razem do zap.aty\s+([\d,]+)',
-        r'Do zap.aty\s+([\d,]+)',
-        # Oldest format: "Do zapłaty: 83,63 zł" (colon between label and amount)
-        r'Do zap.aty:\s*([\d,]+)',
+        # Use [\d ]+,[\d]+ to handle space-thousands separator (e.g. "1 529,48")
+        r'Razem \(3-6\)\s+([\d ]+,[\d]+)',
+        r'Razem do zap.aty\s+([\d ]+,[\d]+)',
+        r'Do zap.aty\s+([\d ]+,[\d]+)',
+        # Oldest format: "Do zapłaty: 1 529,48 zł" (colon between label and amount)
+        r'Do zap.aty:\s*([\d ]+,[\d]+)',
     ],
     'avg_price': [
         r'[Śś]rednia cena za 1 kWh to\s+([\d,]+)',
@@ -295,8 +297,8 @@ class InvoiceData:
 # ── Number / string parsing helpers ──────────────────────────────────────────
 
 def _n(s: str) -> float:
-    """Parse Polish decimal notation (comma as separator) → float."""
-    return float(s.replace(',', '.'))
+    """Parse Polish decimal notation (comma separator, optional space thousands) → float."""
+    return float(s.replace(' ', '').replace(',', '.'))
 
 
 def _first(pattern: str, text: str, group: int = 1) -> Optional[str]:
@@ -556,6 +558,10 @@ def _parse_text(text: str) -> InvoiceData:
 
     # ── Peak / offpeak import from Sprzedaż section ───────────────────────────
     imp_peak          = _first_float_multi(_patterns_for('imp_peak'), text)
+    # G11: entire import is the single zone; use imp_total to avoid
+    # space-thousands-separator ambiguity in the energy table row (e.g. "1 226").
+    if _is_single_zone:
+        imp_peak = imp_total
     imp_offpeak       = _first_float_multi(_patterns_for('imp_offpeak'), text)
     energy_peak_net   = _first_float_multi(_patterns_for('energy_peak_net'), text)
     energy_offpeak_net = _first_float_multi(_patterns_for('energy_offpeak_net'), text)
@@ -599,7 +605,9 @@ def _parse_text(text: str) -> InvoiceData:
                 if m:
                     return _n(m.group(1))
                 # Old/oldest format: label\nzone kWh qty [optional-coeff] price_net
-                m = re.search(sp + r'\s+' + _zone + r'\s+kWh\s+\d+(?:\s+\d+)?\s+([\d,]+)', dist_text, re.IGNORECASE)
+                # Use (?:\d+\s+)+ to handle both "676 0,xxx" and "1 226 0,xxx" and
+                # "676 1 0,xxx" (coeff) and "1 226 1 0,xxx" (thousands + coeff)
+                m = re.search(sp + r'\s+' + _zone + r'\s+kWh\s+(?:\d+\s+)+([\d,]+)', dist_text, re.IGNORECASE)
                 if m:
                     return _n(m.group(1))
         return None
@@ -634,6 +642,14 @@ def _parse_text(text: str) -> InvoiceData:
         warnings.append('składnik zmienny sieciowy pozaszczytowy nie znaleziony — poza-szczyt gross nieobliczony')
     if dist_jakosciowa_net is None:
         warnings.append('stawka jakościowa nie znaleziona (użyto 0)')
+    # G11 OZE fallback: allow page-break content between "Opłata OZE" label and
+    # the całodobowa data row (payment slip sometimes inserted mid-table by pypdf).
+    if dist_oze_net is None and _is_single_zone:
+        _oze_m = re.search(
+            r'Op.ata OZE.*?ca.odobowa\s+kWh\s+(?:\d+\s+)+([\d,]+)',
+            text, re.IGNORECASE | re.DOTALL)
+        if _oze_m:
+            dist_oze_net = _n(_oze_m.group(1))
     if dist_oze_net is None:
         warnings.append('opłata OZE nie znaleziona (użyto 0)')
     if dist_kogeneracja_net is None:
