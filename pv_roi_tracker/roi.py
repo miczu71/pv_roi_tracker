@@ -146,6 +146,9 @@ class RoiResult:
     # CPI provenance (default values allow older callers without breaking)
     inflation_source: str = field(default="flat fallback")
     cumulative_inflation_pct: float = field(default=0.0)
+    # Self-consumption vs export opportunity metrics
+    self_consume_premium: Optional[float] = field(default=None)
+    export_self_consume_potential: Optional[float] = field(default=None)
 
 
 # ── Main calculation ─────────────────────────────────────────────────────────
@@ -166,6 +169,21 @@ def calculate(
     sc_sav  = sum(r.self_consumed_savings_pln  or 0.0 for r in records)
     fi_rev  = sum(r.feedin_revenue_pln          or 0.0 for r in records)
     bat_sav = sum(r.battery_arbitrage_savings_pln or 0.0 for r in records)
+
+    # Opportunity metrics: value of self-consumption vs export, per-month price spread
+    sc_premium_total = 0.0
+    exp_potential_total = 0.0
+    opp_months = 0
+    for r in records:
+        bp = r.buy_price_pln_kwh or 0.0
+        fp = r.feedin_price_pln_kwh or 0.0
+        if bp > 0 and fp > 0:
+            spread = bp - fp
+            sc_premium_total    += (r.self_consumed_kwh or 0.0) * spread
+            exp_potential_total += (r.exported_kwh      or 0.0) * spread
+            opp_months += 1
+    self_consume_premium    = round(sc_premium_total,    2) if opp_months else None
+    export_self_consume_pot = round(exp_potential_total, 2) if opp_months else None
     total_savings = sc_sav + fi_rev + bat_sav
     total_return  = subsidy + total_savings
     roi_pct = (total_return / gross_investment * 100.0) if gross_investment else 0.0
@@ -307,4 +325,6 @@ def calculate(
         counterfactual_delta=counterfactual_delta,
         inflation_source=inflation_src,
         cumulative_inflation_pct=cum_infl_pct,
+        self_consume_premium=self_consume_premium,
+        export_self_consume_potential=export_self_consume_pot,
     )
