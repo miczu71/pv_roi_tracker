@@ -62,24 +62,39 @@ _BUILTIN_PATTERNS: dict[str, list] = {
         r'Energia wprowadzona do sieci\s+([\d,]+)',
     ],
     'imp_peak': [
+        # New format: zone qty kWh price
         r'(?:Energia czynna\s+)?szczytowa\s+([\d,]+)\s+kWh\s+[\d,]+',
         r'(?:Energia czynna\s+)?szczyt\s+([\d,]+)\s+kWh\s+[\d,]+',
         r'strefa szczytow\w*\s+([\d,]+)\s+kWh',
+        # Old format (stary wzór): Energia czynna header / zone kWh qty price
+        r'Energia czynna\s+szczytowa\s+kWh\s+([\d,]+)\s+[\d,]+',
     ],
     'imp_offpeak': [
+        # New format: zone qty kWh price
         r'(?:Energia czynna\s+)?pozaszczytowa\s+([\d,]+)\s+kWh\s+[\d,]+',
         r'(?:Energia czynna\s+)?poza szczytem\s+([\d,]+)\s+kWh\s+[\d,]+',
         r'strefa poza\s*szczytow\w*\s+([\d,]+)\s+kWh',
+        # Old format: offpeak is the second row after Energia czynna / szczytowa
+        r'Energia czynna\s+szczytowa\s+kWh\s+[\d,]+\s+[\d,]+[^\n]+\npozaszczytowa\s+kWh\s+([\d,]+)',
     ],
     'energy_peak_net': [
+        # New format: zone qty kWh price
         r'(?:Energia czynna\s+)?szczytowa\s+[\d,]+\s+kWh\s+([\d,]+)',
         r'(?:Energia czynna\s+)?szczyt\s+[\d,]+\s+kWh\s+([\d,]+)',
+        # Old format: zone kWh qty price
+        r'Energia czynna\s+szczytowa\s+kWh\s+[\d,]+\s+([\d,]+)',
     ],
     'energy_offpeak_net': [
+        # New format: zone qty kWh price
         r'(?:Energia czynna\s+)?pozaszczytowa\s+[\d,]+\s+kWh\s+([\d,]+)',
         r'(?:Energia czynna\s+)?poza szczytem\s+[\d,]+\s+kWh\s+([\d,]+)',
+        # Old format: offpeak price is second value after Energia czynna header
+        r'Energia czynna\s+szczytowa\s+kWh\s+[\d,]+\s+[\d,]+[^\n]+\npozaszczytowa\s+kWh\s+[\d,]+\s+([\d,]+)',
     ],
     'invoice_number': [
+        # Old format: "FAKTURA VAT NR T/K1/…" header in ZAŁĄCZNIK
+        r'FAKTURA VAT NR\s+([\w/]+)',
+        r'Podsumowanie faktury VAT\s+([\w/]+)',
         r'Numer faktury\s+([\w/]+)',
         r'Nr faktury\s+([\w/]+)',
         r'Faktura\s+nr\s+([\w/]+)',
@@ -94,6 +109,8 @@ _BUILTIN_PATTERNS: dict[str, list] = {
         r'rednia cena za 1 kWh to\s+([\d,]+)',
         r'[Śś]rednia cena 1 kWh\s+([\d,]+)',
         r'[Śś]r\.\s+cena\s+([\d,]+)',
+        # Old format: "Średnia cena brutto 1 kWh 0,93 zł/kWh"
+        r'rednia cena brutto\s+\d+\s+kWh\s+([\d,]+)',
     ],
     'deposit_current': [
         r'Depozyt prosumencki w rozliczanym okresie[^\d]+([\d,]+)',
@@ -105,22 +122,32 @@ _BUILTIN_PATTERNS: dict[str, list] = {
         r'5\.\s*Depozyt prosumencki z poprz[^\d]+([\d,]+)',
     ],
     'deposit_used': [
-        r'Rozliczenie depozytu \(\d\+\d\)\s+([\d,]+)',
+        r'Rozliczenie depozytu \(\d\+\d\)\s+([\d,]+)',       # old: (4+5)
+        r'Rozliczenie depozytu[^)]*\)\s*([\d,]+)',            # new: ( 4 + 5 + 6 ) and any variant
         r'Rozliczenie depozytu\s+([\d,]+)',
-        r'6\.\s*Rozliczenie depozytu[^\d]+([\d,]+)',
+        r'[67]\.\s*Rozliczenie depozytu[^\d]+([\d,]+)',       # numbered (6. or 7.)
     ],
     'fixed_mocowa': [
-        r'Op.ata mocowa\s+\d+\s+mc\s+[\d,]+\s+([\d,]+)',
-        r'Op.ata mocow\w*\s+\d+\s+mc\s+([\d,]+)',
+        # New format: label qty unit price_per_unit value_net
+        r'Op.ata mocowa\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
+        r'Op.ata mocow\w*\s+\d+\s+[^\s]*mc\s+([\d,]+)',
+        # Old format: label unit qty price_per_unit value_net  (unit comes before qty)
+        r'Op.ata mocow\w*\s+(?!\d)\S+\s+\d+\s+[\d,]+\s+([\d,]+)',
     ],
     'fixed_abonament': [
-        r'Stawka op.aty abonamentowej\s+\d+\s+mc\s+[\d,]+\s+([\d,]+)',
-        r'Op.ata abonamentow\w*\s+\d+\s+mc\s+[\d,]+\s+([\d,]+)',
-        r'Abonament\s+\d+\s+mc\s+[\d,]+\s+([\d,]+)',
+        # New format
+        r'Stawka op.aty abonamentowej\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
+        r'Op.ata abonamentow\w*\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
+        r'Abonament\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
+        # Old format: unit before qty
+        r'Stawka op.aty abonamentowej\s+(?!\d)\S+\s+\d+\s+[\d,]+\s+([\d,]+)',
     ],
     'fixed_stalysieciowy': [
-        r'Sk.adnik sta.y stawki sieciowej\s+\d+\s+mc\s+[\d,]+\s+([\d,]+)',
-        r'Sk.adnik sta.y sieciow\w*\s+\d+\s+mc\s+[\d,]+\s+([\d,]+)',
+        # New format
+        r'Sk.adnik sta.y stawki sieciowej\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
+        r'Sk.adnik sta.y sieciow\w*\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
+        # Old format: unit before qty
+        r'Sk.adnik sta.y stawki sieciowej\s+(?!\d)\S+\s+\d+\s+[\d,]+\s+([\d,]+)',
     ],
 }
 
@@ -164,10 +191,11 @@ def find_field_spans(text: str, parsed_fields: dict) -> dict:
     month = parsed_fields.get('month')
     if year is not None and month is not None:
         _bp_span_patterns = [
-            r'Okres rozliczeniowy\s+\d{2}\.\d{2}\.\d{4}[^\n]*',
-            r'Okre.{0,3}rozliczeniowy\s+\d{2}\.\d{2}\.\d{4}[^\n]*',
-            r'rozliczeniow\w*[^.]*?\d{2}\.\d{2}\.\d{4}[^\n]*',
-            rf'\b01\.{month:02d}\.{year}[^\n]*',
+            r'Okres rozliczeniowy\s+\d{2}[./]\d{2}[./]\d{4}[^\n]*',
+            r'Okre.{0,3}rozliczeniowy\s+\d{2}[./]\d{2}[./]\d{4}[^\n]*',
+            r'Okres rozliczeniowy\s*\n[^\n]*\d{2}[./]\d{2}[./]\d{4}',
+            r'rozliczeniow\w*[^./\d]*\d{2}[./]\d{2}[./]\d{4}[^\n]*',
+            rf'\b01[./]{month:02d}[./]{year}[^\n]*',
         ]
         for _bp_pat in _bp_span_patterns:
             bp_m = re.search(_bp_pat, text, re.IGNORECASE)
@@ -411,21 +439,42 @@ def _parse_text(text: str) -> InvoiceData:
     # "Okres rozliczeniowy 01.04.2026 - 30.04.2026"
     # pypdf can mangle ś→ missing, add newlines inside phrases, or use variants.
     # Try many patterns before falling back to raw date-range heuristic.
+    # Each pattern variant is listed twice: dot-separator and slash-separator.
+    # Tauron's "nowy wzór faktury" (new format, introduced 2026) uses DD/MM/YYYY;
+    # the classic format uses DD.MM.YYYY.
     _BILLING_PERIOD_PATTERNS = [
-        # Standard label (exact and with diacritic drop)
+        # Standard label — dot format
         r'Okres rozliczeniowy\s+(\d{2})\.(\d{2})\.(\d{4})',
-        r'Okre.{0,3}rozliczeniowy\s+(\d{2})\.(\d{2})\.(\d{4})',
-        # Label with colon
-        r'Okres rozliczeniowy\s*:\s*(\d{2})\.(\d{2})\.(\d{4})',
-        # Label and date on separate lines (pypdf sometimes inserts \n mid-phrase)
+        # Standard label — slash format (new invoice template)
+        r'Okres rozliczeniowy\s+(\d{2})/(\d{2})/(\d{4})',
+        # Label on own line, date on next line — dot
         r'Okres rozliczeniowy\s*\n\s*(\d{2})\.(\d{2})\.(\d{4})',
+        # Label on own line, date on next line — slash
+        r'Okres rozliczeniowy\s*\n\s*(\d{2})/(\d{2})/(\d{4})',
+        # Diacritic-drop variant — dot
+        r'Okre.{0,3}rozliczeniowy\s+(\d{2})\.(\d{2})\.(\d{4})',
+        # Diacritic-drop variant — slash
+        r'Okre.{0,3}rozliczeniowy\s+(\d{2})/(\d{2})/(\d{4})',
+        # Diacritic-drop + newline — dot
         r'Okre.{0,3}rozliczeniowy\s*\n\s*(\d{2})\.(\d{2})\.(\d{4})',
-        # Capitalised / all-caps variant
+        # Diacritic-drop + newline — slash
+        r'Okre.{0,3}rozliczeniowy\s*\n\s*(\d{2})/(\d{2})/(\d{4})',
+        # Label with colon — dot
+        r'Okres rozliczeniowy\s*:\s*(\d{2})\.(\d{2})\.(\d{4})',
+        # Label with colon — slash
+        r'Okres rozliczeniowy\s*:\s*(\d{2})/(\d{2})/(\d{4})',
+        # Capitalised variants
         r'OKRES ROZLICZENIOWY\s+(\d{2})\.(\d{2})\.(\d{4})',
-        # Just the word "rozliczeniow" anywhere near a date
-        r'rozliczeniow\w*[^.]*?(\d{2})\.(\d{2})\.(\d{4})',
-        # Partial label with any number of mangled chars
-        r'[Oo]kre.{1,10}rozlicz\w*\s*[:\s]*(\d{2})\.(\d{2})\.(\d{4})',
+        r'OKRES ROZLICZENIOWY\s+(\d{2})/(\d{2})/(\d{4})',
+        # Just the concept word near any date
+        r'rozliczeniow\w*[^./\d]*(\d{2})\.(\d{2})\.(\d{4})',
+        r'rozliczeniow\w*[^./\d]*(\d{2})/(\d{2})/(\d{4})',
+        # Old format (stary wzór): "Za okres\nOd 01/10/2025 do 31/10/2025"
+        r'Za okres\s+Od\s+(\d{2})/(\d{2})/(\d{4})',
+        # Old format body: "za okres od 01/10/2025 do 31/10/2025"
+        r'za okres od\s+(\d{2})/(\d{2})/(\d{4})',
+        # Old format annex: "Rozliczenie za okres: 01/10/2025 - 31/10/2025"
+        r'Rozliczenie za okres:\s*(\d{2})/(\d{2})/(\d{4})',
     ]
     period_m = None
     for _bp in _BILLING_PERIOD_PATTERNS:
@@ -433,16 +482,15 @@ def _parse_text(text: str) -> InvoiceData:
         if period_m:
             break
 
-    # Last resort: find any start-of-month date (01.MM.YYYY) in the text —
-    # the billing period on a Tauron invoice always starts on the 1st.
+    # Last resort: find any start-of-month date (01.MM.YYYY or 01/MM/YYYY) —
+    # Tauron billing periods always start on the 1st.
     if not period_m:
-        period_m = re.search(r'\b01\.(\d{2})\.(\d{4})\b', text)
-        if period_m:
-            # Rewrite groups so group(2)=month, group(3)=year like the patterns above
-            _raw_month, _raw_year = period_m.group(1), period_m.group(2)
+        _heuristic_m = re.search(r'\b01[./](\d{2})[./](\d{4})\b', text)
+        if _heuristic_m:
+            _raw_month, _raw_year = _heuristic_m.group(1), _heuristic_m.group(2)
             warnings.append(
-                f'okres rozliczeniowy: etykieta nieznaleziona — wydedukowano z pierwszej daty '
-                f'01.{_raw_month}.{_raw_year}; zweryfikuj miesiąc'
+                f'okres rozliczeniowy: etykieta nieznaleziona — wydedukowano z daty '
+                f'01/{_raw_month}/{_raw_year}; zweryfikuj miesiąc'
             )
             month = int(_raw_month)
             year  = int(_raw_year)
@@ -456,8 +504,13 @@ def _parse_text(text: str) -> InvoiceData:
         month = int(period_m.group(2))
         year  = int(period_m.group(3))
 
-    billing_period_raw = _first(
-        r'Okres rozliczeniowy\s+(\d{2}\.\d{2}\.\d{4} - \d{2}\.\d{2}\.\d{4})', text)
+    billing_period_raw = (
+        _first(r'Okres rozliczeniowy\s+(\d{2}\.\d{2}\.\d{4} - \d{2}\.\d{2}\.\d{4})', text)
+        or _first(r'Okres rozliczeniowy\s*\n?\s*(\d{2}/\d{2}/\d{4} - \d{2}/\d{2}/\d{4})', text)
+        # Old format: "Od 01/10/2025 do 31/10/2025" or "01/10/2025 - 31/10/2025"
+        or _first(r'[Oo]d\s+(\d{2}/\d{2}/\d{4} do \d{2}/\d{2}/\d{4})', text)
+        or _first(r'Rozliczenie za okres:\s*(\d{2}/\d{2}/\d{4} - \d{2}/\d{2}/\d{4})', text)
+    )
 
     # ── Invoice number ────────────────────────────────────────────────────────
     invoice_number = _first_multi(_patterns_for('invoice_number'), text)
@@ -487,9 +540,17 @@ def _parse_text(text: str) -> InvoiceData:
         warnings.append('cena energii pozaszczytowej (net) nie znaleziona — poza-szczyt gross nieobliczony')
 
     # ── Peak / offpeak export from meter reading section ──────────────────────
-    _exp_m = re.search(r'\(oddanie\)-\d+\nszczyt\s+[\d.]+\s+\([^\)]+\)\s+([\d,]+)', text)
+    # New format: "(oddanie)-<serial>\nszczyt <date> (Z) <kwh>"
+    # Old format: "(oddanie)\nnr <serial>\nszczyt <date> (Z) <kwh>"
+    _exp_m = (
+        re.search(r'\(oddanie\)-\d+\nszczyt\s+[\d./]+\s+\([^\)]+\)\s+([\d,]+)', text)
+        or re.search(r'\(oddanie\)\s*\n\s*\w+\s+\d+\s*\nszczyt\s+[\d./]+\s+\([^\)]+\)\s+([\d,]+)', text)
+    )
     exp_peak = _n(_exp_m.group(1)) if _exp_m else None
-    _exp_m2 = re.search(r'\(oddanie\)-\d+\n[^\n]+\npozaszczytowa\s+[\d.]+\s+\([^\)]+\)\s+([\d,]+)', text)
+    _exp_m2 = (
+        re.search(r'\(oddanie\)-\d+\n[^\n]+\npozaszczytowa\s+[\d./]+\s+\([^\)]+\)\s+([\d,]+)', text)
+        or re.search(r'\(oddanie\)\s*\n\s*\w+\s+\d+\s*\n[^\n]+\npozaszczytowa\s+[\d./]+\s+\([^\)]+\)\s+([\d,]+)', text)
+    )
     exp_offpeak = _n(_exp_m2.group(1)) if _exp_m2 else None
 
     # ── Distribution variable components ─────────────────────────────────────
@@ -499,15 +560,27 @@ def _parse_text(text: str) -> InvoiceData:
 
     def _dist_peak(section_patterns: list) -> Optional[float]:
         for sp in section_patterns:
+            # New format: label zone qty kWh price_net
             m = re.search(sp + r'\s+szczyt\w*\s+\d+\s+kWh\s+([\d,]+)', dist_text, re.IGNORECASE)
+            if m:
+                return _n(m.group(1))
+            # Old format: label\nzone kWh qty [optional-coeff] price_net
+            m = re.search(sp + r'\s+szczyt\w*\s+kWh\s+\d+(?:\s+\d+)?\s+([\d,]+)', dist_text, re.IGNORECASE)
             if m:
                 return _n(m.group(1))
         return None
 
     def _dist_offpeak(section_patterns: list) -> Optional[float]:
         for sp in section_patterns:
+            # New format: label zone qty kWh value ... \n zone qty kWh value
             m2 = re.search(
                 sp + r'\s+\S+\s+\d+\s+kWh\s+[\d,]+[^\n]+\n\s*\S+\s+\d+\s+kWh\s+([\d,]+)',
+                dist_text, re.IGNORECASE)
+            if m2:
+                return _n(m2.group(1))
+            # Old format: label\nzone kWh qty [coeff] price ... \n zone kWh qty [coeff] price
+            m2 = re.search(
+                sp + r'\s+\S+\s+kWh\s+\d+(?:\s+\d+)?\s+[\d,]+[^\n]+\n\s*\S+\s+kWh\s+\d+(?:\s+\d+)?\s+([\d,]+)',
                 dist_text, re.IGNORECASE)
             if m2:
                 return _n(m2.group(1))
