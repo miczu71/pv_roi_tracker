@@ -164,7 +164,7 @@ _BUILTIN_PATTERNS: dict[str, list] = {
     'fixed_stalysieciowy': [
         # New format (label on one line)
         r'Sk.adnik sta.y stawki sieciowej\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
-        r'Sk.adnik sta.y sieciow\w*\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
+        r'Sk.adnik sta.y sieciow\w*\s+\d+\s+[^\s]*mc\s+([\d,]+)',
         # Old format: unit before qty (label on one line)
         r'Sk.adnik sta.y stawki sieciowej\s+(?!\d)\S+\s+\d+\s+[\d,]+\s+([\d,]+)',
         # Oldest format: pypdf splits "Składnik stały stawki\nsieciowej"
@@ -296,9 +296,11 @@ class InvoiceData:
 
 # ── Number / string parsing helpers ──────────────────────────────────────────
 
+_POLISH_NUM_TABLE = str.maketrans({' ': None, ',': '.'})
+
 def _n(s: str) -> float:
     """Parse Polish decimal notation (comma separator, optional space thousands) → float."""
-    return float(s.replace(' ', '').replace(',', '.'))
+    return float(s.translate(_POLISH_NUM_TABLE))
 
 
 def _first(pattern: str, text: str, group: int = 1) -> Optional[str]:
@@ -579,17 +581,15 @@ def _parse_text(text: str) -> InvoiceData:
     # New format: "(oddanie)-<serial>\nszczyt <date> (Z) <kwh>"
     # Old format: "(oddanie)\nnr <serial>\nszczyt <date> (Z) <kwh>"
     # G11:        "(oddanie)\nnr <serial>\ncałodobowa <date> (Z) <kwh>"
-    _exp_m = (
-        re.search(r'\(oddanie\)-\d+\nszczyt\s+[\d./]+\s+\([^\)]+\)\s+([\d,]+)', text)
-        or re.search(r'\(oddanie\)\s*\n\s*\w+\s+\d+\s*\nszczyt\s+[\d./]+\s+\([^\)]+\)\s+([\d,]+)', text)
-        or re.search(r'\(oddanie\)\s*\n\s*\w+\s+\d+\s*\nca.odobowa\s+[\d./]+\s+\([^\)]+\)\s+([\d,]+)', text)
-    )
-    exp_peak = _n(_exp_m.group(1)) if _exp_m else None
-    _exp_m2 = (
-        re.search(r'\(oddanie\)-\d+\n[^\n]+\npozaszczytowa\s+[\d./]+\s+\([^\)]+\)\s+([\d,]+)', text)
-        or re.search(r'\(oddanie\)\s*\n\s*\w+\s+\d+\s*\n[^\n]+\npozaszczytowa\s+[\d./]+\s+\([^\)]+\)\s+([\d,]+)', text)
-    )
-    exp_offpeak = _n(_exp_m2.group(1)) if _exp_m2 else None
+    exp_peak = _first_float_multi([
+        r'\(oddanie\)-\d+\nszczyt\s+[\d./]+\s+\([^\)]+\)\s+([\d,]+)',
+        r'\(oddanie\)\s*\n\s*\w+\s+\d+\s*\nszczyt\s+[\d./]+\s+\([^\)]+\)\s+([\d,]+)',
+        r'\(oddanie\)\s*\n\s*\w+\s+\d+\s*\nca.odobowa\s+[\d./]+\s+\([^\)]+\)\s+([\d,]+)',
+    ], text)
+    exp_offpeak = _first_float_multi([
+        r'\(oddanie\)-\d+\n[^\n]+\npozaszczytowa\s+[\d./]+\s+\([^\)]+\)\s+([\d,]+)',
+        r'\(oddanie\)\s*\n\s*\w+\s+\d+\s*\n[^\n]+\npozaszczytowa\s+[\d./]+\s+\([^\)]+\)\s+([\d,]+)',
+    ], text)
 
     # ── Distribution variable components ─────────────────────────────────────
     # Scope to the Dystrybucja section to avoid false positives.
@@ -732,13 +732,7 @@ def _parse_text(text: str) -> InvoiceData:
     elif _is_single_zone and peak_gross is not None:
         blended_gross = peak_gross  # G11: single zone — blended equals the single gross rate
 
-    # De-duplicate warnings
-    seen: set = set()
-    unique_warnings: list = []
-    for w in warnings:
-        if w not in seen:
-            seen.add(w)
-            unique_warnings.append(w)
+    unique_warnings = list(dict.fromkeys(warnings))
 
     data = InvoiceData(
         year=year,
