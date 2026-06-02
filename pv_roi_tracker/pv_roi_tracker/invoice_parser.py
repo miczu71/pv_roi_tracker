@@ -54,12 +54,18 @@ _BUILTIN_PATTERNS: dict[str, list] = {
         r'Pobrane z sieci\s+([\d,]+)',
         r'Pobran[ae] z sieci\s+([\d,]+)',
         r'Energia pobrana z sieci\s+([\d,]+)',
+        # Oldest format (2025): no "Pobrano z sieci" summary — extract from invoice table row 1
+        r'Sprzeda.y energii elektrycznej\s+[\d,]+\s+\d+\s+[\d,]+\s+[\d,]+\s+([\d,]+)',
+        # Oldest format fallback: "Ogółem: net vat brutto import export" summary row
+        r'Og..em:\s+[\d,]+\s+[\d,]+\s+[\d,]+\s+([\d,]+)\s+[\d,]+',
     ],
     'exp_total': [
         r'Wprowadzono do sieci\s+([\d,]+)',
         r'Wprowadzone do sieci\s+([\d,]+)',
         r'Oddano do sieci\s+([\d,]+)',
         r'Energia wprowadzona do sieci\s+([\d,]+)',
+        # Oldest format: last number in "Ogółem: net vat brutto import export" row
+        r'Og..em:\s+[\d,]+\s+[\d,]+\s+[\d,]+\s+[\d,]+\s+([\d,]+)',
     ],
     'imp_peak': [
         # New format: zone qty kWh price
@@ -103,6 +109,8 @@ _BUILTIN_PATTERNS: dict[str, list] = {
         r'Razem \(3-6\)\s+([\d,]+)',
         r'Razem do zap.aty\s+([\d,]+)',
         r'Do zap.aty\s+([\d,]+)',
+        # Oldest format: "Do zapłaty: 83,63 zł" (colon between label and amount)
+        r'Do zap.aty:\s*([\d,]+)',
     ],
     'avg_price': [
         r'[Śś]rednia cena za 1 kWh to\s+([\d,]+)',
@@ -471,14 +479,16 @@ def _parse_text(text: str) -> InvoiceData:
         r'rozliczeniow\w*[^./\d]*(\d{2})/(\d{2})/(\d{4})',
         # Old format (stary wzór): "Za okres\nOd 01/10/2025 do 31/10/2025"
         r'Za okres\s+Od\s+(\d{2})/(\d{2})/(\d{4})',
-        # Old format body: "za okres od 01/10/2025 do 31/10/2025"
+        # Old format body (both "Za okres od" and "za okres od" — IGNORECASE in loop)
         r'za okres od\s+(\d{2})/(\d{2})/(\d{4})',
-        # Old format annex: "Rozliczenie za okres: 01/10/2025 - 31/10/2025"
+        # Old format annex with colon: "Rozliczenie za okres: 01/10/2025"
         r'Rozliczenie za okres:\s*(\d{2})/(\d{2})/(\d{4})',
+        # Oldest format annex without colon: "Rozliczenie za okres 01/04/2025"
+        r'Rozliczenie za okres\s+(\d{2})/(\d{2})/(\d{4})',
     ]
     period_m = None
     for _bp in _BILLING_PERIOD_PATTERNS:
-        period_m = re.search(_bp, text)
+        period_m = re.search(_bp, text, re.IGNORECASE)
         if period_m:
             break
 
@@ -507,9 +517,10 @@ def _parse_text(text: str) -> InvoiceData:
     billing_period_raw = (
         _first(r'Okres rozliczeniowy\s+(\d{2}\.\d{2}\.\d{4} - \d{2}\.\d{2}\.\d{4})', text)
         or _first(r'Okres rozliczeniowy\s*\n?\s*(\d{2}/\d{2}/\d{4} - \d{2}/\d{2}/\d{4})', text)
-        # Old format: "Od 01/10/2025 do 31/10/2025" or "01/10/2025 - 31/10/2025"
+        # Old format: "Od 01/10/2025 do 31/10/2025"
         or _first(r'[Oo]d\s+(\d{2}/\d{2}/\d{4} do \d{2}/\d{2}/\d{4})', text)
-        or _first(r'Rozliczenie za okres:\s*(\d{2}/\d{2}/\d{4} - \d{2}/\d{2}/\d{4})', text)
+        # Old format annex (with or without colon): "Rozliczenie za okres[: ] DD/MM/YYYY - DD/MM/YYYY"
+        or _first(r'Rozliczenie za okres:?\s*(\d{2}/\d{2}/\d{4} - \d{2}/\d{2}/\d{4})', text)
     )
 
     # ── Invoice number ────────────────────────────────────────────────────────

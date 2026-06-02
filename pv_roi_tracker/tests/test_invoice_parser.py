@@ -379,6 +379,131 @@ class TestOldFormat:
         assert field_warns == [], f'Unexpected field warnings: {field_warns}'
 
 
+# ── Oldest invoice format (brak "Pobrano z sieci", 2025 Q1-Q2) ───────────────
+
+def _make_oldest_format_text() -> str:
+    """Synthetic text mimicking the oldest Tauron invoice layout (e.g. T/K1/0443532/25)."""
+    return (
+        'FAKTURA VAT NR T/K1/0443532/25 - Oryginał dokumentu wystawiony w formie elektronicznej\n'
+        'Za okres od 01/04/2025 do 30/04/2025\n'
+        '1. Sprzeda.y energii elektrycznej 89,27 23 20,54 109,81 120\n'
+        '2. .wiadczonych us.ug dystrybucji 34,06 23 7,82 41,88 120\n'
+        '3. Wynik rozliczenia ( 1 + 2 ) 123,33 23 28,36 151,69\n'
+        '5. Depozyt prosumencki w rozliczanym okresie (z.) 0,00\n'
+        '6. Depozyt prosumencki z okres.w poprzednich (z.) 68,06\n'
+        '7. Rozliczenie depozytu ( 4 + 5 + 6 ) 68,06\n'
+        '8. Do zap.aty (z.) ( 3 - 7 ) 83,63\n'
+        'Do zap.aty: 83,63 z.\n'
+        'Licznik energii elektrycznej (oddanie)\n'
+        'nr 312186091817\n'
+        'szczyt 30/04/2025 (Z) 159,0000\n'
+        'pozaszczytowa 30/04/2025 (Z) 156,0000\n'
+        'Rozliczenie za okres 01/04/2025 - 30/04/2025\n'
+        'Energia czynna\n'
+        'szczytowa kWh 29 0,76410 22,16 23 5,10 27,26\n'
+        'pozaszczytowa kWh 91 0,42030 38,25 23 8,80 47,05\n'
+        'Sk.adnik sta.y stawki sieciowej mc 1 10,34000 10,34 23 2,38 12,72\n'
+        'Stawka jako.ciowa\n'
+        'szczytowa kWh 29 0,03210 0,93 23 0,21 1,14\n'
+        'pozaszczytowa kWh 91 0,03210 2,92 23 0,67 3,59\n'
+        'Sk.adnik zmienny stawki sieciowej\n'
+        'szczytowa kWh 29 0,32710 9,49 23 2,18 11,67\n'
+        'pozaszczytowa kWh 91 0,05180 4,71 23 1,08 5,79\n'
+        'Op.ata OZE\n'
+        'szczytowa kWh 29 1 0,00350 0,10 23 0,02 0,12\n'
+        'pozaszczytowa kWh 91 1 0,00350 0,32 23 0,07 0,39\n'
+        'Op.ata kogeneracyjna\n'
+        'szczyt kWh 29 1 0,00300 0,09 23 0,02 0,11\n'
+        'pozaszczyt kWh 91 1 0,00300 0,27 23 0,06 0,33\n'
+        'Stawka op.aty abonamentowej z./mc 1 4,56000 4,56 23 1,05 5,61\n'
+        'Op.ata mocowa z./mc 1 0,00000 0,00 23 0,00 0,00\n'
+        '1. 590322415104598073 123,33 23 28,36 151,69 120 315\n'
+        '2. Og..em: 123,33 28,36 151,69 120 315\n'
+        '3. rednia cena brutto 1 kWh 1,26 z./kWh\n'
+    )
+
+
+class TestOldestFormat:
+    """Parser handles the pre-October-2025 layout (no Pobrano/Wprowadzono summary)."""
+
+    @pytest.fixture(scope='class')
+    def parsed(self):
+        return _parse_text(_make_oldest_format_text())
+
+    def test_billing_period(self, parsed):
+        assert parsed.year == 2025
+        assert parsed.month == 4
+
+    def test_billing_period_no_warning(self, parsed):
+        period_warns = [w for w in parsed.warnings if 'wydedukowano' in w]
+        assert period_warns == [], f'Unexpected period warnings: {period_warns}'
+
+    def test_billing_period_raw(self, parsed):
+        assert parsed.billing_period_raw is not None
+        assert '04/2025' in parsed.billing_period_raw
+
+    def test_invoice_number(self, parsed):
+        assert parsed.invoice_number == 'T/K1/0443532/25'
+
+    def test_imported_kwh(self, parsed):
+        assert parsed.imported_kwh == pytest.approx(120.0)
+
+    def test_exported_kwh(self, parsed):
+        assert parsed.exported_kwh == pytest.approx(315.0)
+
+    def test_imp_peak(self, parsed):
+        assert parsed.imported_kwh_peak == pytest.approx(29.0)
+
+    def test_imp_offpeak(self, parsed):
+        assert parsed.imported_kwh_offpeak == pytest.approx(91.0)
+
+    def test_exp_peak(self, parsed):
+        assert parsed.exported_kwh_peak == pytest.approx(159.0)
+
+    def test_exp_offpeak(self, parsed):
+        assert parsed.exported_kwh_offpeak == pytest.approx(156.0)
+
+    def test_energy_peak_net(self, parsed):
+        assert parsed.energy_peak_net == pytest.approx(0.76410, abs=0.0001)
+
+    def test_energy_offpeak_net(self, parsed):
+        assert parsed.energy_offpeak_net == pytest.approx(0.42030, abs=0.0001)
+
+    def test_dist_var_peak(self, parsed):
+        assert parsed.dist_var_peak_net == pytest.approx(0.32710, abs=0.0001)
+
+    def test_dist_var_offpeak(self, parsed):
+        assert parsed.dist_var_offpeak_net == pytest.approx(0.05180, abs=0.0001)
+
+    def test_fixed_mocowa_zero(self, parsed):
+        assert parsed.fixed_mocowa_net == pytest.approx(0.0, abs=0.001)
+
+    def test_fixed_abonament(self, parsed):
+        assert parsed.fixed_abonament_net == pytest.approx(4.56, abs=0.01)
+
+    def test_fixed_stalysieciowy(self, parsed):
+        assert parsed.fixed_stalysieciowy_net == pytest.approx(10.34, abs=0.01)
+
+    def test_deposit_current(self, parsed):
+        assert parsed.deposit_current_pln == pytest.approx(0.0, abs=0.01)
+
+    def test_deposit_previous(self, parsed):
+        assert parsed.deposit_previous_pln == pytest.approx(68.06, abs=0.01)
+
+    def test_deposit_used(self, parsed):
+        assert parsed.deposit_used_pln == pytest.approx(68.06, abs=0.01)
+
+    def test_amount_due(self, parsed):
+        assert parsed.amount_due_pln == pytest.approx(83.63, abs=0.01)
+
+    def test_avg_price(self, parsed):
+        assert parsed.avg_price_pln_kwh == pytest.approx(1.26, abs=0.01)
+
+    def test_no_field_warnings(self, parsed):
+        field_warns = [w for w in parsed.warnings if 'nie znalezion' in w or 'nieobliczony' in w]
+        assert field_warns == [], f'Unexpected field warnings: {field_warns}'
+
+
 # ── Real PDF tests (skipped if PDF absent) ────────────────────────────────────
 
 @pytest.mark.skipif(not _SAMPLE_PDF_PATH.exists(),
