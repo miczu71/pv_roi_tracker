@@ -143,19 +143,25 @@ _BUILTIN_PATTERNS: dict[str, list] = {
         r'Op.ata mocow\w*\s+(?!\d)\S+\s+\d+\s+[\d,]+\s+([\d,]+)',
     ],
     'fixed_abonament': [
-        # New format
+        # New format (label on one line)
         r'Stawka op.aty abonamentowej\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
         r'Op.ata abonamentow\w*\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
         r'Abonament\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
-        # Old format: unit before qty
+        # Old format: unit before qty (label on one line)
         r'Stawka op.aty abonamentowej\s+(?!\d)\S+\s+\d+\s+[\d,]+\s+([\d,]+)',
+        # Oldest format: pypdf splits "Stawka opłaty\nabonamentowej"
+        r'Stawka op.aty\s+abonamentowej\s+(?!\d)\S+\s+\d+\s+[\d,]+\s+([\d,]+)',
+        r'Stawka op.aty\s+abonamentowej\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
     ],
     'fixed_stalysieciowy': [
-        # New format
+        # New format (label on one line)
         r'Sk.adnik sta.y stawki sieciowej\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
         r'Sk.adnik sta.y sieciow\w*\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
-        # Old format: unit before qty
+        # Old format: unit before qty (label on one line)
         r'Sk.adnik sta.y stawki sieciowej\s+(?!\d)\S+\s+\d+\s+[\d,]+\s+([\d,]+)',
+        # Oldest format: pypdf splits "Składnik stały stawki\nsieciowej"
+        r'Sk.adnik sta.y stawki\s+sieciowej\s+(?!\d)\S+\s+\d+\s+[\d,]+\s+([\d,]+)',
+        r'Sk.adnik sta.y stawki\s+sieciowej\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
     ],
 }
 
@@ -597,7 +603,8 @@ def _parse_text(text: str) -> InvoiceData:
                 return _n(m2.group(1))
         return None
 
-    _sksn_patterns = [r'Sk.adnik zmienny stawki sieciowej', r'Sk.adnik zmienny sieciow\w*']
+    # Use \s+ between "stawki" and "sieciowej": pypdf sometimes splits across lines
+    _sksn_patterns = [r'Sk.adnik zmienny stawki\s+sieciowej', r'Sk.adnik zmienny sieciow\w*']
     dist_var_peak_net    = _dist_peak(_sksn_patterns)
     dist_var_offpeak_net = _dist_offpeak(_sksn_patterns)
     dist_jakosciowa_net  = _dist_peak([r'Stawka jako.ciow\w*', r'Jako.ciow\w*'])
