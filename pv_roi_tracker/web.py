@@ -258,6 +258,57 @@ def api_data():
         'pace_vs_avg_pct': pace_vs_avg,
     }
 
+    # ── Deposit ledger (item A) ──────────────────────────────────────────────
+    deposit_data = None
+    try:
+        from . import deposit as _deposit
+        from . import invoice_store as _istore_dep
+        inv_store = _istore_dep.load(_invoice_path) if _invoice_path else {}
+        dep_result = _deposit.calculate(records, inv_store)
+
+        def _dep_month_dict(m):
+            return {
+                'year': m.year, 'month': m.month,
+                'month_key': f'{m.year}-{m.month:02d}',
+                'accrued': m.accrued,
+                'cumulative_accrued': m.cumulative_accrued,
+                'import_cost': m.import_cost,
+                'consumed': m.consumed,
+                'balance': m.balance,
+                'invoice_balance': m.invoice_balance,
+                'invoice_consumed': m.invoice_consumed,
+            }
+
+        def _dep_fc_dict(m):
+            return {
+                'year': m.year, 'month': m.month,
+                'month_key': f'{m.year}-{m.month:02d}',
+                'projected_accrued': m.projected_accrued,
+                'projected_import_cost': m.projected_import_cost,
+                'projected_balance': m.projected_balance,
+            }
+
+        deposit_data = {
+            'total_inverter_accrued': dep_result.total_inverter_accrued,
+            'total_invoice_consumed': dep_result.total_invoice_consumed,
+            'total_model_consumed': dep_result.total_model_consumed,
+            'current_balance_model': dep_result.current_balance_model,
+            'invoice_latest_balance': dep_result.invoice_latest_balance,
+            'invoice_latest_month': dep_result.invoice_latest_month,
+            'current_balance_estimate': dep_result.current_balance_estimate,
+            'balance_divergence': dep_result.balance_divergence,
+            'avg_monthly_accrual': dep_result.avg_monthly_accrual,
+            'avg_monthly_import_cost': dep_result.avg_monthly_import_cost,
+            'projected_balance_3m': dep_result.projected_balance_3m,
+            'projected_balance_6m': dep_result.projected_balance_6m,
+            'projected_balance_12m': dep_result.projected_balance_12m,
+            'months': [_dep_month_dict(m) for m in dep_result.months],
+            'forecast': [_dep_fc_dict(m) for m in dep_result.forecast],
+        }
+    except Exception:
+        import traceback
+        traceback.print_exc()
+
     return jsonify({
         'status': 'ok',
         'updated_at': updated_at,
@@ -306,10 +357,14 @@ def api_data():
             'counterfactual_delta': result.counterfactual_delta,
             'inflation_source': result.inflation_source,
             'cumulative_inflation_pct': result.cumulative_inflation_pct,
+            # Self-consumption vs export opportunity metrics (item C)
+            'self_consume_premium': result.self_consume_premium,
+            'export_self_consume_potential': result.export_self_consume_potential,
         },
         'records': records_out,
         'predictions': _build_predictions(result),
         'invoices': _build_invoices_data(records),
+        'deposit': deposit_data,
         'tariff_drift': _build_tariff_drift(),
         'layouts_summary': _build_layouts_summary(),
     })
@@ -408,7 +463,27 @@ def _build_tariff_drift():
         ft = latest.get('fixed_total_net')
         if ft is not None and abs(ft - _FIXED_NET_EXPECTED) > 0.50:
             drift['fixed_net'] = {'expected': _FIXED_NET_EXPECTED, 'invoice': round(ft, 2)}
-        return drift or None
+
+        # Buy-price history — shows why self-consumption savings fell (item D)
+        history = []
+        for k in sorted(stored):
+            if k.startswith('unparsed-'):
+                continue
+            bg = stored[k].get('blended_gross')
+            if bg is not None:
+                history.append({'month': k, 'buy_price': round(bg, 4)})
+        if len(history) >= 2:
+            first = history[0]
+            last  = history[-1]
+            change_pct = round((last['buy_price'] / first['buy_price'] - 1) * 100, 1) if first['buy_price'] else None
+            drift['buy_price_history'] = history
+            drift['buy_price_first'] = first['buy_price']
+            drift['buy_price_first_month'] = first['month']
+            drift['buy_price_latest'] = last['buy_price']
+            drift['buy_price_latest_month'] = last['month']
+            drift['buy_price_change_pct'] = change_pct
+
+        return drift if drift else None
     except Exception:
         return None
 
@@ -972,8 +1047,8 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
         </div>
         <!-- Deposit trend chart -->
         <div style="margin-bottom:16px">
-          <h4 style="margin:0 0 8px;font-size:13px;font-weight:600">Saldo depozytu prosumenckiego (zł)</h4>
-          <div class="chart-wrap" style="max-width:680px;height:200px">
+          <h4 style="margin:0 0 8px;font-size:13px;font-weight:600">Depozyt prosumencki: saldo, model i prognoza (zł)</h4>
+          <div class="chart-wrap" style="max-width:800px;height:260px">
             <canvas id="depositChart"></canvas>
           </div>
         </div>
@@ -1097,6 +1172,19 @@ function renderCards(s) {
     { lbl: 'Zysk netto', val: pln(s.net_profit || 0), cls: (s.net_profit || 0) > 0 ? 'c-green' : '', sub: (s.net_profit || 0) > 0 ? 'ponad inwestycje brutto' : 'przed splata' },
     s.self_sufficiency_avg != null ? { lbl: 'Autarkia', val: pct(s.self_sufficiency_avg), sub: 'udzial autokonsumpcji' } : null,
     { lbl: 'Koszt netto sieci', val: pln(s.net_grid_cost_total), sub: 'zakup − sprzedaz lacznie' },
+    // Self-consumption opportunity metrics (item C)
+    s.self_consume_premium != null ? {
+      lbl: 'Premia autokonsumpcji',
+      val: pln(s.self_consume_premium),
+      sub: 'zysk z autokons. ponad wartość exportu (zl kWh × spread ceny)',
+      cls: 'c-green',
+    } : null,
+    s.export_self_consume_potential != null ? {
+      lbl: 'Potencjał export → autokons.',
+      val: pln(s.export_self_consume_potential),
+      sub: 'dodatkowa wartość gdyby export był autokonsumowany (bateria / przesunięcie)',
+      cls: s.export_self_consume_potential > 0 ? 'c-blue' : '',
+    } : null,
     (() => {
       const mp = s.month_progress;
       if (!mp || !s.monthly_avg_savings) return null;
@@ -1905,7 +1993,7 @@ async function loadData() {
     renderHistTable([...d.records].reverse(), d.summary.month_closed, d.invoices || []);
     renderPredTable(d.predictions, d.summary, d.summary.avg_window);
     renderYearsTable(d.records, systemKwp);
-    renderInvoicesTab(d.invoices || [], d.tariff_drift, d.records, d.layouts_summary);
+    renderInvoicesTab(d.invoices || [], d.tariff_drift, d.records, d.layouts_summary, d.deposit || null);
   } catch (e) {
     document.getElementById('updated').textContent = 'Blad polaczenia';
     console.error(e);
@@ -1948,17 +2036,18 @@ async function uploadInvoices() {
 /* ─────────────────────────────────────────────────────────────
    Faktury tab renderer
    ───────────────────────────────────────────────────────────── */
-function renderInvoicesTab(invoices, tariffDrift, records, layoutsSummary) {
-  _renderInvKpiCards(invoices, tariffDrift, records);
+function renderInvoicesTab(invoices, tariffDrift, records, layoutsSummary, deposit) {
+  _renderInvKpiCards(invoices, tariffDrift, records, deposit);
   _renderDriftBanner(tariffDrift);
   _renderCoverageGrid(invoices, records);
-  renderDepositChart(invoices);
+  renderDepositChart(invoices, deposit);
   _renderInvoiceTable(invoices);
   _renderLayoutsPanel(layoutsSummary);
+  _renderTariffHistory(tariffDrift);
 }
 
 /* KPI summary cards */
-function _renderInvKpiCards(invoices, tariffDrift, records) {
+function _renderInvKpiCards(invoices, tariffDrift, records, deposit) {
   const wrap = document.getElementById('invKpiCards');
   if (!wrap) return;
   const sorted = [...invoices].filter(i => i.month).sort((a,b) => b.month.localeCompare(a.month));
@@ -1976,9 +2065,48 @@ function _renderInvKpiCards(invoices, tariffDrift, records) {
     '</div>';
 
   let html = '';
-  // Deposit balance
-  const depBal = latest ? (latest.deposit_previous != null ? latest.deposit_previous.toFixed(2) + ' zł' : '—') : '—';
-  html += '<div style="' + kpiStyle + '">' + lbl('Saldo depozytu') + val(depBal) + '</div>';
+  // Deposit balance — prefer deposit object over raw invoice field
+  let depBalStr = '—';
+  let depBalSub = null;
+  if (deposit) {
+    const est = deposit.current_balance_estimate;
+    const inv = deposit.invoice_latest_balance;
+    if (est != null) {
+      depBalStr = est.toFixed(2) + ' zł';
+      depBalSub = inv != null ? 'faktura: ' + inv.toFixed(2) + ' zł (' + (deposit.invoice_latest_month || '') + ')' : null;
+    } else if (inv != null) {
+      depBalStr = inv.toFixed(2) + ' zł';
+      depBalSub = deposit.invoice_latest_month || null;
+    }
+  } else if (latest && latest.deposit_previous != null) {
+    depBalStr = latest.deposit_previous.toFixed(2) + ' zł';
+  }
+  html += '<div style="' + kpiStyle + '">' + lbl('Saldo depozytu (est.)') + val(depBalStr) +
+    (depBalSub ? '<div style="font-size:11px;color:var(--muted)">' + depBalSub + '</div>' : '') + '</div>';
+
+  // Deposit earned (inverter-computed total)
+  if (deposit) {
+    const accrued = deposit.total_inverter_accrued;
+    const consumed = deposit.total_invoice_consumed;
+    html += '<div style="' + kpiStyle + '">' + lbl('Depozyt naliczony (inwerter)') +
+      val(accrued != null ? accrued.toFixed(2) + ' zł' : '—') +
+      '<div style="font-size:11px;color:var(--muted)">wg Taurona: ' + (consumed != null ? consumed.toFixed(2) + ' zł' : '—') + ' zużyto</div>' +
+      '</div>';
+    // Forecast balance
+    const p3  = deposit.projected_balance_3m;
+    const p6  = deposit.projected_balance_6m;
+    const p12 = deposit.projected_balance_12m;
+    if (p3 != null || p6 != null || p12 != null) {
+      const fcParts = [];
+      if (p3  != null) fcParts.push('3m: ' + p3.toFixed(0) + ' zł');
+      if (p6  != null) fcParts.push('6m: ' + p6.toFixed(0) + ' zł');
+      if (p12 != null) fcParts.push('12m: ' + p12.toFixed(0) + ' zł');
+      html += '<div style="' + kpiStyle + '">' + lbl('Prognoza salda depozytu') +
+        val(p3 != null ? p3.toFixed(2) + ' zł' : '—', '→3 mies.') +
+        '<div style="font-size:11px;color:var(--muted)">' + fcParts.join('  •  ') + '</div>' +
+        '</div>';
+    }
+  }
 
   // Last invoice
   const lastInv = latest ? (latest.amount_due != null ? latest.amount_due.toFixed(2) + ' zł' : '—') : '—';
@@ -2062,38 +2190,152 @@ function _renderCoverageGrid(invoices, records) {
   wrap.innerHTML = html;
 }
 
-/* Deposit trend chart */
-function renderDepositChart(invoices) {
+/* Deposit trend chart — three series: invoice reported, model computed, forecast */
+function renderDepositChart(invoices, deposit) {
   const ctx = document.getElementById('depositChart');
   if (!ctx) return;
-  const sorted = [...(invoices||[])].filter(i => i.month).sort((a,b) => a.month.localeCompare(b.month));
-  const labels = sorted.map(i => i.month);
-  const data   = sorted.map(i => i.deposit_previous != null ? i.deposit_previous : null);
   if (_depositChart) _depositChart.destroy();
+
+  // Historical labels from deposit.months (covers all complete months)
+  const histMonths = (deposit && deposit.months) ? deposit.months : [];
+  const fcMonths   = (deposit && deposit.forecast) ? deposit.forecast : [];
+
+  // Build label list: all hist + all forecast
+  const histLabels = histMonths.map(m => m.month_key);
+  const fcLabels   = fcMonths.map(m => m.month_key);
+  const allLabels  = [...histLabels, ...fcLabels];
+
+  if (!allLabels.length) {
+    // Fallback: invoice-only original chart
+    const sorted = [...(invoices||[])].filter(i => i.month).sort((a,b) => a.month.localeCompare(b.month));
+    const labels = sorted.map(i => i.month);
+    const data   = sorted.map(i => i.deposit_previous != null ? i.deposit_previous : null);
+    _depositChart = new Chart(ctx, {
+      type: 'line',
+      data: { labels, datasets: [{ label: 'Saldo (faktura zł)', data, borderColor: '#3182ce', backgroundColor: 'rgba(49,130,206,0.08)', tension: 0.3, fill: true, pointRadius: 4, spanGaps: false }] },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { ticks: { font: { size: 10 } } }, y: { ticks: { callback: v => v + ' zł' } } } }
+    });
+    return;
+  }
+
+  // Series 1: invoice-reported balance (dep_previous per invoice, hist only)
+  const invMap = {};
+  (invoices || []).forEach(i => { if (i.month) invMap[i.month] = i.deposit_previous; });
+  const invData = allLabels.map(k => histLabels.includes(k) ? (invMap[k] != null ? invMap[k] : null) : null);
+
+  // Series 2: model-computed balance (FIFO, hist only)
+  const modelMap = {};
+  histMonths.forEach(m => { modelMap[m.month_key] = m.balance; });
+  const modelData = allLabels.map(k => modelMap[k] != null ? modelMap[k] : null);
+
+  // Series 3: forecast (projected balance, future only)
+  const fcMap = {};
+  fcMonths.forEach(m => { fcMap[m.month_key] = m.projected_balance; });
+  // Connect to last hist point
+  const lastHistBal = histMonths.length ? histMonths[histMonths.length - 1].balance : null;
+  const fcData = allLabels.map((k, i) => {
+    if (fcMap[k] != null) return fcMap[k];
+    if (histLabels.length && k === histLabels[histLabels.length - 1] && lastHistBal != null) return lastHistBal;
+    return null;
+  });
+
+  // Series 4: cumulative accrued (total earned, hist only)
+  const accData = allLabels.map(k => {
+    const m = histMonths.find(r => r.month_key === k);
+    return m ? m.cumulative_accrued : null;
+  });
+
   _depositChart = new Chart(ctx, {
     type: 'line',
     data: {
-      labels,
-      datasets: [{
-        label: 'Saldo depozytu (zł)',
-        data,
-        borderColor: '#3182ce',
-        backgroundColor: 'rgba(49,130,206,0.08)',
-        tension: 0.3,
-        fill: true,
-        pointRadius: 4,
-        spanGaps: false,
-      }]
+      labels: allLabels,
+      datasets: [
+        {
+          label: 'Saldo (faktura Tauron)',
+          data: invData,
+          borderColor: '#3182ce',
+          backgroundColor: 'rgba(49,130,206,0.08)',
+          tension: 0.3,
+          fill: false,
+          pointRadius: 4,
+          spanGaps: false,
+        },
+        {
+          label: 'Saldo (model inwerter)',
+          data: modelData,
+          borderColor: '#38a169',
+          backgroundColor: 'transparent',
+          tension: 0.3,
+          fill: false,
+          pointRadius: 3,
+          borderDash: [4, 3],
+          spanGaps: false,
+        },
+        {
+          label: 'Prognoza salda',
+          data: fcData,
+          borderColor: '#ed8936',
+          backgroundColor: 'rgba(237,137,54,0.07)',
+          tension: 0.3,
+          fill: false,
+          pointRadius: 2,
+          borderDash: [6, 4],
+          spanGaps: false,
+        },
+        {
+          label: 'Nalic. skum. (inwerter)',
+          data: accData,
+          borderColor: '#805ad5',
+          backgroundColor: 'transparent',
+          tension: 0.3,
+          fill: false,
+          pointRadius: 2,
+          borderDash: [2, 3],
+          spanGaps: false,
+        },
+      ],
     },
     options: {
       responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { position: 'top', labels: { boxWidth: 12, font: { size: 11 } } },
+        tooltip: { callbacks: { label: c => c.raw == null ? null : c.dataset.label + ': ' + Number(c.raw).toLocaleString('pl-PL', { maximumFractionDigits: 2 }) + ' zł' } },
+      },
       scales: {
-        x: { ticks: { font: { size: 10 } } },
-        y: { ticks: { callback: v => v + ' zł' } },
-      }
-    }
+        x: { ticks: { font: { size: 10 }, maxRotation: 45 } },
+        y: { ticks: { callback: v => v.toFixed(0) + ' zł', font: { size: 10 } } },
+      },
+    },
   });
+}
+
+/* Tariff history chart / annotation (item D) */
+function _renderTariffHistory(tariffDrift) {
+  if (!tariffDrift || !tariffDrift.buy_price_history || !tariffDrift.buy_price_history.length) return;
+  const hist = tariffDrift.buy_price_history;
+  const first = tariffDrift.buy_price_first;
+  const latest = tariffDrift.buy_price_latest;
+  const chg = tariffDrift.buy_price_change_pct;
+  if (first == null || latest == null) return;
+
+  // Find or create a small annotation div below the deposit chart
+  let ann = document.getElementById('tariffHistoryNote');
+  if (!ann) {
+    ann = document.createElement('div');
+    ann.id = 'tariffHistoryNote';
+    ann.style.cssText = 'margin-top:8px;padding:8px 12px;background:var(--bg);border-left:3px solid #ed8936;border-radius:3px;font-size:12px;color:var(--muted)';
+    const chartWrap = document.querySelector('#tab-invoices .chart-wrap');
+    if (chartWrap && chartWrap.parentNode) chartWrap.parentNode.insertBefore(ann, chartWrap.nextSibling);
+  }
+  const dir = chg < 0 ? '▼' : '▲';
+  const col = chg < 0 ? '#c0392b' : '#27ae60';
+  const absChg = Math.abs(chg).toFixed(1);
+  ann.innerHTML = '<b>Dlaczego spada ROI?</b> Cena marginalnej energii z sieci: <b>' +
+    first.toFixed(4) + ' zł/kWh</b> (' + tariffDrift.buy_price_first_month + ')' +
+    ' → <b>' + latest.toFixed(4) + ' zł/kWh</b> (' + tariffDrift.buy_price_latest_month + ')' +
+    ' <span style="color:' + col + ';font-weight:700">' + dir + ' ' + absChg + '%</span>.' +
+    ' Oszczędności z autokonsumpcji = kWh × cena zakupu — niższa cena = niższe oszczędności.';
 }
 
 /* Invoice table with click-to-expand detail rows */
