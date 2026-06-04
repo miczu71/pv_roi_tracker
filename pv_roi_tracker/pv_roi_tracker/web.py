@@ -2911,19 +2911,19 @@ function renderTariffTab(tc) {
   const ctx3 = document.getElementById('tariffSeasonChart');
   if (ctx3) {
     if (_tariffSeasonChart) { _tariffSeasonChart.destroy(); _tariffSeasonChart = null; }
-    const sumAvg = s.summer_avg_pln, winAvg = s.winter_avg_pln;
+    const sumMonths = months.filter(m => m.season === 'summer');
+    const winMonths = months.filter(m => m.season === 'winter');
+    const _savg = (arr, field) => arr.length ? arr.reduce((s, m) => s + m[field], 0) / arr.length : 0;
     _tariffSeasonChart = new Chart(ctx3, {
       type: 'bar',
       data: {
         labels: ['Lato (IV–IX)', 'Zima (X–III)'],
         datasets: [
           { label: 'G12w śr. (PLN)', data: [
-            months.filter(m=>m.season==='summer').reduce((a,m)=>a+m.g12w_variable_pln,0) / (months.filter(m=>m.season==='summer').length || 1),
-            months.filter(m=>m.season==='winter').reduce((a,m)=>a+m.g12w_variable_pln,0) / (months.filter(m=>m.season==='winter').length || 1),
+            _savg(sumMonths, 'g12w_variable_pln'), _savg(winMonths, 'g12w_variable_pln'),
           ], backgroundColor: 'rgba(52,152,219,0.75)', borderRadius: 3 },
           { label: 'Dyn. śr. (PLN)', data: [
-            months.filter(m=>m.season==='summer').reduce((a,m)=>a+m.dynamic_variable_pln,0) / (months.filter(m=>m.season==='summer').length || 1),
-            months.filter(m=>m.season==='winter').reduce((a,m)=>a+m.dynamic_variable_pln,0) / (months.filter(m=>m.season==='winter').length || 1),
+            _savg(sumMonths, 'dynamic_variable_pln'), _savg(winMonths, 'dynamic_variable_pln'),
           ], backgroundColor: 'rgba(46,204,113,0.75)', borderRadius: 3 },
         ]
       },
