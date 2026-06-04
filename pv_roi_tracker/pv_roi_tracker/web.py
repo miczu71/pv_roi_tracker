@@ -1084,7 +1084,7 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
         </div>
         <!-- Monthly table -->
         <details style="margin-bottom:14px">
-          <summary style="cursor:pointer;font-weight:600;font-size:13px;padding:6px 0">&#128203; Dane miesiąc po miesiącu <button onclick="window.location='/api/export/tariff_csv'" style="font-size:11px;padding:2px 8px;margin-left:10px;cursor:pointer">&#128229; Eksportuj CSV</button></summary>
+          <summary style="cursor:pointer;font-weight:600;font-size:13px;padding:6px 0">&#128203; Dane miesiąc po miesiącu <button onclick="window.location='api/export/tariff_csv'" style="font-size:11px;padding:2px 8px;margin-left:10px;cursor:pointer">&#128229; Eksportuj CSV</button></summary>
           <div class="tbl-wrap" style="margin-top:8px"><table id="tariffMonthTbl" style="width:100%;font-size:12px"></table></div>
         </details>
         <!-- Explanation -->
@@ -3023,7 +3023,7 @@ async function fetchTariffRange() {
   if (!fromEl || !fromEl.value) return;
   if (statusEl) statusEl.textContent = 'Pobieranie…';
   try {
-    const url = `/api/tariff_stats?from=${fromEl.value}&period=${period}`;
+    const url = `api/tariff_stats?from=${fromEl.value}&period=${period}`;
     const r   = await fetch(url);
     if (!r.ok) { if (statusEl) statusEl.textContent = 'Błąd: ' + r.status; return; }
     _rangeData = await r.json();
