@@ -231,6 +231,8 @@ def main() -> None:
             return 'retrying'
         return 'error'
 
+    from .tariff_analysis import compute_tariff_tab
+
     def poll_and_publish() -> None:
         try:
             historic = historic_store.load(HISTORIC_PATH)
@@ -258,6 +260,31 @@ def main() -> None:
                             projected_month_savings=current.projected_month_savings_pln if current else None)
             _web.update_state(result, all_records, rcem_price, month_closed=month_closed,
                               rcem_scrape_status=scrape_status)
+
+            # --- Tariff comparison tab ---
+            try:
+                dyn_stats_raw = live_reader.get_ha_monthly_stats(
+                    ['sensor.symulacja_miesieczna_dynamicznej_faktura'],
+                    start_month='2024-12-01',
+                )
+                dyn_monthly = dyn_stats_raw.get('sensor.symulacja_miesieczna_dynamicznej_faktura', {})
+                history_7d = live_reader.get_ha_history_7d([
+                    'sensor.calkowity_koszt_1_kwh_dynamiczna',
+                    'sensor.power_tauron_g12w_current_price',
+                    'sensor.roznica_dzienna_g12w_vs_dynamiczna',
+                ])
+                live_tariff = live_reader.read_tariff_live()
+                tariff_data = compute_tariff_tab(
+                    records=all_records,
+                    dynamic_monthly_stats=dyn_monthly,
+                    current_roi=result,
+                    current_month_live=live_tariff,
+                    tariff_history_7d=history_7d,
+                )
+                _web.update_tariff_comparison(tariff_data)
+            except Exception:
+                logger.exception('Tariff comparison update failed — continuing')
+
             logger.info('Poll complete — ROI %.2f%%, remaining %.0f PLN, payback %s',
                         result.roi_pct, result.remaining_to_recover,
                         result.payback_date or 'unknown')

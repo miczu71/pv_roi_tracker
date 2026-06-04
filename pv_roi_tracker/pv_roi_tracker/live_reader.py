@@ -17,8 +17,9 @@ from .models import MonthlyRecord
 
 logger = logging.getLogger(__name__)
 
-_BASE = 'http://supervisor/core/api/states'
-_TOKEN = os.environ.get('SUPERVISOR_TOKEN', '')
+_BASE     = 'http://supervisor/core/api/states'
+_BASE_API = 'http://supervisor/core/api'
+_TOKEN    = os.environ.get('SUPERVISOR_TOKEN', '')
 _SYSTEM_KWP           = float(os.environ.get('SYSTEM_KWP', '6.72'))
 _TARIFF_PEAK_PRICE    = float(os.environ.get('TARIFF_PEAK_PRICE', '1.23'))
 _TARIFF_OFFPEAK_PRICE = float(os.environ.get('TARIFF_OFFPEAK_PRICE', '0.63'))
@@ -37,6 +38,123 @@ def _get_state(entity_id: str) -> Optional[float]:
     except (requests.RequestException, ValueError) as exc:
         logger.warning('Cannot read %s: %s', entity_id, exc)
         return None
+
+
+def _get_state_raw(entity_id: str) -> Optional[str]:
+    """Return raw HA entity state as string, or None if unavailable/unknown."""
+    headers = {'Authorization': f'Bearer {_TOKEN}', 'Content-Type': 'application/json'}
+    try:
+        resp = requests.get(f'{_BASE}/{entity_id}', headers=headers, timeout=10)
+        resp.raise_for_status()
+        state = resp.json().get('state', '')
+        return None if state in ('unavailable', 'unknown', '') else state
+    except (requests.RequestException, ValueError) as exc:
+        logger.warning('Cannot read raw %s: %s', entity_id, exc)
+        return None
+
+
+def get_ha_monthly_stats(entity_ids: list, start_month: str = '2024-12-01') -> dict:
+    """
+    Fetch monthly statistics from HA Recorder for the given entity_ids.
+    Returns {entity_id: {YYYY-MM: float}} using 'change' statistic type.
+    For state_class:total utility_meters, 'change' = monthly variable cost.
+    """
+    headers = {'Authorization': f'Bearer {_TOKEN}', 'Content-Type': 'application/json'}
+    try:
+        resp = requests.post(
+            f'{_BASE_API}/recorder/statistics_during_period',
+            headers=headers,
+            json={
+                'start_time': f'{start_month}T00:00:00+00:00',
+                'period': 'month',
+                'statistic_ids': entity_ids,
+                'types': ['change'],
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        result = {eid: {} for eid in entity_ids}
+        for eid in entity_ids:
+            for entry in data.get(eid, []):
+                start_ts = entry.get('start')
+                change = entry.get('change')
+                if start_ts is None or change is None:
+                    continue
+                try:
+                    # start_ts may be int (epoch) or ISO string
+                    if isinstance(start_ts, (int, float)):
+                        from datetime import timezone as _tz
+                        dt = date.fromtimestamp(start_ts)
+                    else:
+                        from datetime import datetime as _dt
+                        dt = _dt.fromisoformat(str(start_ts).replace('Z', '+00:00'))
+                    ym = f'{dt.year}-{dt.month:02d}'
+                    result[eid][ym] = round(float(change), 2)
+                except Exception:
+                    pass
+        logger.info('HA monthly stats fetched: %s', {e: len(v) for e, v in result.items()})
+        return result
+    except Exception as exc:
+        logger.warning('get_ha_monthly_stats failed: %s', exc)
+        return {eid: {} for eid in entity_ids}
+
+
+def get_ha_history_7d(entity_ids: list) -> dict:
+    """
+    Fetch 7-day state history from HA Recorder for the given entity_ids.
+    Returns {entity_id: [{t: iso_str, v: float}]} filtered to numeric states.
+    """
+    from datetime import datetime as _dt, timedelta, timezone as _tz
+    headers = {'Authorization': f'Bearer {_TOKEN}', 'Content-Type': 'application/json'}
+    start = (_dt.now(_tz.utc) - timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%S+00:00')
+    ids_param = ','.join(entity_ids)
+    try:
+        resp = requests.get(
+            f'{_BASE_API}/history/period/{start}',
+            headers=headers,
+            params={
+                'filter_entity_id': ids_param,
+                'minimal_response': 'true',
+                'no_attributes': 'true',
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()  # list of lists of state dicts
+        result = {eid: [] for eid in entity_ids}
+        for entity_history in data:
+            if not entity_history:
+                continue
+            eid = entity_history[0].get('entity_id', '')
+            if eid not in result:
+                continue
+            for sd in entity_history:
+                state = sd.get('state', '')
+                ts = sd.get('last_changed') or sd.get('lu', '')
+                try:
+                    v = float(state)
+                    result[eid].append({'t': ts, 'v': v})
+                except (ValueError, TypeError):
+                    pass
+        return result
+    except Exception as exc:
+        logger.warning('get_ha_history_7d failed: %s', exc)
+        return {eid: [] for eid in entity_ids}
+
+
+def read_tariff_live() -> dict:
+    """Fetch live tariff comparison sensor values from HA."""
+    return {
+        'dynamic_diff_monthly':  _get_state('sensor.roznica_miesieczna_g12w_vs_dynamiczna'),
+        'dynamic_annual_proj':   _get_state('sensor.prognozowana_oszczednosc_roczna_dynamiczna'),
+        'dynamic_pct_cheaper':   _get_state('sensor.dynamiczna_tansza_procent_miesiac'),
+        'dyn_price_now':         _get_state('sensor.calkowity_koszt_1_kwh_dynamiczna'),
+        'g12w_price_now':        _get_state('sensor.power_tauron_g12w_current_price'),
+        'dyn_cheaper_now':       _get_state_raw('binary_sensor.dynamiczna_tansza_niz_g12w_teraz'),
+        'dyn_spike_now':         _get_state_raw('binary_sensor.dynamiczna_drozsza_niz_g12w_szczyt'),
+        'diff_kwh_now':          _get_state('sensor.dynamiczna_vs_g12w_roznica_kwh'),
+    }
 
 
 def _solcast_month_projection(today: date, produced_so_far: float) -> Optional[float]:
