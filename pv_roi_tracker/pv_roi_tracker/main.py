@@ -263,11 +263,15 @@ def main() -> None:
 
             # --- Tariff comparison tab ---
             try:
-                dyn_stats_raw = live_reader.get_ha_monthly_stats(
-                    ['sensor.symulacja_miesieczna_dynamicznej_faktura'],
+                monthly_stats = live_reader.get_ha_monthly_stats(
+                    [
+                        'sensor.symulacja_miesieczna_dynamicznej_faktura',
+                        'sensor.koszt_zmienny_g12w_miesieczny',
+                    ],
                     start_month='2024-12-01',
                 )
-                dyn_monthly = dyn_stats_raw.get('sensor.symulacja_miesieczna_dynamicznej_faktura', {})
+                dyn_monthly  = monthly_stats.get('sensor.symulacja_miesieczna_dynamicznej_faktura', {})
+                g12w_monthly = monthly_stats.get('sensor.koszt_zmienny_g12w_miesieczny', {})
                 history_7d = live_reader.get_ha_history_7d([
                     'sensor.calkowity_koszt_1_kwh_dynamiczna',
                     'sensor.power_tauron_g12w_current_price',
@@ -277,6 +281,7 @@ def main() -> None:
                 tariff_data = compute_tariff_tab(
                     records=all_records,
                     dynamic_monthly_stats=dyn_monthly,
+                    g12w_monthly_stats=g12w_monthly,
                     current_roi=result,
                     current_month_live=live_tariff,
                     tariff_history_7d=history_7d,

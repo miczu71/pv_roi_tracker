@@ -1,9 +1,13 @@
 """
 Tariff comparison: G12w (actual) vs Dynamic (HA-simulated via hourly RCE).
 
-G12w costs: add-on's own records[].purchase_cost_pln.
+G12w costs: HA Statistics for sensor.koszt_zmienny_g12w_miesieczny
+            (utility_meter accumulating monthly G12w variable cost).
 Dynamic costs: HA Statistics for sensor.symulacja_miesieczna_dynamicznej_faktura
                (accumulated from calkowity_koszt_1_kwh_dynamiczna × energy every 15 min).
+
+Both series are fetched via WebSocket (recorder/statistics_during_period).
+Production/self-consumption context still comes from the add-on's own records.
 
 NOTE: RCEm is NOT used here. RCEm is the prosumer SELL price for excess PV — not the
 dynamic tariff BUY price.
@@ -98,6 +102,7 @@ def _merge_7d_series(g12w_raw: list, dyn_raw: list, diff_daily_raw: list) -> dic
 def compute_tariff_tab(
     records: list,
     dynamic_monthly_stats: dict,
+    g12w_monthly_stats: dict,
     current_roi,
     current_month_live: dict,
     tariff_history_7d: dict,
@@ -106,8 +111,12 @@ def compute_tariff_tab(
     Build the full tariff comparison payload for the frontend tab.
 
     Args:
-        records: All MonthlyRecord objects (historic + live current month)
+        records: All MonthlyRecord objects (historic + live current month) — used
+                 for PV production/self-consumption context, NOT for tariff costs.
         dynamic_monthly_stats: {YYYY-MM: float} variable PLN cost from HA Stats
+                               (sensor.symulacja_miesieczna_dynamicznej_faktura).
+        g12w_monthly_stats: {YYYY-MM: float} variable PLN cost from HA Stats
+                            (sensor.koszt_zmienny_g12w_miesieczny).
         current_roi: RoiResult from roi.calculate()
         current_month_live: Live sensor values fetched from HA
         tariff_history_7d: {entity_id: [{t, v}]} — raw 7-day history series
@@ -115,12 +124,14 @@ def compute_tariff_tab(
     today = date.today()
     current_ym_str = _ym(today.year, today.month)
 
-    # Build per-month comparison rows
+    # Build per-month comparison rows.
+    # Both tariff costs come from HA Statistics (WebSocket); records supply
+    # PV production/self-consumption context only.
     months_out = []
     for r in sorted(records, key=lambda x: (x.year, x.month)):
         ym = _ym(r.year, r.month)
-        dyn_var = dynamic_monthly_stats.get(ym)
-        g12w_var = r.purchase_cost_pln
+        dyn_var  = dynamic_monthly_stats.get(ym)
+        g12w_var = g12w_monthly_stats.get(ym)
 
         if g12w_var is None or dyn_var is None:
             continue  # need both data points

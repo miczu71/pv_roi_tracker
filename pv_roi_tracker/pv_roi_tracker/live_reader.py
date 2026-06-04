@@ -55,49 +55,76 @@ def _get_state_raw(entity_id: str) -> Optional[str]:
 
 def get_ha_monthly_stats(entity_ids: list, start_month: str = '2024-12-01') -> dict:
     """
-    Fetch monthly statistics from HA Recorder for the given entity_ids.
+    Fetch monthly statistics from HA Recorder for the given entity_ids via WebSocket.
     Returns {entity_id: {YYYY-MM: float}} using 'change' statistic type.
     For state_class:total utility_meters, 'change' = monthly variable cost.
+
+    HA 2026.x removed the REST endpoint /api/recorder/statistics_during_period;
+    statistics are now only available through the WebSocket API.
+    The WebSocket 'start' timestamps are epoch milliseconds in UTC — converted to
+    local time for month bucketing (container TZ = Europe/Warsaw).
     """
-    headers = {'Authorization': f'Bearer {_TOKEN}', 'Content-Type': 'application/json'}
+    import json as _json
+    import websocket as _ws
+    from datetime import datetime as _dt
+
+    result = {eid: {} for eid in entity_ids}
+    ws = None
     try:
-        resp = requests.post(
-            f'{_BASE_API}/recorder/statistics_during_period',
-            headers=headers,
-            json={
-                'start_time': f'{start_month}T00:00:00+00:00',
-                'period': 'month',
-                'statistic_ids': entity_ids,
-                'types': ['change'],
-            },
-            timeout=30,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        result = {eid: {} for eid in entity_ids}
+        ws = _ws.create_connection('ws://supervisor/core/websocket', timeout=30)
+
+        def _recv() -> dict:
+            return _json.loads(ws.recv())
+
+        msg = _recv()  # auth_required
+        if msg.get('type') != 'auth_required':
+            raise RuntimeError(f'Unexpected handshake message: {msg.get("type")}')
+
+        ws.send(_json.dumps({'type': 'auth', 'access_token': _TOKEN}))
+        auth_reply = _recv()
+        if auth_reply.get('type') != 'auth_ok':
+            raise RuntimeError(f'WebSocket auth failed: {auth_reply.get("message")}')
+
+        ws.send(_json.dumps({
+            'id': 1,
+            'type': 'recorder/statistics_during_period',
+            'start_time': f'{start_month}T00:00:00+00:00',
+            'period': 'month',
+            'statistic_ids': entity_ids,
+            'types': ['change'],
+        }))
+        stats_reply = _recv()
+        if not stats_reply.get('success'):
+            raise RuntimeError(f'statistics_during_period failed: {stats_reply}')
+
+        data = stats_reply.get('result', {})
         for eid in entity_ids:
             for entry in data.get(eid, []):
-                start_ts = entry.get('start')
+                start_ms = entry.get('start')
                 change = entry.get('change')
-                if start_ts is None or change is None:
+                if start_ms is None or change is None:
                     continue
                 try:
-                    # start_ts may be int (epoch) or ISO string
-                    if isinstance(start_ts, (int, float)):
-                        from datetime import timezone as _tz
-                        dt = date.fromtimestamp(start_ts)
-                    else:
-                        from datetime import datetime as _dt
-                        dt = _dt.fromisoformat(str(start_ts).replace('Z', '+00:00'))
+                    # start_ms is epoch milliseconds in UTC; convert to local time
+                    # for correct month bucketing (e.g. 2025-11-30T23:00 UTC = Dec, Warsaw)
+                    dt = _dt.fromtimestamp(start_ms / 1000)  # local TZ (Europe/Warsaw in container)
                     ym = f'{dt.year}-{dt.month:02d}'
                     result[eid][ym] = round(float(change), 2)
                 except Exception:
                     pass
-        logger.info('HA monthly stats fetched: %s', {e: len(v) for e, v in result.items()})
+
+        logger.info('HA monthly stats fetched (WebSocket): %s', {e: len(v) for e, v in result.items()})
         return result
+
     except Exception as exc:
         logger.warning('get_ha_monthly_stats failed: %s', exc)
         return {eid: {} for eid in entity_ids}
+    finally:
+        if ws is not None:
+            try:
+                ws.close()
+            except Exception:
+                pass
 
 
 def get_ha_history_7d(entity_ids: list) -> dict:

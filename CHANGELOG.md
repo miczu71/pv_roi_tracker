@@ -2,6 +2,37 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.15.1] — 2026-06-04
+
+### Fixed
+
+- **Zakładka "Analiza taryf" — sekcja HISTORIA:** W HA 2026.x usunięto REST endpoint
+  `/api/recorder/statistics_during_period`; statystyki długoterminowe są dostępne
+  wyłącznie przez WebSocket. `get_ha_monthly_stats()` w `live_reader.py` przepisano
+  na transport WebSocket (`websocket-client`), zachowując identyczną sygnaturę i
+  kształt wyniku. Dodano `websocket-client>=1.7` do `requirements.txt`.
+
+- **Koszty G12w w zakładce taryf:** Dotychczas `compute_tariff_tab()` pobierał koszt
+  G12w z wewnętrznych rekordów add-onu (`MonthlyRecord.purchase_cost_pln`). Zmieniono
+  na `sensor.koszt_zmienny_g12w_miesieczny` — ten sam utility-meter co po stronie
+  dynamicznej, jednolita metodologia dla obu taryf. Statystyki obu encji pobierane
+  jednym zapytaniem WebSocket.
+
+- **Parsowanie timestampów statystyk:** HA zwraca `start` jako epoch **milliseconds**
+  UTC (nie sekundy). Poprzedni kod dzielił przez 1 i interpretował jako UTC, co
+  dawało błędny miesiąc dla przejść UTC→CET/CEST (np. 30.11 23:00 UTC → grudzień
+  w Warszawie, nie listopad). Poprawiono: `datetime.fromtimestamp(start_ms / 1000)`
+  (lokalny TZ kontenera = Europe/Warsaw).
+
+### Entities / services touched
+
+| Encja | Rola |
+|---|---|
+| `sensor.symulacja_miesieczna_dynamicznej_faktura` | Miesięczny koszt zmienny taryfy Dynamicznej (źródło: HA Statistics) |
+| `sensor.koszt_zmienny_g12w_miesieczny` | Miesięczny koszt zmienny taryfy G12w (źródło: HA Statistics) |
+
+---
+
 ## [0.2.0] — 2026-05-03
 
 ### Added
