@@ -53,16 +53,25 @@ def _get_state_raw(entity_id: str) -> Optional[str]:
         return None
 
 
-def get_ha_monthly_stats(entity_ids: list, start_month: str = '2024-12-01') -> dict:
+def get_ha_tariff_stats(
+    entity_ids: list,
+    start: str,
+    period: str = 'day',
+) -> dict:
     """
-    Fetch monthly statistics from HA Recorder for the given entity_ids via WebSocket.
-    Returns {entity_id: {YYYY-MM: float}} using 'change' statistic type.
-    For state_class:total utility_meters, 'change' = monthly variable cost.
+    Fetch HA long-term statistics via WebSocket for the given entity_ids.
 
-    HA 2026.x removed the REST endpoint /api/recorder/statistics_during_period;
-    statistics are now only available through the WebSocket API.
-    The WebSocket 'start' timestamps are epoch milliseconds in UTC — converted to
-    local time for month bucketing (container TZ = Europe/Warsaw).
+    Returns {entity_id: {key: float}} where key format depends on period:
+      'month' → 'YYYY-MM'
+      'day'   → 'YYYY-MM-DD'
+      'hour'  → 'YYYY-MM-DDTHH'
+
+    Uses 'change' stat type (monthly/daily variable cost for utility_meters).
+
+    HA 2026.x removed the REST /api/recorder/statistics_during_period endpoint;
+    statistics are available only through the WebSocket API.
+    'start' timestamps from HA are epoch milliseconds in UTC — converted to local
+    time for bucketing (container TZ = Europe/Warsaw).
     """
     import json as _json
     import websocket as _ws
@@ -88,8 +97,8 @@ def get_ha_monthly_stats(entity_ids: list, start_month: str = '2024-12-01') -> d
         ws.send(_json.dumps({
             'id': 1,
             'type': 'recorder/statistics_during_period',
-            'start_time': f'{start_month}T00:00:00+00:00',
-            'period': 'month',
+            'start_time': f'{start}T00:00:00+00:00',
+            'period': period,
             'statistic_ids': entity_ids,
             'types': ['change'],
         }))
@@ -105,19 +114,24 @@ def get_ha_monthly_stats(entity_ids: list, start_month: str = '2024-12-01') -> d
                 if start_ms is None or change is None:
                     continue
                 try:
-                    # start_ms is epoch milliseconds in UTC; convert to local time
-                    # for correct month bucketing (e.g. 2025-11-30T23:00 UTC = Dec, Warsaw)
-                    dt = _dt.fromtimestamp(start_ms / 1000)  # local TZ (Europe/Warsaw in container)
-                    ym = f'{dt.year}-{dt.month:02d}'
-                    result[eid][ym] = round(float(change), 2)
+                    # epoch ms in UTC → local TZ (Europe/Warsaw in container)
+                    dt = _dt.fromtimestamp(start_ms / 1000)
+                    if period == 'month':
+                        key = f'{dt.year}-{dt.month:02d}'
+                    elif period == 'hour':
+                        key = dt.strftime('%Y-%m-%dT%H')
+                    else:  # day
+                        key = dt.strftime('%Y-%m-%d')
+                    result[eid][key] = round(float(change), 2)
                 except Exception:
                     pass
 
-        logger.info('HA monthly stats fetched (WebSocket): %s', {e: len(v) for e, v in result.items()})
+        logger.info('HA tariff stats fetched (WebSocket, period=%s): %s',
+                    period, {e: len(v) for e, v in result.items()})
         return result
 
     except Exception as exc:
-        logger.warning('get_ha_monthly_stats failed: %s', exc)
+        logger.warning('get_ha_tariff_stats failed (period=%s): %s', period, exc)
         return {eid: {} for eid in entity_ids}
     finally:
         if ws is not None:
@@ -125,6 +139,14 @@ def get_ha_monthly_stats(entity_ids: list, start_month: str = '2024-12-01') -> d
                 ws.close()
             except Exception:
                 pass
+
+
+def get_ha_monthly_stats(entity_ids: list, start_month: str = '2024-12-01') -> dict:
+    """
+    Thin wrapper around get_ha_tariff_stats for monthly statistics.
+    Returns {entity_id: {YYYY-MM: float}}.
+    """
+    return get_ha_tariff_stats(entity_ids, start=start_month, period='month')
 
 
 def get_ha_history_7d(entity_ids: list) -> dict:

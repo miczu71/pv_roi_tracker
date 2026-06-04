@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import statistics as _stats
 from datetime import date, datetime, timezone
+from itertools import groupby
+from operator import itemgetter
 from typing import Optional
 
 from .models import MonthlyRecord
@@ -286,5 +288,101 @@ def compute_tariff_tab(
                 'Im wyższa autokonsumpcja, tym mniejsza różnica między taryfami.'
                 ' Koszty dynamiczne oparte na godzinowych cenach RCE (nie RCEm — RCEm to cena sprzedaży nadwyżki PV).'
             ),
+        },
+    }
+
+
+def compute_range_data(
+    dyn: dict,
+    g12w: dict,
+    period: str,
+) -> dict:
+    """
+    Compute KPIs and chart series for an arbitrary date range and granularity.
+
+    Args:
+        dyn:    {key: float} — variable PLN cost for Dynamic tariff.
+                key format: 'YYYY-MM-DD' (day), 'YYYY-MM' (month), 'YYYY-MM-DDTHH' (hour).
+        g12w:   {key: float} — variable PLN cost for G12w tariff.
+        period: 'day' | 'month' | 'hour' (used only for label formatting).
+
+    Returns dict with 'kpis' and 'series' keys.
+    """
+    # Align on common keys, sorted chronologically
+    common_keys = sorted(set(dyn.keys()) & set(g12w.keys()))
+    if not common_keys:
+        return {'kpis': {'n_periods': 0}, 'series': {
+            'labels': [], 'g12w': [], 'dynamic': [], 'diff': [], 'cumulative': []
+        }}
+
+    g12w_vals = [g12w[k] for k in common_keys]
+    dyn_vals  = [dyn[k]  for k in common_keys]
+    diffs     = [round(g - d, 2) for g, d in zip(g12w_vals, dyn_vals)]
+
+    n = len(diffs)
+    n_dyn_cheaper = sum(1 for d in diffs if d > 0)
+    pct_dyn_cheaper = round(n_dyn_cheaper / n * 100, 1) if n else 0.0
+    avg_diff    = round(_stats.mean(diffs), 2) if diffs else 0.0
+    median_diff = round(_stats.median(diffs), 2) if diffs else 0.0
+
+    max_idx = diffs.index(max(diffs))
+    min_idx = diffs.index(min(diffs))
+    best_period  = {'date': common_keys[max_idx], 'diff_pln': diffs[max_idx]}
+    worst_period = {'date': common_keys[min_idx], 'diff_pln': diffs[min_idx]}
+
+    # Longest streak of consecutive periods where dynamic is cheaper (diff > 0)
+    longest_streak = 0
+    current_streak = 0
+    for d in diffs:
+        if d > 0:
+            current_streak += 1
+            longest_streak = max(longest_streak, current_streak)
+        else:
+            current_streak = 0
+
+    # Cumulative savings series
+    cumulative: list[float] = []
+    running = 0.0
+    for d in diffs:
+        running = round(running + d, 2)
+        cumulative.append(running)
+
+    # Human-readable labels
+    def _fmt_label(k: str) -> str:
+        if period == 'day' and len(k) == 10:
+            try:
+                return datetime.strptime(k, '%Y-%m-%d').strftime('%d.%m.%y')
+            except Exception:
+                return k
+        if period == 'month' and len(k) == 7:
+            try:
+                dt = datetime.strptime(k, '%Y-%m')
+                return f"{dt.year}-{_MONTHS_PL[dt.month]}"
+            except Exception:
+                return k
+        return k
+
+    labels = [_fmt_label(k) for k in common_keys]
+
+    return {
+        'kpis': {
+            'n_periods':           n,
+            'n_dyn_cheaper':       n_dyn_cheaper,
+            'pct_dyn_cheaper':     pct_dyn_cheaper,
+            'avg_diff_pln':        avg_diff,
+            'median_diff_pln':     median_diff,
+            'best_period':         best_period,
+            'worst_period':        worst_period,
+            'longest_dyn_streak':  longest_streak,
+            'g12w_total_pln':      round(sum(g12w_vals), 2),
+            'dyn_total_pln':       round(sum(dyn_vals), 2),
+            'cumulative_savings_pln': cumulative[-1] if cumulative else 0.0,
+        },
+        'series': {
+            'labels':     labels,
+            'g12w':       g12w_vals,
+            'dynamic':    dyn_vals,
+            'diff':       diffs,
+            'cumulative': cumulative,
         },
     }

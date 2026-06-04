@@ -15,6 +15,8 @@ from flask import Flask, Response, jsonify, request
 
 from .models import MonthlyRecord
 from .roi import RoiResult
+from . import tariff_analysis as _tariff_analysis
+from . import live_reader as _live_reader
 
 app = Flask(__name__)
 log = logging.getLogger(__name__)
@@ -699,6 +701,32 @@ def export_csv():
     )
 
 
+@app.route('/api/tariff_stats')
+def api_tariff_stats():
+    """
+    On-demand tariff statistics for the interactive chart.
+    Query params:
+      from   — start date ISO string, default '2025-01-01'
+      period — 'day' or 'month', default 'day'
+    Returns JSON with 'kpis' and 'series' keys.
+    """
+    from_date = request.args.get('from', '2025-01-01')
+    period    = request.args.get('period', 'day')
+    if period not in ('day', 'month'):
+        return jsonify({'error': "period must be 'day' or 'month'"}), 400
+    stats = _live_reader.get_ha_tariff_stats(
+        [
+            'sensor.symulacja_miesieczna_dynamicznej_faktura',
+            'sensor.koszt_zmienny_g12w_miesieczny',
+        ],
+        start=from_date,
+        period=period,
+    )
+    dyn  = stats.get('sensor.symulacja_miesieczna_dynamicznej_faktura', {})
+    g12w = stats.get('sensor.koszt_zmienny_g12w_miesieczny', {})
+    return jsonify(_tariff_analysis.compute_range_data(dyn, g12w, period))
+
+
 @app.route('/api/export/tariff_csv')
 def export_tariff_csv():
     with _lock:
@@ -1064,6 +1092,34 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
           <summary style="cursor:pointer;font-weight:600;font-size:13px;padding:6px 0">&#8505;&#65039; Kontekst prosumenta i metodologia</summary>
           <div id="tariffContextText" style="font-size:12px;line-height:1.6;padding:10px;background:#f5f5f5;border-radius:4px;margin-top:6px"></div>
         </details>
+
+        <!-- SEKCJA 3: INTERAKTYWNA ANALIZA ZAKRESU -->
+        <h3 style="margin:16px 0 8px;font-size:14px;font-weight:700;color:#555">&#128202; ANALIZA WYBRANEGO ZAKRESU</h3>
+        <div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px;padding:10px;background:#f8f8f8;border-radius:6px;font-size:13px">
+          <label style="font-weight:600">Od:</label>
+          <input type="date" id="tariffFrom" style="padding:3px 6px;font-size:13px;border:1px solid #ccc;border-radius:4px">
+          <label style="font-weight:600">Do:</label>
+          <input type="date" id="tariffTo" style="padding:3px 6px;font-size:13px;border:1px solid #ccc;border-radius:4px">
+          <span style="color:#aaa">|</span>
+          <label><input type="radio" name="tariffPeriod" value="day" checked onchange="fetchTariffRange()"> Dzień</label>
+          <label><input type="radio" name="tariffPeriod" value="month" onchange="fetchTariffRange()"> Miesiąc</label>
+          <button onclick="fetchTariffRange()" style="padding:4px 14px;cursor:pointer;background:#2980b9;color:#fff;border:none;border-radius:4px;font-size:13px">&#128260; Odśwież</button>
+          <span id="tariffRangeStatus" style="color:#888;font-size:12px"></span>
+        </div>
+        <!-- Range KPI pills -->
+        <div id="tariffRangeKpis" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px"></div>
+        <!-- Interactive chart -->
+        <div class="chart-wrap" style="height:280px;margin-bottom:8px">
+          <canvas id="tariffRangeChart"></canvas>
+        </div>
+        <!-- Series toggles -->
+        <div style="font-size:12px;color:#555;margin-bottom:16px;display:flex;gap:14px;flex-wrap:wrap">
+          <strong>Serie:</strong>
+          <label><input type="checkbox" id="chkRangeG12w" checked onchange="redrawRangeChart()"> G12w PLN</label>
+          <label><input type="checkbox" id="chkRangeDyn" checked onchange="redrawRangeChart()"> Dynamiczna PLN</label>
+          <label><input type="checkbox" id="chkRangeDiff" checked onchange="redrawRangeChart()"> Różnica PLN</label>
+          <label><input type="checkbox" id="chkRangeCum" onchange="redrawRangeChart()"> Skumulowana PLN</label>
+        </div>
       </div>
       <!-- Faktury Tauron tab -->
       <div id="tab-invoices" style="display:none;padding:12px">
@@ -1179,6 +1235,7 @@ function showTab(name) {
   if (name === 'tariff') {
     [_tariffPriceChart, _tariffDailyDiffChart, _tariffCompChart, _tariffCumChart,
      _tariffSeasonChart, _tariffHistChart].forEach(c => c && c.resize());
+    if (!_rangeData) fetchTariffRange();
   }
 }
 
@@ -2945,6 +3002,126 @@ function renderTariffTab(tc) {
 }
 
 function round2(v) { return Math.round(v * 100) / 100; }
+
+/* ===================== INTERACTIVE RANGE ANALYSIS ===================== */
+
+let _rangeChart = null;
+let _rangeData  = null;  // last fetched {kpis, series}
+
+(function initRangeControls() {
+  const today = new Date().toISOString().slice(0, 10);
+  const from  = new Date(Date.now() - 365 * 86400000).toISOString().slice(0, 10);
+  document.getElementById('tariffTo').value   = today;
+  document.getElementById('tariffFrom').value = from;
+})();
+
+async function fetchTariffRange() {
+  const fromEl   = document.getElementById('tariffFrom');
+  const toEl     = document.getElementById('tariffTo');
+  const statusEl = document.getElementById('tariffRangeStatus');
+  const period   = document.querySelector('input[name=tariffPeriod]:checked')?.value || 'day';
+  if (!fromEl || !fromEl.value) return;
+  if (statusEl) statusEl.textContent = 'Pobieranie…';
+  try {
+    const url = `/api/tariff_stats?from=${fromEl.value}&period=${period}`;
+    const r   = await fetch(url);
+    if (!r.ok) { if (statusEl) statusEl.textContent = 'Błąd: ' + r.status; return; }
+    _rangeData = await r.json();
+    renderRangeKpis(_rangeData.kpis || {}, period);
+    renderRangeChart(_rangeData.series || {});
+    if (statusEl) {
+      const n = (_rangeData.kpis || {}).n_periods || 0;
+      statusEl.textContent = `${n} ${period === 'day' ? 'dni' : 'mies.'}`;
+    }
+  } catch (e) {
+    if (statusEl) statusEl.textContent = 'Błąd: ' + e.message;
+  }
+}
+
+function renderRangeKpis(k, period) {
+  const el = document.getElementById('tariffRangeKpis');
+  if (!el) return;
+  const pStr = period === 'day' ? 'dni' : 'mies.';
+  const fmtDiff = v => v == null ? '—' : (v > 0 ? '+' : '') + pln(v, 2) + ' PLN';
+  const cards = [
+    { lbl: '% czasu Dyn. tańsza',  val: k.pct_dyn_cheaper != null ? pct(k.pct_dyn_cheaper) : '—',
+      sub: `${k.n_dyn_cheaper}/${k.n_periods} ${pStr}`, cls: (k.pct_dyn_cheaper||0) >= 50 ? 'c-green' : '' },
+    { lbl: 'Śr. różnica/' + pStr,  val: fmtDiff(k.avg_diff_pln),
+      sub: 'mediana ' + fmtDiff(k.median_diff_pln),
+      cls: (k.avg_diff_pln||0) > 0 ? 'c-green' : '' },
+    { lbl: 'Skumulowane oszcz.',   val: fmtDiff(k.cumulative_savings_pln),
+      sub: `G12w ${pln(k.g12w_total_pln,0)} vs Dyn ${pln(k.dyn_total_pln,0)} PLN`,
+      cls: (k.cumulative_savings_pln||0) > 0 ? 'c-green' : '' },
+    k.best_period  ? { lbl: '&#127942; Najlepszy dzień',  val: fmtDiff(k.best_period.diff_pln),  sub: k.best_period.date,  cls: 'c-green' } : null,
+    k.worst_period ? { lbl: '&#128308; Najgorszy dzień',  val: fmtDiff(k.worst_period.diff_pln), sub: k.worst_period.date, cls: '' } : null,
+    k.longest_dyn_streak > 0 ? { lbl: 'Najdłuższa passa', val: k.longest_dyn_streak + ' ' + pStr,
+      sub: 'Dyn. tańsza z rzędu', cls: 'c-green' } : null,
+  ].filter(Boolean);
+  el.innerHTML = cards.map(c =>
+    `<div class="card ${c.cls||''}" style="min-width:140px"><div class="card-lbl">${c.lbl}</div>` +
+    `<div class="card-val">${c.val}</div>${c.sub ? '<div class="card-sub">' + c.sub + '</div>' : ''}</div>`
+  ).join('');
+}
+
+function redrawRangeChart() {
+  if (_rangeData) renderRangeChart(_rangeData.series || {});
+}
+
+function renderRangeChart(s) {
+  const ctx = document.getElementById('tariffRangeChart');
+  if (!ctx || !s.labels || !s.labels.length) return;
+  if (_rangeChart) { _rangeChart.destroy(); _rangeChart = null; }
+
+  const showG12w = document.getElementById('chkRangeG12w')?.checked;
+  const showDyn  = document.getElementById('chkRangeDyn')?.checked;
+  const showDiff = document.getElementById('chkRangeDiff')?.checked;
+  const showCum  = document.getElementById('chkRangeCum')?.checked;
+
+  const datasets = [];
+  if (showG12w) datasets.push({
+    label: 'G12w PLN', data: s.g12w,
+    type: 'line', borderColor: '#3498db', backgroundColor: 'rgba(52,152,219,0.05)',
+    borderWidth: 1.5, pointRadius: 0, fill: false, order: 2,
+  });
+  if (showDyn) datasets.push({
+    label: 'Dynamiczna PLN', data: s.dynamic,
+    type: 'line', borderColor: '#27ae60', backgroundColor: 'rgba(39,174,96,0.05)',
+    borderWidth: 1.5, pointRadius: 0, fill: false, order: 2,
+  });
+  if (showDiff) datasets.push({
+    label: 'Różnica (G12w−Dyn) PLN', data: s.diff,
+    type: 'bar', backgroundColor: s.diff.map(v => v >= 0 ? 'rgba(39,174,96,0.6)' : 'rgba(231,76,60,0.5)'),
+    borderWidth: 0, order: 1,
+  });
+  if (showCum) datasets.push({
+    label: 'Skumulowana PLN', data: s.cumulative,
+    type: 'line', borderColor: '#9b59b6', backgroundColor: 'transparent',
+    borderWidth: 2, pointRadius: 0, fill: false, yAxisID: 'yCum', order: 2,
+  });
+
+  const hasCum   = showCum && s.cumulative && s.cumulative.length > 0;
+  const maxTicks = s.labels.length > 60 ? 12 : (s.labels.length > 14 ? 8 : s.labels.length);
+
+  _rangeChart = new Chart(ctx, {
+    data: { labels: s.labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { labels: { boxWidth: 10, font: { size: 11 } } },
+        tooltip: { mode: 'index', intersect: false },
+      },
+      scales: {
+        x: { ticks: { maxTicksLimit: maxTicks, font: { size: 10 }, maxRotation: 0 } },
+        y: { title: { display: true, text: 'PLN', font: { size: 11 } } },
+        ...(hasCum ? { yCum: {
+          position: 'right', grid: { drawOnChartArea: false },
+          title: { display: true, text: 'Skum. PLN', font: { size: 10 } },
+        }} : {}),
+      },
+    },
+  });
+}
+
 /* ===================================================================== */
 
 loadData();
