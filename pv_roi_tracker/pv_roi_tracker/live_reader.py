@@ -7,7 +7,7 @@ from __future__ import annotations
 import calendar
 import logging
 import os
-from datetime import date
+from datetime import date, datetime as _dt, timedelta, timezone as _tz
 from statistics import mean
 from typing import Optional
 
@@ -75,7 +75,6 @@ def get_ha_tariff_stats(
     """
     import json as _json
     import websocket as _ws
-    from datetime import datetime as _dt
 
     result = {eid: {} for eid in entity_ids}
     ws = None
@@ -154,7 +153,6 @@ def get_ha_history_7d(entity_ids: list) -> dict:
     Fetch 7-day state history from HA Recorder for the given entity_ids.
     Returns {entity_id: [{t: iso_str, v: float}]} filtered to numeric states.
     """
-    from datetime import datetime as _dt, timedelta, timezone as _tz
     headers = {'Authorization': f'Bearer {_TOKEN}', 'Content-Type': 'application/json'}
     start = (_dt.now(_tz.utc) - timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%S+00:00')
     ids_param = ','.join(entity_ids)
