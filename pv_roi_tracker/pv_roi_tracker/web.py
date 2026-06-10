@@ -1043,14 +1043,10 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
         <!-- SEKCJA 1: TERAZ -->
         <h3 style="margin:0 0 8px;font-size:14px;font-weight:700;color:#555">&#9889; TERAZ</h3>
         <div id="tariffStatusBar" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px"></div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
-          <div class="chart-wrap" style="height:220px">
+        <div style="margin-bottom:16px">
+          <div class="chart-wrap" style="height:320px">
             <h3>Cena 1 kWh — ostatnie 7 dni</h3>
             <canvas id="tariffPriceChart"></canvas>
-          </div>
-          <div class="chart-wrap" style="height:220px">
-            <h3>Różnica dzienna G12w &minus; Dynamiczna (7 dni)</h3>
-            <canvas id="tariffDailyDiffChart"></canvas>
           </div>
         </div>
         <!-- SEKCJA 2: TEN MIESIĄC I HISTORIA -->
@@ -1183,7 +1179,7 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
 <script>
 'use strict';
 let _lineChart = null, _barChart = null, _rcemChart = null, _autarkiaChart = null, _prodChart = null, _arbitrageChart = null, _netCostChart = null, _priceSpreadChart = null, _yieldChart = null, _energyBalChart = null, _yearCompChart = null, _prodRankChart = null, _depositChart = null;
-let _tariffPriceChart = null, _tariffDailyDiffChart = null, _tariffCompChart = null, _tariffCumChart = null, _tariffSeasonChart = null, _tariffHistChart = null;
+let _tariffPriceChart = null, _tariffCompChart = null, _tariffCumChart = null, _tariffSeasonChart = null, _tariffHistChart = null;
 
 /* -- Formatters -- */
 function fmt(v, dp, sfx) {
@@ -1233,7 +1229,7 @@ function showTab(name) {
   }
   if (name === 'invoices' && _depositChart) _depositChart.resize();
   if (name === 'tariff') {
-    [_tariffPriceChart, _tariffDailyDiffChart, _tariffCompChart, _tariffCumChart,
+    [_tariffPriceChart, _tariffCompChart, _tariffCumChart,
      _tariffSeasonChart, _tariffHistChart].forEach(c => c && c.resize());
     if (!_rangeData) fetchTariffRange();
   }
@@ -2820,24 +2816,7 @@ function renderTariffTab(tc) {
     });
   }
 
-  /* --- Chart B: daily diff 7d --- */
-  const ctxB = document.getElementById('tariffDailyDiffChart');
-  if (ctxB && c7d.diff_daily_labels && c7d.diff_daily_labels.length) {
-    if (_tariffDailyDiffChart) { _tariffDailyDiffChart.destroy(); _tariffDailyDiffChart = null; }
-    _tariffDailyDiffChart = new Chart(ctxB, {
-      type: 'bar',
-      data: { labels: c7d.diff_daily_labels, datasets: [{
-        label: 'G12w − Dyn (PLN)',
-        data: c7d.diff_daily,
-        backgroundColor: c7d.diff_daily.map(v => (v == null || v < 0) ? 'rgba(231,76,60,0.7)' : 'rgba(46,204,113,0.7)'),
-        borderRadius: 3,
-      }]},
-      options: { responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { display: false } },
-        scales: { y: { title: { display: true, text: 'PLN (+= dyn. tańsza)', font: { size: 10 } } } }
-      }
-    });
-  }
+
 
   /* --- KPI cards row 1 & 2 --- */
   const recColor = s.recommendation === 'ZMIEŃ' ? '#27ae60' : s.recommendation === 'ZOSTAŃ' ? '#e74c3c' : '#777';

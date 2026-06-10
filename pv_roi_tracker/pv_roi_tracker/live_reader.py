@@ -154,7 +154,9 @@ def get_ha_history_7d(entity_ids: list) -> dict:
     Returns {entity_id: [{t: iso_str, v: float}]} filtered to numeric states.
     """
     headers = {'Authorization': f'Bearer {_TOKEN}', 'Content-Type': 'application/json'}
-    start = (_dt.now(_tz.utc) - timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%S+00:00')
+    now   = _dt.now(_tz.utc)
+    start = (now - timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%S+00:00')
+    end   = now.strftime('%Y-%m-%dT%H:%M:%S+00:00')
     ids_param = ','.join(entity_ids)
     try:
         resp = requests.get(
@@ -162,6 +164,7 @@ def get_ha_history_7d(entity_ids: list) -> dict:
             headers=headers,
             params={
                 'filter_entity_id': ids_param,
+                'end_time': end,
                 'minimal_response': 'true',
                 'no_attributes': 'true',
             },
