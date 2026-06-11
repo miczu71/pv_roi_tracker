@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.15.6] — 2026-06-11
+
+### Changed (refaktoryzacja wewnętrzna — bez zmian funkcjonalnych)
+
+- **`web.py`:** usunięto zduplikowane `_MONTHS_PL` i `_month_label()` — używane są teraz wersje z `tariff_analysis.py` (jedno źródło prawdy dla etykiet miesięcy).
+- **`live_reader.py`:** nagłówki autoryzacji REST (`Authorization: Bearer …`) budowane były identycznie w 3 funkcjach — wydzielono stałą modułową `_HEADERS`. Importy `json`/`websocket` przeniesione z wnętrza `get_ha_tariff_stats()` na poziom modułu (`websocket-client` jest już w `requirements.txt`).
+- **`deposit.py` (kopia dev):** formuła aktualizacji salda depozytu FIFO (`available → consumed → balance`) powtarzała się w 5 miejscach (pętla główna, miesiąc bieżący, estymata fakturowa ×2, prognoza) — wydzielono helper `_apply_month()`. Ujednolicono zaokrąglanie `consumed` przed odjęciem (różnice < 1 grosz w estymacie fakturowej).
+
+### Entities / services touched
+
+Brak — czysta refaktoryzacja, payloady API i UI bez zmian.
+
+---
+
 ## [0.15.5] — 2026-06-10
 
 ### Fixed

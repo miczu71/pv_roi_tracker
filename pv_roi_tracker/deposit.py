@@ -82,6 +82,13 @@ class DepositResult:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+def _apply_month(balance: float, accrued: float, import_cost: float) -> tuple[float, float]:
+    """One month of FIFO deposit flow: returns (consumed, new_balance)."""
+    available = balance + accrued
+    consumed = round(min(available, import_cost), 2)
+    return consumed, round(max(0.0, available - consumed), 2)
+
+
 def _seasonal_factors(
     rows: list[DepositMonthRow],
     value_fn,
@@ -140,9 +147,7 @@ def calculate(
         accrued = r.feedin_revenue_pln or 0.0
         import_cost = round((r.purchased_kwh or 0.0) * (r.buy_price_pln_kwh or 0.0), 2)
 
-        available = balance + accrued
-        consumed = round(min(available, import_cost), 2)
-        balance = round(max(0.0, available - consumed), 2)
+        consumed, balance = _apply_month(balance, accrued, import_cost)
 
         cumulative_accrued = round(cumulative_accrued + accrued, 2)
         total_model_consumed = round(total_model_consumed + consumed, 2)
@@ -170,9 +175,7 @@ def calculate(
     if current_rec:
         current_accrued = current_rec.feedin_revenue_pln or 0.0
         current_import = round((current_rec.purchased_kwh or 0.0) * (current_rec.buy_price_pln_kwh or 0.0), 2)
-        avail = balance + current_accrued
-        curr_consumed = round(min(avail, current_import), 2)
-        current_balance = round(max(0.0, avail - curr_consumed), 2)
+        _, current_balance = _apply_month(balance, current_accrued, current_import)
 
     # ── Total invoice-reported consumed ──────────────────────────────────────
     total_invoice_consumed = round(sum(
@@ -199,12 +202,10 @@ def calculate(
         for row in month_rows:
             if (row.year, row.month) <= latest_inv_ym:
                 continue
-            avail = est + row.accrued
-            est = round(max(0.0, avail - min(avail, row.import_cost)), 2)
+            _, est = _apply_month(est, row.accrued, row.import_cost)
         if current_rec:
-            avail = est + current_accrued
             curr_imp = round((current_rec.purchased_kwh or 0.0) * (current_rec.buy_price_pln_kwh or 0.0), 2)
-            est = round(max(0.0, avail - min(avail, curr_imp)), 2)
+            _, est = _apply_month(est, current_accrued, curr_imp)
         current_balance_estimate = est
 
     # ── Divergence ────────────────────────────────────────────────────────────
@@ -232,9 +233,7 @@ def calculate(
     for _ in range(forecast_months):
         proj_acc = round(avg_accrual * sf_acc.get(cursor.month, 1.0), 2)
         proj_imp = round(avg_import  * sf_imp.get(cursor.month, 1.0), 2)
-        avail = forecast_bal + proj_acc
-        proj_cons = round(min(avail, proj_imp), 2)
-        forecast_bal = round(max(0.0, avail - proj_cons), 2)
+        proj_cons, forecast_bal = _apply_month(forecast_bal, proj_acc, proj_imp)
         forecast_list.append(DepositForecastMonth(
             year=cursor.year, month=cursor.month,
             projected_accrued=proj_acc,

@@ -5,6 +5,7 @@ The SUPERVISOR_TOKEN env var is injected automatically by HA into every add-on.
 from __future__ import annotations
 
 import calendar
+import json as _json
 import logging
 import os
 from datetime import date, datetime as _dt, timedelta, timezone as _tz
@@ -12,6 +13,7 @@ from statistics import mean
 from typing import Optional
 
 import requests
+import websocket as _ws
 
 from .models import MonthlyRecord
 
@@ -20,6 +22,7 @@ logger = logging.getLogger(__name__)
 _BASE     = 'http://supervisor/core/api/states'
 _BASE_API = 'http://supervisor/core/api'
 _TOKEN    = os.environ.get('SUPERVISOR_TOKEN', '')
+_HEADERS  = {'Authorization': f'Bearer {_TOKEN}', 'Content-Type': 'application/json'}
 _SYSTEM_KWP           = float(os.environ.get('SYSTEM_KWP', '6.72'))
 _TARIFF_PEAK_PRICE    = float(os.environ.get('TARIFF_PEAK_PRICE', '1.23'))
 _TARIFF_OFFPEAK_PRICE = float(os.environ.get('TARIFF_OFFPEAK_PRICE', '0.63'))
@@ -27,9 +30,8 @@ _TARIFF_OFFPEAK_PRICE = float(os.environ.get('TARIFF_OFFPEAK_PRICE', '0.63'))
 
 def _get_state(entity_id: str) -> Optional[float]:
     """Return an HA entity state as float, or None if unavailable/unknown."""
-    headers = {'Authorization': f'Bearer {_TOKEN}', 'Content-Type': 'application/json'}
     try:
-        resp = requests.get(f'{_BASE}/{entity_id}', headers=headers, timeout=10)
+        resp = requests.get(f'{_BASE}/{entity_id}', headers=_HEADERS, timeout=10)
         resp.raise_for_status()
         state = resp.json().get('state', '')
         if state in ('unavailable', 'unknown', ''):
@@ -42,9 +44,8 @@ def _get_state(entity_id: str) -> Optional[float]:
 
 def _get_state_raw(entity_id: str) -> Optional[str]:
     """Return raw HA entity state as string, or None if unavailable/unknown."""
-    headers = {'Authorization': f'Bearer {_TOKEN}', 'Content-Type': 'application/json'}
     try:
-        resp = requests.get(f'{_BASE}/{entity_id}', headers=headers, timeout=10)
+        resp = requests.get(f'{_BASE}/{entity_id}', headers=_HEADERS, timeout=10)
         resp.raise_for_status()
         state = resp.json().get('state', '')
         return None if state in ('unavailable', 'unknown', '') else state
@@ -73,9 +74,6 @@ def get_ha_tariff_stats(
     'start' timestamps from HA are epoch milliseconds in UTC — converted to local
     time for bucketing (container TZ = Europe/Warsaw).
     """
-    import json as _json
-    import websocket as _ws
-
     result = {eid: {} for eid in entity_ids}
     ws = None
     try:
@@ -153,7 +151,6 @@ def get_ha_history_7d(entity_ids: list) -> dict:
     Fetch 7-day state history from HA Recorder for the given entity_ids.
     Returns {entity_id: [{t: iso_str, v: float}]} filtered to numeric states.
     """
-    headers = {'Authorization': f'Bearer {_TOKEN}', 'Content-Type': 'application/json'}
     now   = _dt.now(_tz.utc)
     start = (now - timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%S+00:00')
     end   = now.strftime('%Y-%m-%dT%H:%M:%S+00:00')
@@ -161,7 +158,7 @@ def get_ha_history_7d(entity_ids: list) -> dict:
     try:
         resp = requests.get(
             f'{_BASE_API}/history/period/{start}',
-            headers=headers,
+            headers=_HEADERS,
             params={
                 'filter_entity_id': ids_param,
                 'end_time': end,

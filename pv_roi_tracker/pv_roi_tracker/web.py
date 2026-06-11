@@ -17,6 +17,7 @@ from .models import MonthlyRecord
 from .roi import RoiResult
 from . import tariff_analysis as _tariff_analysis
 from . import live_reader as _live_reader
+from .tariff_analysis import _month_label
 
 app = Flask(__name__)
 log = logging.getLogger(__name__)
@@ -83,10 +84,6 @@ _state: dict = {
     'tariff_comparison': None,
 }
 
-_MONTHS_PL = ['', 'Sty', 'Lut', 'Mar', 'Kwi', 'Maj', 'Cze',
-               'Lip', 'Sie', 'Wrz', 'Paź', 'Lis', 'Gru']
-
-
 def update_state(result: RoiResult, records: list[MonthlyRecord],
                  rcem_price: Optional[float], month_closed: bool = False,
                  rcem_scrape_status: Optional[str] = None) -> None:
@@ -103,10 +100,6 @@ def update_tariff_comparison(tariff_data: dict) -> None:
     """Store the computed tariff comparison payload (called from main.py poll loop)."""
     with _lock:
         _state['tariff_comparison'] = tariff_data
-
-
-def _month_label(year: int, month: int) -> str:
-    return f"{year}-{_MONTHS_PL[month]}"
 
 
 def _build_predictions(result: RoiResult) -> list[dict]:
