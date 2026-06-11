@@ -65,6 +65,9 @@ _SENSORS: list[_Sensor] = [
 # Sensors removed in previous versions — clear their retained discovery messages on connect.
 _TOMBSTONED_SLUGS: list[str] = ['rcem_current_month']
 
+# Health sensor — publikowany osobno (stan + atrybuty JSON z detalami zadań).
+_HEALTH_SLUG = 'health'
+
 
 def _state_topic(slug: str) -> str:
     return f'{_STATE_PREFIX}/{slug}/state'
@@ -163,9 +166,19 @@ class MQTTPublisher:
             if s.state_class:  payload['state_class']         = s.state_class
             if s.icon:         payload['icon']                 = s.icon
             self._client.publish(_disc_topic(s.slug), json.dumps(payload), retain=True)
+        health_payload = {
+            'name':                  'PV ROI Tracker Health',
+            'unique_id':             f'{_DEVICE_ID}_{_HEALTH_SLUG}',
+            'state_topic':           _state_topic(_HEALTH_SLUG),
+            'json_attributes_topic': f'{_STATE_PREFIX}/{_HEALTH_SLUG}/attributes',
+            'availability_topic':    _AVAIL_TOPIC,
+            'device':                device,
+            'icon':                  'mdi:heart-pulse',
+        }
+        self._client.publish(_disc_topic(_HEALTH_SLUG), json.dumps(health_payload), retain=True)
         for slug in _TOMBSTONED_SLUGS:
             self._client.publish(_disc_topic(slug), '', retain=True)
-        logger.info('MQTT discovery published for %d sensors', len(_SENSORS))
+        logger.info('MQTT discovery published for %d sensors', len(_SENSORS) + 1)
 
     # ── State publishing ──────────────────────────────────────────────────────
 
@@ -182,3 +195,11 @@ class MQTTPublisher:
                                     projected_month_kwh, projected_month_savings)
             self._client.publish(_state_topic(s.slug), payload, retain=True)
         logger.debug('Published ROI state to MQTT (roi_pct=%.2f%%)', result.roi_pct)
+
+    def publish_health(self, state: str, attributes: dict) -> None:
+        """Publikuje stan zdrowia add-onu: 'ok' | 'degraded' | 'error' + atrybuty zadań."""
+        if not self._connected:
+            return
+        self._client.publish(_state_topic(_HEALTH_SLUG), state, retain=True)
+        self._client.publish(f'{_STATE_PREFIX}/{_HEALTH_SLUG}/attributes',
+                             json.dumps(attributes, ensure_ascii=False), retain=True)

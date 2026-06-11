@@ -28,8 +28,11 @@ YEAR_RE = re.compile(r'^\d{4}$')
 
 
 def _norm(s: str) -> str:
-    """NFC-normalise + lowercase + strip — used for both label matching and month detection."""
-    return unicodedata.normalize('NFC', s.strip()).lower()
+    """Fold diacritics + lowercase + strip — used for both label matching and month
+    detection. Diacritic folding makes matching immune to ę/e-style typos that occur
+    in the source spreadsheet labels (e.g. 'oszczędność' vs 'oszczedność')."""
+    decomposed = unicodedata.normalize('NFD', s.strip())
+    return ''.join(c for c in decomposed if unicodedata.category(c) != 'Mn').lower()
 
 
 # ── Month name lookup (Polish + English abbreviations) ────────────────────────

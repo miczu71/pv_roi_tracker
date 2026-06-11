@@ -26,6 +26,14 @@ _HEADERS  = {'Authorization': f'Bearer {_TOKEN}', 'Content-Type': 'application/j
 _SYSTEM_KWP           = float(os.environ.get('SYSTEM_KWP', '6.72'))
 _TARIFF_PEAK_PRICE    = float(os.environ.get('TARIFF_PEAK_PRICE', '1.23'))
 _TARIFF_OFFPEAK_PRICE = float(os.environ.get('TARIFF_OFFPEAK_PRICE', '0.63'))
+_BATTERY_RT_EFF       = float(os.environ.get('BATTERY_ROUNDTRIP_EFFICIENCY', '0.92'))
+
+# Ostatni znany stan dostępności Solcast — None dopóki nie próbowano odczytu.
+_solcast_available: Optional[bool] = None
+
+
+def solcast_available() -> Optional[bool]:
+    return _solcast_available
 
 
 def _get_state(entity_id: str) -> Optional[float]:
@@ -218,6 +226,10 @@ def _solcast_month_projection(today: date, produced_so_far: float) -> Optional[f
         _get_state('sensor.solcast_pv_forecast_forecast_day_6'),
         _get_state('sensor.solcast_pv_forecast_forecast_day_7'),
     ]
+    global _solcast_available
+    _solcast_available = any(v is not None for v in solcast_days_raw)
+    if not _solcast_available:
+        logger.warning('Solcast: wszystkie sensory prognozy niedostępne — brak projekcji miesiąca')
     # Trim to actual remaining days in month and drop None entries
     solcast_vals = [v for v in solcast_days_raw[:days_remaining_incl_today] if v is not None]
     if not solcast_vals:
@@ -262,7 +274,16 @@ def read_current_month(
     consumed  = _get_state('sensor.house_consumption_energy_monthly')
     peak      = _get_state('sensor.monthly_energy_peak')
     offpeak   = _get_state('sensor.monthly_energy_offpeak')
-    arbitrage = _get_state('sensor.battery_arbitrage_savings_monthly')
+
+    # Arbitraż baterii: liczony z kWh naładowanych z sieci w dolinie × stawka
+    # (peak × sprawność − offpeak), konfigurowalna przez opcje add-onu.
+    # Fallback: stary sensor szablonowy z zaszytą stawką 0.50 PLN/kWh.
+    arb_kwh = _get_state('sensor.battery_grid_charge_off_peak_monthly')
+    if arb_kwh is not None:
+        arb_rate = _TARIFF_PEAK_PRICE * _BATTERY_RT_EFF - _TARIFF_OFFPEAK_PRICE
+        arbitrage = arb_kwh * arb_rate
+    else:
+        arbitrage = _get_state('sensor.battery_arbitrage_savings_monthly')
 
     # Buy price: blend config tariff rates from peak/offpeak split when available;
     # fall back to the HA average-price template sensor.

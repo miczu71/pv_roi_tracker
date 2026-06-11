@@ -13,6 +13,7 @@ from typing import Optional
 from dateutil.relativedelta import relativedelta
 from flask import Flask, Response, jsonify, request
 
+from . import __version__
 from .models import MonthlyRecord
 from .roi import RoiResult
 from . import tariff_analysis as _tariff_analysis
@@ -82,6 +83,7 @@ _state: dict = {
     'rcem_scrape_status': None,
     'updated_at': None,
     'tariff_comparison': None,
+    'rce_comparison': None,
 }
 
 def update_state(result: RoiResult, records: list[MonthlyRecord],
@@ -100,6 +102,12 @@ def update_tariff_comparison(tariff_data: dict) -> None:
     """Store the computed tariff comparison payload (called from main.py poll loop)."""
     with _lock:
         _state['tariff_comparison'] = tariff_data
+
+
+def update_rce_comparison(rce_data: dict) -> None:
+    """Store the RCEm-vs-hourly-RCE payload (called from main.py poll loop)."""
+    with _lock:
+        _state['rce_comparison'] = rce_data
 
 
 def _build_predictions(result: RoiResult) -> list[dict]:
@@ -315,6 +323,8 @@ def api_data():
         'tariff_drift': _build_tariff_drift(),
         'layouts_summary': _build_layouts_summary(),
         'tariff_comparison': _state.get('tariff_comparison'),
+        'rce_comparison': _state.get('rce_comparison'),
+        'version': __version__,
     })
 
 
@@ -928,7 +938,7 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
 </head>
 <body>
 <header>
-  <h1>&#9728;&#65039; PV ROI Tracker</h1>
+  <h1>&#9728;&#65039; PV ROI Tracker <span id="appVer" style="font-size:12px;font-weight:400;opacity:.65;vertical-align:middle"></span></h1>
   <a href="api/export/csv" class="csv-btn" download>&#8595; Eksportuj CSV</a>
   <span id="updated">Ladowanie&hellip;</span>
 </header>
@@ -953,6 +963,7 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
       <button class="tab-btn"        onclick="showTab('charts')">Wykresy</button>
       <button class="tab-btn"        onclick="showTab('invoices')">&#128196; Faktury</button>
       <button class="tab-btn"        onclick="showTab('tariff')">&#128200; Analiza taryf</button>
+      <button class="tab-btn"        onclick="showTab('rce')">&#9889; RCE vs RCEm</button>
     </div>
     <div class="tab-panel">
       <div id="tab-hist">
@@ -1110,6 +1121,19 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
           <label><input type="checkbox" id="chkRangeCum" onchange="redrawRangeChart()"> Skumulowana PLN</label>
         </div>
       </div>
+      <!-- RCE vs RCEm tab -->
+      <div id="tab-rce" style="display:none;padding:12px">
+        <div id="rceWarning" style="display:none;margin-bottom:12px;padding:10px 14px;background:#fff3cd;border-left:4px solid #f0ad4e;border-radius:4px;font-size:13px">
+          &#9888;&#65039; Za mało rozliczonych miesięcy — rekomendacja będzie wiarygodna po 3 pełnych miesiącach z opublikowaną RCEm.
+        </div>
+        <div id="rceKpiCards" style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px"></div>
+        <div class="chart-wrap" style="height:280px;margin-bottom:16px">
+          <h3>Przychód ze sprzedaży nadwyżek: RCEm vs RCE godzinowa (zł/mies.)</h3>
+          <canvas id="rceCmpChart"></canvas>
+        </div>
+        <div class="tbl-wrap"><table id="rceTbl"></table></div>
+        <div class="tbl-foot" id="rceFoot"></div>
+      </div>
       <!-- Faktury Tauron tab -->
       <div id="tab-invoices" style="display:none;padding:12px">
         <!-- KPI summary cards -->
@@ -1173,6 +1197,7 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
 'use strict';
 let _lineChart = null, _barChart = null, _rcemChart = null, _autarkiaChart = null, _prodChart = null, _arbitrageChart = null, _netCostChart = null, _priceSpreadChart = null, _yieldChart = null, _energyBalChart = null, _yearCompChart = null, _prodRankChart = null, _depositChart = null;
 let _tariffPriceChart = null, _tariffCompChart = null, _tariffCumChart = null, _tariffSeasonChart = null, _tariffHistChart = null;
+let _rceCmpChart = null;
 
 /* -- Formatters -- */
 function fmt(v, dp, sfx) {
@@ -1210,12 +1235,13 @@ document.addEventListener('click', function(e) {
 
 /* -- Tab switching -- */
 function showTab(name) {
-  ['hist','pred','years','charts','invoices','tariff'].forEach(t => {
+  ['hist','pred','years','charts','invoices','tariff','rce'].forEach(t => {
     document.getElementById('tab-' + t).style.display = (t === name) ? '' : 'none';
   });
   document.querySelectorAll('.tab-btn').forEach((b, i) =>
-    b.classList.toggle('active', ['hist','pred','years','charts','invoices','tariff'][i] === name)
+    b.classList.toggle('active', ['hist','pred','years','charts','invoices','tariff','rce'][i] === name)
   );
+  if (name === 'rce' && _rceCmpChart) _rceCmpChart.resize();
   if (name === 'charts') {
     [_rcemChart, _autarkiaChart, _prodChart, _arbitrageChart, _netCostChart,
      _priceSpreadChart, _yieldChart, _energyBalChart, _yearCompChart, _prodRankChart].forEach(c => c && c.resize());
@@ -1910,8 +1936,16 @@ function renderYearsTable(records, systemKwp) {
       produced: 0, exported: 0, sc: 0, consumed: 0, purchased: 0,
       self_sav: 0, feedin: 0, arbitrage: 0, purchase_cost: 0, net_grid: 0,
       buy_price_sum: 0, buy_price_n: 0, feedin_price_sum: 0, feedin_price_n: 0, months: 0,
+      byMonth: {},
     };
     const t = yearMap[y];
+    if (r.month_key) {
+      const mNum = r.month_key.slice(5, 7);
+      t.byMonth[mNum] = {
+        produced: r.produced_kwh || 0,
+        savings: (r.self_savings || 0) + (r.feedin_revenue || 0) + (r.battery_arbitrage_savings || 0),
+      };
+    }
     t.produced      += r.produced_kwh      || 0;
     t.exported      += r.exported_kwh      || 0;
     t.sc            += r.self_consumed_kwh || 0;
@@ -1936,9 +1970,32 @@ function renderYearsTable(records, systemKwp) {
     worstY = fullYears.reduce((a, b) => yearMap[a].produced < yearMap[b].produced ? a : b);
   }
 
+  // r/r: porównanie z poprzednim rokiem na bazie TYCH SAMYCH miesięcy
+  // (rok częściowy porównywany jest z tym samym wycinkiem roku poprzedniego)
+  function yoy(y, field) {
+    const prev = yearMap[String(Number(y) - 1)];
+    if (!prev) return null;
+    let cur = 0, base = 0, n = 0;
+    for (const m of Object.keys(yearMap[y].byMonth)) {
+      if (prev.byMonth[m] == null) continue;
+      cur  += yearMap[y].byMonth[m][field];
+      base += prev.byMonth[m][field];
+      n++;
+    }
+    return (n > 0 && base > 0) ? (cur / base - 1) * 100 : null;
+  }
+  function yoyCell(v) {
+    if (v == null) return '<td style="color:var(--muted)">—</td>';
+    const col = v >= 0 ? '#16a34a' : '#dc2626';
+    const arr = v >= 0 ? '▲' : '▼';
+    return '<td style="color:' + col + '">' + arr + ' ' + fmt(Math.abs(v), 1, '%') + '</td>';
+  }
+
   const head = '<thead><tr>' +
     '<th>Rok</th>' +
     '<th>Produkcja</th>' +
+    '<th>Prod. r/r</th>' +
+    '<th>Oszcz. r/r</th>' +
     '<th>Uzysk (kWh/kWp)</th>' +
     '<th>Autokons.</th>' +
     '<th>Sprzedane</th>' +
@@ -1968,6 +2025,8 @@ function renderYearsTable(records, systemKwp) {
     return '<tr>' +
       '<td>' + y + note + partial + '</td>' +
       '<td>' + kwh(t.produced) + '</td>' +
+      yoyCell(yoy(y, 'produced')) +
+      yoyCell(yoy(y, 'savings')) +
       '<td>' + kwhKwp + '</td>' +
       '<td>' + kwh(t.sc) + '</td>' +
       '<td>' + kwh(t.exported) + '</td>' +
@@ -1987,6 +2046,73 @@ function renderYearsTable(records, systemKwp) {
   document.getElementById('yearsTbl').innerHTML = head + '<tbody>' + rows + '</tbody>';
   document.getElementById('yearsFoot').textContent =
     years.length + ' lat danych' + (fullYears.length > 1 ? '; strzalki = najlepsza/najgorsza produkcja (pelne lata)' : '');
+}
+
+/* -- RCE vs RCEm tab -- */
+function renderRceTab(rc) {
+  const s = rc.summary || {};
+  const months = rc.months || [];
+  document.getElementById('rceWarning').style.display = (s.n_months || 0) < 3 ? '' : 'none';
+
+  const recCls = s.recommendation === 'ROZWAŻ RCE' ? 'c-green'
+               : s.recommendation === 'ZOSTAŃ PRZY RCEm' ? 'c-blue' : '';
+  const cards = [
+    { lbl: 'Rekomendacja', val: s.recommendation || '—', sub: s.recommendation_reason || '', cls: recCls },
+    { lbl: 'Śr. różnica / mies.', val: pln(s.avg_monthly_diff_pln, 2), sub: 'RCE godzinowa − RCEm', cls: (s.avg_monthly_diff_pln || 0) > 0 ? 'c-green' : '' },
+    { lbl: 'Suma różnic', val: pln(s.total_diff_pln, 2), sub: (s.n_months || 0) + ' rozliczonych mies.' },
+    { lbl: 'Miesiące na plus', val: (s.months_rce_better || 0) + '/' + (s.n_months || 0), sub: fmt(s.pct_rce_better, 0, '%') + ' czasu RCE lepsza' },
+  ];
+  document.getElementById('rceKpiCards').innerHTML = cards.map(c =>
+    '<div class="card ' + (c.cls || '') + '">' +
+      '<div class="lbl">' + c.lbl + '</div>' +
+      '<div class="val">' + c.val + '</div>' +
+      (c.sub ? '<div class="sub">' + c.sub + '</div>' : '') +
+    '</div>'
+  ).join('');
+
+  // Wykres: przychód RCEm vs RCE godzinowa
+  const lbls = months.map(m => m.month_label + (m.rcem_estimated ? ' *' : ''));
+  if (_rceCmpChart) _rceCmpChart.destroy();
+  _rceCmpChart = new Chart(document.getElementById('rceCmpChart'), {
+    type: 'bar',
+    data: {
+      labels: lbls,
+      datasets: [
+        { label: 'RCEm (faktyczne)', data: months.map(m => m.revenue_rcem_pln), backgroundColor: '#94a3b8' },
+        { label: 'RCE godzinowa (symulacja)', data: months.map(m => m.revenue_rce_pln), backgroundColor: '#2563eb' },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { position: 'bottom' } },
+      scales: { y: { beginAtZero: true, title: { display: true, text: 'zł' } } },
+    },
+  });
+
+  // Tabela miesięczna
+  const head = '<thead><tr>' +
+    '<th>Miesiąc</th><th>Eksport (kWh)</th><th>Pokrycie</th>' +
+    '<th>Cena RCEm</th><th>Śr. RCE ważona</th>' +
+    '<th>Przychód RCEm</th><th>Przychód RCE</th><th>Różnica</th>' +
+  '</tr></thead>';
+  const rows = months.map(m => {
+    const diffCol = m.diff_pln == null ? 'var(--muted)' : (m.diff_pln >= 0 ? '#16a34a' : '#dc2626');
+    const est = m.rcem_estimated ? ' <span style="font-size:10px;color:var(--muted)">(szac.)</span>' : '';
+    const covWarn = m.coverage_pct < 95 ? ' style="color:#dc2626"' : '';
+    return '<tr>' +
+      '<td>' + m.month_label + est + '</td>' +
+      '<td>' + kwh(m.matched_kwh) + '</td>' +
+      '<td' + covWarn + '>' + fmt(m.coverage_pct, 0, '%') + '</td>' +
+      '<td>' + price(m.rcem_price_pln_kwh) + '</td>' +
+      '<td>' + price(m.rce_weighted_price_pln_kwh) + '</td>' +
+      '<td>' + pln(m.revenue_rcem_pln, 2) + '</td>' +
+      '<td>' + pln(m.revenue_rce_pln, 2) + '</td>' +
+      '<td style="color:' + diffCol + ';font-weight:600">' + pln(m.diff_pln, 2) + '</td>' +
+    '</tr>';
+  }).join('');
+  document.getElementById('rceTbl').innerHTML = head + '<tbody>' + rows + '</tbody>';
+  document.getElementById('rceFoot').textContent =
+    (s.note || '') + ' * = RCEm jeszcze nieopublikowana (szacunek wg ostatniej znanej).';
 }
 
 /* -- RCEm manual override -- */
@@ -2064,6 +2190,8 @@ async function loadData() {
     renderYearsTable(d.records, systemKwp);
     renderInvoicesTab(d.invoices || [], d.tariff_drift, d.records, d.layouts_summary);
     if (d.tariff_comparison) renderTariffTab(d.tariff_comparison);
+    if (d.rce_comparison) renderRceTab(d.rce_comparison);
+    if (d.version) document.getElementById('appVer').textContent = 'v' + d.version;
   } catch (e) {
     document.getElementById('updated').textContent = 'Blad polaczenia';
     console.error(e);

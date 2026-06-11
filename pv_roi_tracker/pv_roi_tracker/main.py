@@ -29,6 +29,8 @@ RCEM_CORRECTIONS_PATH  = Path(os.environ.get('RCEM_CORRECTIONS_PATH', '/data/rce
 INVOICE_PATH           = Path(os.environ.get('INVOICE_PATH', '/data/invoices.json'))
 INVOICE_LAYOUTS_PATH   = Path(os.environ.get('INVOICE_LAYOUTS_PATH', '/data/invoice_layouts.json'))
 BACKUP_SHARE           = Path(os.environ.get('BACKUP_SHARE', '/share/pv_roi_tracker'))
+RCE_HOURLY_CACHE_PATH  = Path(os.environ.get('RCE_HOURLY_CACHE_PATH', '/data/rce_hourly.json'))
+MONTHLY_NOTIFY         = os.environ.get('MONTHLY_NOTIFY', 'true').lower() in ('1', 'true', 'yes')
 TARIFF_PEAK_PRICE      = float(os.environ.get('TARIFF_PEAK_PRICE', '1.23'))
 TARIFF_OFFPEAK_PRICE   = float(os.environ.get('TARIFF_OFFPEAK_PRICE', '0.63'))
 GROSS_INVESTMENT   = float(os.environ.get('GROSS_INVESTMENT', '51900.0'))
@@ -62,16 +64,57 @@ def _notify_ha(title: str, message: str) -> None:
         logger.exception('HA notification failed')
 
 
+# ── Rejestr zdrowia zadań ─────────────────────────────────────────────────────
+# Każde zadanie tła raportuje wynik; agregat trafia do sensor.pv_roi_tracker_health.
+
+_job_health: dict = {}
+
+
+def _record_job(name: str, ok: bool, detail: str = '') -> None:
+    from datetime import datetime as _dtt
+    now = _dtt.now().isoformat(timespec='seconds')
+    entry = _job_health.setdefault(name, {})
+    entry['ok'] = ok
+    entry['last_run'] = now
+    entry['detail'] = detail
+    if ok:
+        entry['last_ok'] = now
+
+
+def _health_snapshot() -> tuple[str, dict]:
+    """Zwraca (stan, atrybuty). error: pętla poll padła; degraded: zadanie pomocnicze padło."""
+    from . import live_reader
+    solcast = live_reader.solcast_available()
+    attrs: dict = {name: dict(data) for name, data in _job_health.items()}
+    attrs['solcast_available'] = solcast
+
+    if not _job_health.get('poll', {}).get('ok', True):
+        state = 'error'
+    elif (any(not d.get('ok', True) for d in _job_health.values())
+          or solcast is False):
+        state = 'degraded'
+    else:
+        state = 'ok'
+    attrs['issues'] = sorted(
+        [n for n, d in _job_health.items() if not d.get('ok', True)]
+        + (['solcast'] if solcast is False else [])
+    )
+    return state, attrs
+
+
 def _backup_data() -> None:
     import shutil
     try:
         BACKUP_SHARE.mkdir(parents=True, exist_ok=True)
-        for src in [HISTORIC_PATH, RCEM_HISTORY_PATH, RCEM_CORRECTIONS_PATH, INVOICE_PATH, INVOICE_LAYOUTS_PATH]:
+        for src in [HISTORIC_PATH, RCEM_HISTORY_PATH, RCEM_CORRECTIONS_PATH,
+                    INVOICE_PATH, INVOICE_LAYOUTS_PATH, RCE_HOURLY_CACHE_PATH]:
             if src.exists():
                 shutil.copy2(src, BACKUP_SHARE / src.name)
         logger.info('Data backed up to %s', BACKUP_SHARE)
+        _record_job('backup', True)
     except Exception:
         logger.exception('Backup failed')
+        _record_job('backup', False, 'backup do /share nie powiódł się')
 
 
 def main() -> None:
@@ -233,6 +276,8 @@ def main() -> None:
 
     from .tariff_analysis import compute_tariff_tab
 
+    _last: dict = {'result': None}
+
     def poll_and_publish() -> None:
         try:
             historic = historic_store.load(HISTORIC_PATH)
@@ -287,14 +332,40 @@ def main() -> None:
                     tariff_history_7d=history_7d,
                 )
                 _web.update_tariff_comparison(tariff_data)
+                _record_job('tariff_comparison', True)
             except Exception:
                 logger.exception('Tariff comparison update failed — continuing')
+                _record_job('tariff_comparison', False, 'porównanie taryf nie powiodło się')
 
+            # --- RCEm vs RCE-godzinowa ---
+            try:
+                from . import rce_hourly
+                rce_payload = rce_hourly.update_and_compare(
+                    all_records,
+                    rcem_scraper._load_history(RCEM_HISTORY_PATH),
+                    cache_path=RCE_HOURLY_CACHE_PATH,
+                )
+                _web.update_rce_comparison(rce_payload)
+                _record_job('rce_hourly', True)
+            except Exception:
+                logger.exception('RCE hourly comparison failed — continuing')
+                _record_job('rce_hourly', False, 'symulacja RCE godzinowej nie powiodła się')
+
+            _record_job('poll', True)
+            _last['result'] = result
             logger.info('Poll complete — ROI %.2f%%, remaining %.0f PLN, payback %s',
                         result.roi_pct, result.remaining_to_recover,
                         result.payback_date or 'unknown')
         except Exception:
             logger.exception('Poll loop error')
+            _record_job('poll', False, 'pętla poll padła — sprawdź log add-onu')
+
+        try:
+            state, attrs = _health_snapshot()
+            attrs['rcem_scrape_status'] = _rcem_scrape_status(date.today())
+            pub.publish_health(state, attrs)
+        except Exception:
+            logger.exception('Health publish failed')
 
     def _target_month_key(now: date) -> str:
         y, m = (now.year - 1, 12) if now.month == 1 else (now.year, now.month - 1)
@@ -332,13 +403,40 @@ def main() -> None:
             on_update=poll_and_publish,
         )
 
+    def _monthly_summary_notification() -> None:
+        """Polskie podsumowanie zamkniętego miesiąca → notify.family."""
+        today = date.today()
+        rec = next((r for r in historic_store.load(HISTORIC_PATH)
+                    if r.year == today.year and r.month == today.month), None)
+        if rec is None:
+            return
+        savings = ((rec.self_consumed_savings_pln or 0.0)
+                   + (rec.feedin_revenue_pln or 0.0)
+                   + (rec.battery_arbitrage_savings_pln or 0.0))
+        parts = [f'Produkcja {rec.produced_kwh:.0f} kWh' if rec.produced_kwh is not None else None,
+                 f'oszczędności {savings:.0f} zł'
+                 + (' (sprzedaż wg RCEm doliczona po publikacji)' if rec.rcem_status != 'confirmed' else '')]
+        result = _last['result']
+        if result is not None:
+            parts.append(f'ROI {result.roi_pct:.1f}%')
+            if result.remaining_to_recover > 0:
+                parts.append(f'do spłaty {result.remaining_to_recover:.0f} zł')
+            if result.payback_date:
+                parts.append(f'przewidywana spłata {result.payback_date.isoformat()[:7]}')
+        _notify_ha(f'PV — podsumowanie {today.year}-{today.month:02d}',
+                   ', '.join(p for p in parts if p) + '.')
+
     def month_close_job() -> None:
         try:
             close_month(historic_path=HISTORIC_PATH, rcem_history_path=RCEM_HISTORY_PATH)
             historic_store.reconcile_pending_invoices(INVOICE_PATH, HISTORIC_PATH)
             poll_and_publish()
+            if MONTHLY_NOTIFY:
+                _monthly_summary_notification()
+            _record_job('month_close', True)
         except Exception:
             logger.exception('Month-close error')
+            _record_job('month_close', False, 'zamknięcie miesiąca nie powiodło się')
 
     # ── Scheduler setup ───────────────────────────────────────────────────────
     scheduler = BlockingScheduler()
@@ -366,7 +464,15 @@ def main() -> None:
                       id='backup', name='Daily data backup')
 
     # Monthly CPI refresh: day 16 at 12:00 (GUS publishes prev-month CPI ~15th)
-    scheduler.add_job(cpi_fetcher.refresh, CronTrigger(day=16, hour=12, minute=0),
+    def cpi_job() -> None:
+        try:
+            cpi_fetcher.refresh()
+            _record_job('cpi', True)
+        except Exception:
+            logger.exception('CPI refresh failed')
+            _record_job('cpi', False, 'odświeżenie CPI z GUS nie powiodło się')
+
+    scheduler.add_job(cpi_job, CronTrigger(day=16, hour=12, minute=0),
                       id='cpi_refresh', name='Monthly CPI refresh')
 
     logger.info('PV ROI Tracker v%s started — poll every %d min', __version__, POLL_INTERVAL)
