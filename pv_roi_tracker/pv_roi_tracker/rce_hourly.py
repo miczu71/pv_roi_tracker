@@ -18,8 +18,14 @@ go miesiąc po miesiącu z faktycznym przychodem RCEm.
 Energia eksportowana godzinowo: statystyki długoterminowe HA ('change', period=hour)
 dla sensor.power_meter_exported_energy_monthly.
 
-Od 2025-02 prosument otrzymuje cenę brutto (×1.23 VAT) — ta sama reguła co dla RCEm
-(rcem_scraper._MULTIPLIER_FROM), stosowana też do symulowanej RCE.
+Od 2025-02 depozyt zasilany jest wartością ×1.23 (współczynnik korekcyjny z nowelizacji
+ustawy o OZE z 27.11.2024, obowiązuje WSZYSTKICH prosumentów net-billing — w obu trybach
+RCEm i RCE) — ta sama reguła co w rcem_scraper._MULTIPLIER_FROM, stosowana też do
+symulowanej RCE. Współczynnik nie wpływa więc na ZNAK różnicy RCE−RCEm, tylko na kwoty.
+
+Zmiana RCEm → RCE godzinowa jest jednokierunkowa (decyzja nieodwracalna); przy RCE
+godzinowej prosument może wypłacić do 30% depozytu w 12 mies. (RCEm: 20%).
+Źródło: lepiej.tauron.pl/zielona-energia/jak-rozliczani-sa-prosumenci-nowelizacja-ustawy-o-oze/
 """
 from __future__ import annotations
 
@@ -279,8 +285,10 @@ def build_summary(months_out: list) -> dict:
         'recommendation': recommendation,
         'recommendation_reason': reason,
         'note': ('Symulacja: przychód z tych samych godzinowych kWh eksportu wyceniony '
-                 'ceną RCE (15-min, ważoną profilem) vs ceną RCEm. Zmiana sposobu '
-                 'rozliczenia wymaga wniosku u sprzedawcy energii.'),
+                 'ceną RCE (15-min, ważoną profilem) vs ceną RCEm. UWAGA: przejście na '
+                 'RCE godzinową (oświadczenie w Strefie Prosumenta) jest NIEODWRACALNE — '
+                 'powrót do RCEm nie jest możliwy. Plus RCE: wypłata do 30% depozytu '
+                 'w 12 mies. (RCEm: 20%). Współczynnik 1,23 obowiązuje w obu trybach.'),
     }
 
 
