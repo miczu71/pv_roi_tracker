@@ -20,6 +20,8 @@ export TARIFF_PEAK_PRICE=$(jq -r '.tariff_peak_price // "1.23"' "$CONFIG")
 export TARIFF_OFFPEAK_PRICE=$(jq -r '.tariff_offpeak_price // "0.63"' "$CONFIG")
 export BATTERY_ROUNDTRIP_EFFICIENCY=$(jq -r '.battery_roundtrip_efficiency // "0.92"' "$CONFIG")
 export MONTHLY_NOTIFY=$(jq -r '.monthly_notify // "true"' "$CONFIG")
+export CO2_FACTOR_KG_KWH=$(jq -r '.co2_factor_kg_kwh // "0.597"' "$CONFIG")
+export DEPOSIT_REFUND_PCT=$(jq -r '.deposit_refund_pct // "0.20"' "$CONFIG")
 
 export HISTORIC_PATH="/data/historic.json"
 export RCEM_HISTORY_PATH="/data/rcem_history.json"

@@ -84,6 +84,30 @@ def test_compare_month_none_without_export():
     assert compare_month('2026-05', {}, _prices(), 0.5, 0.0) is None
 
 
+def test_compare_month_clamps_negative_prices_to_zero():
+    # art. 4b ustawy o OZE: godziny z ujemną RCE liczone po 0 zł
+    export = {'2026-05-10T10': 10.0, '2026-05-10T12': 5.0}
+    prices = {'2026-05-10T10': 500.0, '2026-05-10T12': -200.0}
+    row = compare_month('2026-05', export, prices,
+                        rcem_price_gross=0.50, exported_total_kwh=15.0)
+    # tylko godzina dodatnia: 10 × 0.5 × 1.23 = 6.15 (ujemna → 0, nie odejmuje)
+    assert row['revenue_rce_pln'] == pytest.approx(6.15, abs=0.01)
+    # cena ważona też po clampie: 5.0 / 15 kWh × 1.23
+    assert row['rce_weighted_price_pln_kwh'] == pytest.approx(5.0 / 15 * 1.23, abs=0.001)
+    assert row['neg_kwh'] == 5.0
+    assert row['neg_share_pct'] == pytest.approx(33.3, abs=0.1)
+    # bez clampu przychód byłby niższy o 5 × 0.2 × 1.23 = 1.23
+    assert row['neg_saved_pln'] == pytest.approx(1.23, abs=0.01)
+
+
+def test_compare_month_no_negative_hours():
+    row = compare_month('2026-05', _export(), _prices(),
+                        rcem_price_gross=0.50, exported_total_kwh=15.0)
+    assert row['neg_kwh'] == 0.0
+    assert row['neg_share_pct'] == 0.0
+    assert row['neg_saved_pln'] == 0.0
+
+
 def test_compare_month_unknown_rcem():
     row = compare_month('2026-05', _export(), _prices(),
                         rcem_price_gross=None, exported_total_kwh=15.0)
@@ -158,3 +182,25 @@ def test_update_and_compare_freezes_settled_months(tmp_path, monkeypatch):
                               get_stats_fn=fake_stats, today=date(2026, 5, 20))
     assert calls[1] == '2026-05-01'
     assert [m['ym'] for m in out2['months']] == ['2026-04', '2026-05']
+
+
+def test_cache_version_bump_invalidates_frozen_months(tmp_path):
+    import json
+    import pv_roi_tracker.rce_hourly as rh
+    cache = tmp_path / 'rce_hourly.json'
+    # stary cache bez 'v' (sprzed clampu) z zamrożonym miesiącem
+    cache.write_text(json.dumps({
+        'prices': {'2026-04-15T10': 500.0},
+        'months': {'2026-04': {'ym': '2026-04', 'revenue_rce_pln': -1.0}},
+    }))
+    loaded = rh._load_cache(cache)
+    assert loaded['months'] == {}                       # przeliczamy od nowa
+    assert loaded['prices'] == {'2026-04-15T10': 500.0}  # surowe ceny zostają
+
+    # cache w bieżącej wersji nie jest unieważniany
+    cache.write_text(json.dumps({
+        'v': rh.CACHE_VERSION,
+        'prices': {},
+        'months': {'2026-04': {'ym': '2026-04'}},
+    }))
+    assert rh._load_cache(cache)['months'] != {}

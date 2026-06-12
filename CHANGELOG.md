@@ -2,6 +2,40 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.17.0] — 2026-06-12
+
+### Fixed
+
+- **Ceny ujemne RCE liczone po 0 zł (art. 4b ustawy o OZE)** — symulacja RCE godzinowej wyceniała eksport surową ceną RCE, włącznie z cenami ujemnymi, zaniżając symulowany przychód i obciążając rekomendację przeciw przejściu na RCE. Teraz `p_eff = max(p, 0)` — ustawowa reguła domyślna dla prosumentów. Nowe pola per miesiąc: `neg_kwh`, `neg_share_pct`, `neg_saved_pln` (ile chroni reguła zera) + agregaty w podsumowaniu. Cache `rce_hourly.json` dostał wersjonowanie (`v: 2`) — zamrożone miesiące przeliczają się automatycznie wg nowej reguły (surowe ceny zostają).
+
+### Added
+
+- **Depozyt prosumencki: przedawnienie 12 mies. + limit zwrotu** — nowy czysty moduł `deposit.py`: ledger FIFO zasileń (feed-in revenue) i konsumpcji (faktury, fallback: szacunek z falownika), ustawowe 12-miesięczne przedawnienie każdej partii oraz zwrot nadpłaty ograniczony do `deposit_refund_pct` × zasilenie miesiąca (20% RCEm / 30% RCE godzinowa, art. 4 ust. 11 ustawy o OZE). Saldo kotwiczone na ostatniej fakturze (lag dopisywania depozytu przez Taurona 1–2 mies.). Zakładka Faktury: KPI (saldo, traci ważność za 1/3 mies., prognoza zwrot/umorzenie 12 mies.) + wykres saldo model/faktury/prognoza z słupkami przedawnień.
+- **Nowe sensory MQTT (6)**: `PV Self-Consumption Rate` (%), `PV Autarky` (%), `PV CO2 Avoided` (kg, wskaźnik KOBiZE konfigurowalny), `PV YoY Yield Delta` (% r/r po sparowanych miesiącach), `PV Deposit Balance Est` (PLN), `PV Deposit Expiring 30d` (PLN).
+- **Heatmapa eksport × cena RCE** (zakładka RCE vs RCEm) — siatka 24h × miesiąc z cache'owanych cen godzinowych i profilu eksportu; przełącznik cena/kWh; komórki z ceną ujemną na czerwono. Nowe pole `hours_profile` w wierszach miesięcznych.
+- **Wachlarz spłaty (fan chart)** w Prognozie spłaty — skumulowany zwrot: historia + ścieżka sezonowa P50 z pasmem P10–P90 (czynniki sezonowe + residual CV z `roi.py`). Prognoza w tabeli też używa teraz ścieżki sezonowej zamiast płaskiej średniej.
+- **Waterfall miesięczny** (Wykresy) — dekompozycja wybranego miesiąca: autokonsumpcja → sprzedaż → arbitraż → opłaty stałe (z faktury) → netto.
+- **Sankey przepływu energii** (Wykresy) — produkcja → autokonsumpcja/eksport, zakup → zużycie; selektor roku; plugin `chartjs-chart-sankey` (przy braku CDN wykres jest ukrywany).
+- **Oszczędności nominalne vs realne (CPI)** (Wykresy) — skumulowane oszczędności deflowane CPI GUS (`cpi_deflator` per miesiąc w `/api/data`).
+- **Trend degradacji** (Wykresy) — kroczący uzysk 12-mies. (kWh/kWp) z dopasowaniem liniowym (%/rok) i delta r/r; nowa funkcja `roi.degradation_analysis()`. Karty: CO₂ uniknięte, Autokonsumpcja, Produkcja r/r.
+- **Nowe opcje konfiguracyjne**: `co2_factor_kg_kwh` (domyślnie 0.597, KOBiZE dla odbiorców końcowych) i `deposit_refund_pct` (domyślnie 0.20).
+
+### Entities / services touched
+
+| Encja | Zmiana |
+|---|---|
+| `sensor.pv_roi_tracker_self_consumption_rate` | NOWA — autokonsumpcja % (produkcja zużyta na miejscu) |
+| `sensor.pv_roi_tracker_autarky` | NOWA — autarkia % (zużycie pokryte z PV) |
+| `sensor.pv_roi_tracker_co2_avoided` | NOWA — kg CO₂ unikniętego, `total_increasing` |
+| `sensor.pv_roi_tracker_yoy_yield_delta` | NOWA — produkcja r/r % |
+| `sensor.pv_roi_tracker_deposit_balance_est` | NOWA — szacowane saldo depozytu (PLN) |
+| `sensor.pv_roi_tracker_deposit_expiring_30d` | NOWA — depozyt tracący ważność w ciągu mies. (PLN) |
+| `sensor.pv_roi_tracker_health` | atrybuty: nowe zadanie `deposit` |
+
+> Uwaga: HA skleja entity_id z nazwy urządzenia i encji — rzeczywiste id sprawdź w Ustawienia → Urządzenia → PV ROI Tracker.
+
+---
+
 ## [0.16.1] — 2026-06-11
 
 ### Changed

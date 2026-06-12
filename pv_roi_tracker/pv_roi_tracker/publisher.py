@@ -1,7 +1,8 @@
 """
 MQTT discovery publisher for PV ROI sensors.
 
-Publishes 12 sensors under a single 'PV ROI Tracker' device using HA MQTT discovery.
+Publishes the _SENSORS list (+ health) under a single 'PV ROI Tracker' device
+using HA MQTT discovery.
 Uses paho-mqtt with loop_start() so publishing runs from the main thread
 while paho reconnects in the background automatically.
 """
@@ -60,6 +61,14 @@ _SENSORS: list[_Sensor] = [
     _Sensor('irr_pct',                    'PV IRR',                         'irr_pct',                     '%',    None,       'measurement',      'mdi:trending-up'),
     _Sensor('vs_bond_delta',              'PV vs Bond Delta',               'counterfactual_delta',        'PLN',  'monetary', 'measurement',      'mdi:scale-balance'),
     _Sensor('cumulative_inflation',       'PV Cumulative Inflation',        'cumulative_inflation_pct',    '%',    None,       'measurement',      'mdi:trending-up'),
+    # Wskaźniki energetyczne (v0.17.0)
+    _Sensor('self_consumption_rate',      'PV Self-Consumption Rate',       'self_consumption_rate_pct',   '%',    None,       'measurement',      'mdi:home-percent'),
+    _Sensor('autarky',                    'PV Autarky',                     'autarky_pct',                 '%',    None,       'measurement',      'mdi:home-battery'),
+    _Sensor('co2_avoided',                'PV CO2 Avoided',                 'co2_avoided_kg',              'kg',   None,       'total_increasing', 'mdi:molecule-co2'),
+    _Sensor('yoy_yield_delta',            'PV YoY Yield Delta',             'yoy_yield_delta_pct',         '%',    None,       'measurement',      'mdi:sun-clock'),
+    # Depozyt prosumencki (v0.17.0)
+    _Sensor('deposit_balance_est',        'PV Deposit Balance Est',         None,                          'PLN',  'monetary', 'measurement',      'mdi:piggy-bank'),
+    _Sensor('deposit_expiring_30d',       'PV Deposit Expiring 30d',        None,                          'PLN',  'monetary', 'measurement',      'mdi:timer-sand'),
 ]
 
 # Sensors removed in previous versions — clear their retained discovery messages on connect.
@@ -81,7 +90,9 @@ def _render_value(sensor: _Sensor, result: RoiResult,
                   current_month_savings: Optional[float] = None,
                   rcem_scrape_status: Optional[str] = None,
                   projected_month_kwh: Optional[float] = None,
-                  projected_month_savings: Optional[float] = None) -> str:
+                  projected_month_savings: Optional[float] = None,
+                  deposit_balance: Optional[float] = None,
+                  deposit_expiring_30d: Optional[float] = None) -> str:
     if sensor.slug == 'net_investment':
         v: Any = round(result.gross_investment - result.subsidy, 2)
     elif sensor.slug == 'current_month_savings':
@@ -92,6 +103,10 @@ def _render_value(sensor: _Sensor, result: RoiResult,
         v = projected_month_kwh
     elif sensor.slug == 'projected_month_savings':
         v = projected_month_savings
+    elif sensor.slug == 'deposit_balance_est':
+        v = deposit_balance
+    elif sensor.slug == 'deposit_expiring_30d':
+        v = deposit_expiring_30d
     else:
         v = getattr(result, sensor.attr) if sensor.attr else None
 
@@ -186,13 +201,16 @@ class MQTTPublisher:
                     current_month_savings: Optional[float] = None,
                     rcem_scrape_status: Optional[str] = None,
                     projected_month_kwh: Optional[float] = None,
-                    projected_month_savings: Optional[float] = None) -> None:
+                    projected_month_savings: Optional[float] = None,
+                    deposit_balance: Optional[float] = None,
+                    deposit_expiring_30d: Optional[float] = None) -> None:
         if not self._connected:
             logger.debug('MQTT not connected — skipping publish')
             return
         for s in _SENSORS:
             payload = _render_value(s, result, current_month_savings, rcem_scrape_status,
-                                    projected_month_kwh, projected_month_savings)
+                                    projected_month_kwh, projected_month_savings,
+                                    deposit_balance, deposit_expiring_30d)
             self._client.publish(_state_topic(s.slug), payload, retain=True)
         logger.debug('Published ROI state to MQTT (roi_pct=%.2f%%)', result.roi_pct)
 

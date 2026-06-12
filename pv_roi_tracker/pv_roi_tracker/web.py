@@ -84,6 +84,7 @@ _state: dict = {
     'updated_at': None,
     'tariff_comparison': None,
     'rce_comparison': None,
+    'deposit': None,
 }
 
 def update_state(result: RoiResult, records: list[MonthlyRecord],
@@ -110,6 +111,13 @@ def update_rce_comparison(rce_data: dict) -> None:
         _state['rce_comparison'] = rce_data
 
 
+def update_deposit(deposit_result) -> None:
+    """Store the DepositResult (called from main.py poll loop); None clears it."""
+    from dataclasses import asdict
+    with _lock:
+        _state['deposit'] = asdict(deposit_result) if deposit_result is not None else None
+
+
 def _build_predictions(result: RoiResult) -> list[dict]:
     avg = result.monthly_avg_savings
     if not avg or avg <= 0:
@@ -134,15 +142,25 @@ def _build_predictions(result: RoiResult) -> list[dict]:
             cursor += relativedelta(months=1)
         return rows
 
+    # Ścieżka sezonowa (P50) + wachlarz P10/P90 z residual_cv (jak w roi._walk_payback)
+    factors = result.seasonal_factors or {}
+    cv = result.residual_cv or 0.0
     remaining = result.remaining_to_recover
     cumulative = result.total_return
+    cum_fast = cum_slow = result.total_return
     while remaining > 0 and len(rows) < 120:
-        cumulative += avg
-        remaining -= avg
+        f = factors.get(cursor.month, 1.0)
+        m_sav = avg * f
+        cumulative += m_sav
+        remaining -= m_sav
+        cum_fast += max(avg * f * (1.0 + 1.28 * cv), 0.01)  # górna krawędź wachlarza
+        cum_slow += max(avg * f * (1.0 - 1.28 * cv), 0.01)  # dolna krawędź
         rows.append({
             'month_label': _month_label(cursor.year, cursor.month),
-            'projected_savings': round(avg, 2),
+            'projected_savings': round(m_sav, 2),
             'cumulative_return': round(cumulative, 2),
+            'cumulative_fast': round(cum_fast, 2),
+            'cumulative_slow': round(cum_slow, 2),
             'remaining': round(max(0.0, remaining), 2),
             'roi_pct': round(cumulative / result.gross_investment * 100, 2),
         })
@@ -160,6 +178,7 @@ def api_data():
         month_closed = _state['month_closed']
         rcem_scrape_status = _state['rcem_scrape_status']
         updated_at = _state['updated_at']
+        deposit_payload = _state['deposit']
 
     if result is None:
         return jsonify({'status': 'loading'}), 202
@@ -196,6 +215,12 @@ def api_data():
 
     from . import rcem_scraper as _rs
     corrections = _rs._load_corrections()
+
+    # Deflatory CPI do wykresu oszczędności realnych (PLN dzisiejsze)
+    import os as _os
+    from . import cpi_fetcher as _cpi
+    _infl = float(_os.environ.get('INFLATION_RATE', '0.05'))
+    today_ym_t = (today.year, today.month)
 
     cumulative = result.subsidy
     records_out = []
@@ -243,6 +268,7 @@ def api_data():
             'purchased_kwh_peak': r.purchased_kwh_peak,
             'purchased_kwh_offpeak': r.purchased_kwh_offpeak,
             'feedin_corrections': corrections.get(month_key) or None,
+            'cpi_deflator': round(_cpi.get_deflator((r.year, r.month), today_ym_t, _infl), 4),
         })
 
     current_rec = next((r for r in records if (r.year, r.month) == current_ym), None)
@@ -316,6 +342,11 @@ def api_data():
             'counterfactual_delta': result.counterfactual_delta,
             'inflation_source': result.inflation_source,
             'cumulative_inflation_pct': result.cumulative_inflation_pct,
+            # v0.17.0: wskaźniki energetyczne
+            'self_consumption_rate_pct': result.self_consumption_rate_pct,
+            'autarky_pct': result.autarky_pct,
+            'co2_avoided_kg': result.co2_avoided_kg,
+            'yoy_yield_delta_pct': result.yoy_yield_delta_pct,
         },
         'records': records_out,
         'predictions': _build_predictions(result),
@@ -324,8 +355,21 @@ def api_data():
         'layouts_summary': _build_layouts_summary(),
         'tariff_comparison': _state.get('tariff_comparison'),
         'rce_comparison': _state.get('rce_comparison'),
+        'deposit': deposit_payload,
+        'degradation': _build_degradation(records, today),
         'version': __version__,
     })
+
+
+def _build_degradation(records, today):
+    import os as _os
+    from .roi import degradation_analysis
+    try:
+        kwp = float(_os.environ.get('SYSTEM_KWP', '6.72'))
+        return degradation_analysis(records, system_kwp=kwp, today=today)
+    except Exception:
+        log.exception('degradation analysis failed')
+        return None
 
 
 def _build_invoices_data(records):
@@ -792,6 +836,7 @@ _HTML = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PV ROI Tracker</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-chart-sankey@0.12.1/dist/chartjs-chart-sankey.min.js"></script>
 <style>
 :root {
   --bg: #f0f4f8; --card: #fff; --border: #e2e8f0;
@@ -971,6 +1016,12 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
         <div class="tbl-foot" id="histFoot"></div>
       </div>
       <div id="tab-pred" style="display:none">
+        <div style="padding:12px 12px 0">
+          <div class="chart-wrap" style="height:300px;margin-bottom:12px">
+            <h3>Wachlarz spłaty — skumulowany zwrot z pasmem niepewności (P10–P90)</h3>
+            <canvas id="fanChart"></canvas>
+          </div>
+        </div>
         <div class="tbl-wrap"><table id="predTbl"></table></div>
         <div class="tbl-foot" id="predFoot"></div>
         <div class="sensi-wrap" id="sensiWrap">
@@ -1029,6 +1080,30 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
             <div class="chart-wrap" style="height:320px">
               <h3>Porownanie roczne produkcji (kWh)</h3>
               <canvas id="yearCompChart"></canvas>
+            </div>
+          </div>
+          <div class="charts" style="margin-bottom:12px">
+            <div class="chart-wrap">
+              <h3>Oszczędności skumulowane: nominalne vs realne (CPI, dzisiejsze zł)</h3>
+              <canvas id="cpiRealChart"></canvas>
+            </div>
+            <div class="chart-wrap">
+              <h3>Uzysk kroczący 12 mies. (kWh/kWp) — trend degradacji <span id="degradBadge" style="font-size:11px;font-weight:400;color:var(--muted)"></span></h3>
+              <canvas id="degradChart"></canvas>
+            </div>
+          </div>
+          <div class="charts" style="margin-bottom:12px">
+            <div class="chart-wrap">
+              <h3>Dekompozycja miesiąca (waterfall)
+                <select id="waterfallMonth" onchange="redrawWaterfall()" style="font-size:11px;margin-left:8px"></select>
+              </h3>
+              <canvas id="waterfallChart"></canvas>
+            </div>
+            <div class="chart-wrap">
+              <h3>Przepływ energii (Sankey)
+                <select id="sankeyYear" onchange="redrawSankey()" style="font-size:11px;margin-left:8px"></select>
+              </h3>
+              <canvas id="sankeyChart"></canvas>
             </div>
           </div>
           <div class="charts2">
@@ -1131,6 +1206,14 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
           <h3>Przychód ze sprzedaży nadwyżek: RCEm vs RCE godzinowa (zł/mies.)</h3>
           <canvas id="rceCmpChart"></canvas>
         </div>
+        <div style="margin-bottom:16px">
+          <h4 style="margin:0 0 6px;font-size:13px;font-weight:600">Heatmapa: eksport × cena RCE (godzina doby × miesiąc)
+            <label style="font-weight:400;font-size:11px;margin-left:10px"><input type="radio" name="hmMetric" value="price" checked onchange="redrawRceHeatmap()"> cena RCE</label>
+            <label style="font-weight:400;font-size:11px;margin-left:6px"><input type="radio" name="hmMetric" value="kwh" onchange="redrawRceHeatmap()"> eksport kWh</label>
+          </h4>
+          <div id="rceHeatmap" style="overflow-x:auto"></div>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px">Kolor = śr. cena RCE ważona eksportem (czerwień = godziny z ceną ujemną → 0 zł, art. 4b ustawy o OZE) lub wolumen eksportu. Najedź na komórkę po szczegóły.</div>
+        </div>
         <div class="tbl-wrap"><table id="rceTbl"></table></div>
         <div class="tbl-foot" id="rceFoot"></div>
       </div>
@@ -1145,12 +1228,14 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
           <h4 style="margin:0 0 8px;font-size:13px;font-weight:600">Pokrycie fakturami</h4>
           <div id="invCoverageGrid"></div>
         </div>
-        <!-- Deposit trend chart -->
+        <!-- Deposit: expiry/refund KPIs + trend chart -->
         <div style="margin-bottom:16px">
-          <h4 style="margin:0 0 8px;font-size:13px;font-weight:600">Saldo depozytu prosumenckiego (zł)</h4>
-          <div class="chart-wrap" style="max-width:680px;height:200px">
+          <h4 style="margin:0 0 8px;font-size:13px;font-weight:600">Depozyt prosumencki — saldo, przedawnienie 12 mies. i zwrot</h4>
+          <div id="depKpiCards" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:10px"></div>
+          <div class="chart-wrap" style="height:240px;margin-bottom:8px">
             <canvas id="depositChart"></canvas>
           </div>
+          <div id="depositNote" style="font-size:11px;color:var(--muted)"></div>
         </div>
         <!-- Invoice table (click to expand) -->
         <div style="margin-bottom:16px">
@@ -1198,6 +1283,8 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
 let _lineChart = null, _barChart = null, _rcemChart = null, _autarkiaChart = null, _prodChart = null, _arbitrageChart = null, _netCostChart = null, _priceSpreadChart = null, _yieldChart = null, _energyBalChart = null, _yearCompChart = null, _prodRankChart = null, _depositChart = null;
 let _tariffPriceChart = null, _tariffCompChart = null, _tariffCumChart = null, _tariffSeasonChart = null, _tariffHistChart = null;
 let _rceCmpChart = null;
+let _fanChart = null, _waterfallChart = null, _sankeyChart = null, _cpiRealChart = null, _degradChart = null;
+let _lastRecords = [], _lastInvoices = [], _lastRceMonths = [];
 
 /* -- Formatters -- */
 function fmt(v, dp, sfx) {
@@ -1242,9 +1329,11 @@ function showTab(name) {
     b.classList.toggle('active', ['hist','pred','years','charts','invoices','tariff','rce'][i] === name)
   );
   if (name === 'rce' && _rceCmpChart) _rceCmpChart.resize();
+  if (name === 'pred' && _fanChart) _fanChart.resize();
   if (name === 'charts') {
     [_rcemChart, _autarkiaChart, _prodChart, _arbitrageChart, _netCostChart,
-     _priceSpreadChart, _yieldChart, _energyBalChart, _yearCompChart, _prodRankChart].forEach(c => c && c.resize());
+     _priceSpreadChart, _yieldChart, _energyBalChart, _yearCompChart, _prodRankChart,
+     _cpiRealChart, _degradChart, _waterfallChart, _sankeyChart].forEach(c => c && c.resize());
   }
   if (name === 'invoices' && _depositChart) _depositChart.resize();
   if (name === 'tariff') {
@@ -1279,6 +1368,9 @@ function renderCards(s) {
     s.counterfactual_delta != null ? { lbl: 'vs Obligacje 10Y', val: pln(s.counterfactual_delta), sub: 'PV vs 5.5% obligacja', cls: s.counterfactual_delta >= 0 ? 'c-green' : '' } : null,
     { lbl: 'Zysk netto', val: pln(s.net_profit || 0), cls: (s.net_profit || 0) > 0 ? 'c-green' : '', sub: (s.net_profit || 0) > 0 ? 'ponad inwestycje brutto' : 'przed splata' },
     s.self_sufficiency_avg != null ? { lbl: 'Autarkia', val: pct(s.self_sufficiency_avg), sub: 'udzial autokonsumpcji' } : null,
+    s.self_consumption_rate_pct != null ? { lbl: 'Autokonsumpcja', val: fmt(s.self_consumption_rate_pct, 1, '%'), sub: 'udział produkcji zużytej na miejscu' } : null,
+    s.co2_avoided_kg != null && s.co2_avoided_kg > 0 ? { lbl: 'CO₂ unikniete', val: s.co2_avoided_kg >= 1000 ? fmt(s.co2_avoided_kg / 1000, 2, 't') : fmt(s.co2_avoided_kg, 0, 'kg'), sub: 'wskaźnik KOBiZE', cls: 'c-green' } : null,
+    s.yoy_yield_delta_pct != null ? { lbl: 'Produkcja r/r', val: fmt(s.yoy_yield_delta_pct, 1, '%'), sub: 'te same miesiące rok do roku', cls: s.yoy_yield_delta_pct >= 0 ? 'c-green' : '' } : null,
     { lbl: 'Koszt netto sieci', val: pln(s.net_grid_cost_total), sub: 'zakup − sprzedaz lacznie' },
     (() => {
       const mp = s.month_progress;
@@ -2061,7 +2153,10 @@ function renderRceTab(rc) {
     { lbl: 'Śr. różnica / mies.', val: pln(s.avg_monthly_diff_pln, 2), sub: 'RCE godzinowa − RCEm', cls: (s.avg_monthly_diff_pln || 0) > 0 ? 'c-green' : '' },
     { lbl: 'Suma różnic', val: pln(s.total_diff_pln, 2), sub: (s.n_months || 0) + ' rozliczonych mies.' },
     { lbl: 'Miesiące na plus', val: (s.months_rce_better || 0) + '/' + (s.n_months || 0), sub: fmt(s.pct_rce_better, 0, '%') + ' czasu RCE lepsza' },
-  ];
+    s.neg_kwh_total != null ? { lbl: 'Eksport w godz. z ceną ujemną', val: kwh(s.neg_kwh_total),
+      sub: fmt(s.neg_share_pct_total, 1, '%') + ' eksportu • reguła "ujemna → 0 zł" chroni ' + pln(s.neg_saved_pln_total, 2),
+      cls: (s.neg_share_pct_total || 0) > 5 ? '' : 'c-green' } : null,
+  ].filter(Boolean);
   document.getElementById('rceKpiCards').innerHTML = cards.map(c =>
     '<div class="card ' + (c.cls || '') + '">' +
       '<div class="lbl">' + c.lbl + '</div>' +
@@ -2094,11 +2189,16 @@ function renderRceTab(rc) {
     '<th>Miesiąc</th><th>Eksport (kWh)</th><th>Pokrycie</th>' +
     '<th>Cena RCEm</th><th>Śr. RCE ważona</th>' +
     '<th>Przychód RCEm</th><th>Przychód RCE</th><th>Różnica</th>' +
+    '<th>Godz. ujemne</th>' +
   '</tr></thead>';
   const rows = months.map(m => {
     const diffCol = m.diff_pln == null ? 'var(--muted)' : (m.diff_pln >= 0 ? '#16a34a' : '#dc2626');
     const est = m.rcem_estimated ? ' <span style="font-size:10px;color:var(--muted)">(szac.)</span>' : '';
     const covWarn = m.coverage_pct < 95 ? ' style="color:#dc2626"' : '';
+    const negCell = m.neg_kwh == null ? '—'
+      : (m.neg_kwh > 0
+         ? '<span style="color:#dc2626">' + kwh(m.neg_kwh) + ' (' + fmt(m.neg_share_pct, 1, '%') + ')</span>'
+         : '<span style="color:var(--muted)">0</span>');
     return '<tr>' +
       '<td>' + m.month_label + est + '</td>' +
       '<td>' + kwh(m.matched_kwh) + '</td>' +
@@ -2108,11 +2208,325 @@ function renderRceTab(rc) {
       '<td>' + pln(m.revenue_rcem_pln, 2) + '</td>' +
       '<td>' + pln(m.revenue_rce_pln, 2) + '</td>' +
       '<td style="color:' + diffCol + ';font-weight:600">' + pln(m.diff_pln, 2) + '</td>' +
+      '<td>' + negCell + '</td>' +
     '</tr>';
   }).join('');
   document.getElementById('rceTbl').innerHTML = head + '<tbody>' + rows + '</tbody>';
   document.getElementById('rceFoot').textContent =
     (s.note || '') + ' * = RCEm jeszcze nieopublikowana (szacunek wg ostatniej znanej).';
+
+  _lastRceMonths = months;
+  renderRceHeatmap(months);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   v0.17.0 — nowe wykresy
+   ───────────────────────────────────────────────────────────── */
+
+/* Wachlarz spłaty: historia + prognoza P50 z pasmem P10–P90 */
+function renderFanChart(records, predictions, gross, netInvestment) {
+  const ctx = document.getElementById('fanChart');
+  if (!ctx) return;
+  const histLbls = records.map(r => r.month_label);
+  const histVals = records.map(r => r.cumulative_return);
+  const preds = (predictions || []).filter(p => p.cumulative_return != null);
+  const allLbls = [...histLbls, ...preds.map(p => p.month_label)];
+  const nullsH = preds.map(() => null);
+  const nullsP = histLbls.map(() => null);
+  const bridge = histVals.length ? histVals[histVals.length - 1] : null;
+  const mk = vals => { const a = [...nullsP]; if (a.length) a[a.length-1] = bridge; return [...a, ...vals]; };
+
+  const datasets = [
+    { label: 'Zwrot (historia)', data: [...histVals, ...nullsH], borderColor: '#2563eb', backgroundColor: 'rgba(37,99,235,.06)', fill: true, tension: .3, pointRadius: 0 },
+    { label: 'P50 (sezonowa)', data: mk(preds.map(p => p.cumulative_return)), borderColor: '#2563eb', borderDash: [6,4], fill: false, tension: .3, pointRadius: 0 },
+    { label: 'Szybciej (P10)', data: mk(preds.map(p => p.cumulative_fast)), borderColor: 'rgba(22,163,74,.45)', backgroundColor: 'rgba(37,99,235,.12)', fill: '+1', tension: .3, pointRadius: 0, borderWidth: 1 },
+    { label: 'Wolniej (P90)', data: mk(preds.map(p => p.cumulative_slow)), borderColor: 'rgba(220,38,38,.45)', fill: false, tension: .3, pointRadius: 0, borderWidth: 1 },
+    { label: 'Inwestycja brutto', data: allLbls.map(() => gross), borderColor: '#dc2626', borderDash: [4,4], fill: false, pointRadius: 0 },
+  ];
+  if (netInvestment != null)
+    datasets.push({ label: 'Inwestycja netto', data: allLbls.map(() => netInvestment), borderColor: '#16a34a', borderDash: [4,4], fill: false, pointRadius: 0 });
+
+  if (_fanChart) _fanChart.destroy();
+  _fanChart = new Chart(ctx, {
+    type: 'line',
+    data: { labels: allLbls, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { position: 'top', labels: { boxWidth: 12, font: { size: 11 } } },
+        tooltip: { callbacks: { label: c => c.raw == null ? null : c.dataset.label + ': ' + Number(c.raw).toLocaleString('pl-PL', {maximumFractionDigits: 0}) + ' zl' } },
+      },
+      scales: {
+        x: { ticks: { maxTicksLimit: 24, font: { size: 10 }, maxRotation: 45 } },
+        y: { ticks: { callback: v => (v/1000).toFixed(0) + 'k zl', font: { size: 10 } } },
+      },
+    },
+  });
+}
+
+/* Oszczędności nominalne vs realne (deflator CPI z backendu) */
+function renderCpiRealChart(records) {
+  const ctx = document.getElementById('cpiRealChart');
+  if (!ctx) return;
+  const withSav = records.filter(r => (r.month_savings || 0) > 0);
+  const labels = withSav.map(r => r.month_label);
+  let cumN = 0, cumR = 0;
+  const nominal = withSav.map(r => { cumN += r.month_savings || 0; return Math.round(cumN); });
+  const real    = withSav.map(r => { cumR += (r.month_savings || 0) / (r.cpi_deflator || 1); return Math.round(cumR); });
+  if (_cpiRealChart) _cpiRealChart.destroy();
+  _cpiRealChart = new Chart(ctx, {
+    type: 'line',
+    data: { labels, datasets: [
+      { label: 'Nominalne (zł)', data: nominal, borderColor: '#2563eb', fill: false, tension: .3, pointRadius: 0 },
+      { label: 'Realne (dzisiejsze zł, CPI GUS)', data: real, borderColor: '#b45309', borderDash: [5,3], fill: false, tension: .3, pointRadius: 0 },
+    ]},
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { position: 'top', labels: { boxWidth: 12, font: { size: 11 } } } },
+      scales: {
+        x: { ticks: { maxTicksLimit: 24, font: { size: 9 }, maxRotation: 45 } },
+        y: { ticks: { callback: v => v.toLocaleString('pl-PL') + ' zl', font: { size: 10 } } },
+      },
+    },
+  });
+}
+
+/* Degradacja: kroczący uzysk 12-mies. */
+function renderDegradChart(deg) {
+  const ctx = document.getElementById('degradChart');
+  if (!ctx) return;
+  const badge = document.getElementById('degradBadge');
+  if (!deg || !deg.rolling || deg.rolling.length < 2) {
+    if (badge) badge.textContent = '(za mało danych — potrzeba ≥13 mies. produkcji)';
+    if (_degradChart) { _degradChart.destroy(); _degradChart = null; }
+    return;
+  }
+  if (badge) {
+    const parts = [];
+    if (deg.trend_pct_per_year != null) parts.push('trend ' + fmt(deg.trend_pct_per_year, 1, '%/rok'));
+    if (deg.yoy_delta_pct != null) parts.push('r/r ' + fmt(deg.yoy_delta_pct, 1, '%'));
+    badge.textContent = parts.length ? '(' + parts.join(' • ') + ')' : '';
+  }
+  if (_degradChart) _degradChart.destroy();
+  _degradChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: deg.rolling.map(p => p.ym),
+      datasets: [{ label: 'Uzysk 12-mies. (kWh/kWp)', data: deg.rolling.map(p => p.yield_12m),
+                   borderColor: '#7c3aed', backgroundColor: 'rgba(124,58,237,.07)', fill: true, tension: .3, pointRadius: 2 }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { maxTicksLimit: 18, font: { size: 9 }, maxRotation: 45 } },
+        y: { ticks: { callback: v => v + ' kWh/kWp', font: { size: 10 } } },
+      },
+    },
+  });
+}
+
+/* Waterfall miesięczny: autokonsumpcja → sprzedaż → arbitraż → opłaty stałe → netto */
+function _populateWaterfallSelect(records) {
+  const sel = document.getElementById('waterfallMonth');
+  if (!sel) return;
+  const candidates = records.filter(r => (r.month_savings || 0) > 0).map(r => r.month_key);
+  const prev = sel.value;
+  sel.innerHTML = candidates.slice().reverse().map(k => '<option value="' + k + '">' + k + '</option>').join('');
+  if (prev && candidates.includes(prev)) sel.value = prev;
+}
+
+function redrawWaterfall() {
+  const sel = document.getElementById('waterfallMonth');
+  const ctx = document.getElementById('waterfallChart');
+  if (!sel || !ctx || !sel.value) return;
+  const r = _lastRecords.find(x => x.month_key === sel.value);
+  if (!r) return;
+  const inv = _lastInvoices.find(i => i.month === sel.value);
+  const auto = r.self_savings || 0, sell = r.feedin_revenue || 0, arb = r.battery_arbitrage_savings || 0;
+  const fixed = inv && inv.fixed_total_net != null ? -(inv.fixed_total_net * 1.23) : null; // netto → brutto
+  const steps = [
+    { lbl: 'Autokonsumpcja', v: auto, col: 'rgba(37,99,235,.8)' },
+    { lbl: 'Sprzedaż', v: sell, col: 'rgba(22,163,74,.8)' },
+  ];
+  if (arb > 0) steps.push({ lbl: 'Arbitraż bat.', v: arb, col: 'rgba(234,179,8,.85)' });
+  if (fixed != null) steps.push({ lbl: 'Opłaty stałe', v: fixed, col: 'rgba(220,38,38,.75)' });
+  let run = 0;
+  const bars = steps.map(s => { const seg = [run, run + s.v]; run += s.v; return seg; });
+  steps.push({ lbl: 'Netto', v: run, col: 'rgba(100,116,139,.85)' });
+  bars.push([0, run]);
+  if (_waterfallChart) _waterfallChart.destroy();
+  _waterfallChart = new Chart(ctx, {
+    type: 'bar',
+    data: { labels: steps.map(s => s.lbl),
+            datasets: [{ data: bars, backgroundColor: steps.map(s => s.col), borderWidth: 0, borderSkipped: false }] },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: c => {
+          const s = steps[c.dataIndex];
+          return s.lbl + ': ' + Number(s.v).toLocaleString('pl-PL', {maximumFractionDigits: 0}) + ' zl';
+        } } },
+      },
+      scales: { y: { ticks: { callback: v => v + ' zl', font: { size: 10 } } } },
+    },
+  });
+}
+
+/* Sankey przepływu energii (rok) */
+function _populateSankeySelect(records) {
+  const sel = document.getElementById('sankeyYear');
+  if (!sel) return;
+  const years = [...new Set(records.map(r => r.month_key.slice(0,4)))].sort().reverse();
+  const prev = sel.value;
+  sel.innerHTML = ['wszystko', ...years].map(y => '<option value="' + y + '">' + y + '</option>').join('');
+  if (prev && (years.includes(prev) || prev === 'wszystko')) sel.value = prev;
+}
+
+function redrawSankey() {
+  const ctx = document.getElementById('sankeyChart');
+  const sel = document.getElementById('sankeyYear');
+  if (!ctx || !sel) return;
+  if (typeof Chart === 'undefined' || !Chart.registry.controllers.get('sankey')) {
+    ctx.parentElement.style.display = 'none';   // plugin nie załadowany (offline)
+    return;
+  }
+  const recs = _lastRecords.filter(r => sel.value === 'wszystko' || r.month_key.startsWith(sel.value));
+  const sum = f => Math.round(recs.reduce((a, r) => a + (f(r) || 0), 0));
+  const self = sum(r => r.self_consumed_kwh), exp = sum(r => r.exported_kwh), buy = sum(r => r.purchased_kwh);
+  if (self + exp + buy === 0) return;
+  const flows = [
+    { from: 'Produkcja PV', to: 'Autokonsumpcja', flow: self },
+    { from: 'Produkcja PV', to: 'Eksport do sieci', flow: exp },
+    { from: 'Autokonsumpcja', to: 'Zużycie domu', flow: self },
+    { from: 'Zakup z sieci', to: 'Zużycie domu', flow: buy },
+  ].filter(f => f.flow > 0);
+  if (_sankeyChart) _sankeyChart.destroy();
+  _sankeyChart = new Chart(ctx, {
+    type: 'sankey',
+    data: { datasets: [{
+      data: flows,
+      colorFrom: c => ({'Produkcja PV':'#f59e0b','Autokonsumpcja':'#2563eb','Zakup z sieci':'#94a3b8'}[c.dataset.data[c.dataIndex].from] || '#64748b'),
+      colorTo:   c => ({'Autokonsumpcja':'#2563eb','Eksport do sieci':'#16a34a','Zużycie domu':'#0f766e'}[c.dataset.data[c.dataIndex].to] || '#64748b'),
+      colorMode: 'gradient',
+      labels: {},
+      size: 'max',
+    }]},
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { tooltip: { callbacks: { label: c => {
+        const d = c.dataset.data[c.dataIndex];
+        return d.from + ' → ' + d.to + ': ' + d.flow.toLocaleString('pl-PL') + ' kWh';
+      } } } },
+    },
+  });
+}
+
+/* Heatmapa eksport × cena RCE (CSS grid, bez pluginów) */
+function redrawRceHeatmap() { renderRceHeatmap(_lastRceMonths); }
+
+function renderRceHeatmap(months) {
+  const wrap = document.getElementById('rceHeatmap');
+  if (!wrap) return;
+  const rows = (months || []).filter(m => m.hours_profile);
+  if (!rows.length) { wrap.innerHTML = '<p style="color:var(--muted);font-size:12px">Brak danych godzinowych (pojawią się po następnym odświeżeniu cache).</p>'; return; }
+  const metricEl = document.querySelector('input[name="hmMetric"]:checked');
+  const metric = metricEl ? metricEl.value : 'price';
+
+  let maxKwh = 0, maxP = 0;
+  rows.forEach(m => m.hours_profile.forEach(h => {
+    if (h[0] > maxKwh) maxKwh = h[0];
+    if (h[1] != null && h[1] > maxP) maxP = h[1];
+  }));
+  const cell = 'display:inline-block;width:26px;height:20px;border-radius:2px;margin:1px;font-size:8px;vertical-align:middle';
+  let html = '<div style="white-space:nowrap;font-size:10px"><span style="display:inline-block;width:62px"></span>';
+  for (let h = 0; h < 24; h++) html += '<span style="' + cell + ';text-align:center;color:var(--muted)">' + h + '</span>';
+  html += '</div>';
+  rows.forEach(m => {
+    html += '<div style="white-space:nowrap"><span style="display:inline-block;width:62px;font-size:10px;font-weight:600">' + m.month_label + '</span>';
+    m.hours_profile.forEach((hp, h) => {
+      const [kwhV, priceV, negV] = hp;
+      let bg = 'var(--bg)', title = m.month_label + ' ' + h + ':00 — ';
+      if (kwhV > 0) {
+        if (metric === 'price' && priceV != null) {
+          if (priceV < 0) {
+            bg = 'rgba(220,38,38,.85)';                       // cena ujemna
+          } else {
+            const t = maxP > 0 ? Math.min(priceV / maxP, 1) : 0;
+            bg = 'rgba(37,99,235,' + (0.12 + 0.78 * t).toFixed(2) + ')';
+          }
+        } else if (metric === 'kwh') {
+          const t = maxKwh > 0 ? Math.min(kwhV / maxKwh, 1) : 0;
+          bg = 'rgba(234,140,8,' + (0.10 + 0.85 * t).toFixed(2) + ')';
+        }
+        title += kwhV.toFixed(1) + ' kWh, śr. RCE ' + (priceV != null ? priceV.toFixed(0) + ' zł/MWh' : '—')
+               + (negV > 0 ? ', w tym ' + negV.toFixed(1) + ' kWh po cenie ujemnej (liczone 0 zł)' : '');
+      } else { title += 'brak eksportu'; }
+      html += '<span style="' + cell + ';background:' + bg + '" title="' + title.replace(/"/g,'&quot;') + '"></span>';
+    });
+    html += '</div>';
+  });
+  wrap.innerHTML = html;
+}
+
+/* Depozyt: KPI przedawnienia + wykres saldo/prognoza */
+function renderDepositSection(dep, invoices) {
+  const kpiWrap = document.getElementById('depKpiCards');
+  const note = document.getElementById('depositNote');
+  if (!kpiWrap) return;
+  if (!dep) { kpiWrap.innerHTML = ''; renderDepositChart(invoices); return; }
+
+  const kpiStyle = 'min-width:150px;padding:12px 16px;background:var(--card);border-radius:var(--radius);box-shadow:var(--shadow);flex:1 1 150px';
+  const lbl = t => '<div style="font-size:11px;color:var(--muted);margin-bottom:4px">' + t + '</div>';
+  const val = (v, col) => '<div style="font-size:18px;font-weight:700' + (col ? ';color:' + col : '') + '">' + v + '</div>';
+  const bal = dep.balance_estimate != null ? dep.balance_estimate : dep.balance_model;
+  const expCol = dep.expiring_3m > 0 ? '#e67e22' : '#27ae60';
+  kpiWrap.innerHTML =
+    '<div style="' + kpiStyle + '">' + lbl('Szacowane saldo') + val(pln(bal, 2)) +
+      '<div style="font-size:10px;color:var(--muted)">kotwica: faktura ' + (dep.invoice_latest_month || '—') + '</div></div>' +
+    '<div style="' + kpiStyle + '">' + lbl('Traci ważność za 1 mies.') + val(pln(dep.expiring_1m, 2), dep.expiring_1m > 0 ? '#e67e22' : null) + '</div>' +
+    '<div style="' + kpiStyle + '">' + lbl('Traci ważność za 3 mies.') + val(pln(dep.expiring_3m, 2), expCol) + '</div>' +
+    '<div style="' + kpiStyle + '">' + lbl('Prognoza 12 mies.: zwrot / umorzenie') +
+      val(pln(dep.projected_refund_12m, 0) + ' / ' + pln(dep.projected_forfeit_12m, 0)) +
+      '<div style="font-size:10px;color:var(--muted)">limit zwrotu ' + fmt(dep.refund_cap_pct, 0, '%') + ' zasilenia mies. (12 mies. od przypisania)</div></div>';
+
+  if (note) note.textContent =
+    'Saldo to szacunek: model FIFO z falownika kotwiczony na ostatniej fakturze; Tauron dopisuje depozyt z 1–2-mies. opóźnieniem. '
+    + 'Po 12 mies. od przypisania niewykorzystane środki przepadają poza zwrotem do ' + fmt(dep.refund_cap_pct, 0, '%') + ' wartości energii z danego miesiąca (art. 4 ust. 11 ustawy o OZE).';
+
+  // Wykres: saldo modelowe + fakturowe + prognoza + przedawnienia
+  const ctxEl = document.getElementById('depositChart');
+  if (!ctxEl) return;
+  const hist = dep.months || [], fc = dep.forecast || [];
+  const labels = [...hist.map(m => m.ym), ...fc.map(f => f.ym)];
+  const nullsF = fc.map(() => null);
+  const histBal = [...hist.map(m => m.balance), ...nullsF];
+  const invBal  = [...hist.map(m => m.invoice_balance), ...nullsF];
+  const fcBal   = [...hist.map(() => null), ...fc.map(f => f.balance)];
+  if (hist.length && fcBal.length > hist.length) fcBal[hist.length - 1] = hist[hist.length - 1].balance;
+  const expiry  = [...hist.map(m => (m.expired_refund + m.expired_forfeit) || null),
+                   ...fc.map(f => (f.expired_refund + f.expired_forfeit) || null)];
+  if (_depositChart) _depositChart.destroy();
+  _depositChart = new Chart(ctxEl, {
+    data: { labels, datasets: [
+      { type: 'line', label: 'Saldo (model FIFO)', data: histBal, borderColor: '#3182ce', backgroundColor: 'rgba(49,130,206,.08)', fill: true, tension: .3, pointRadius: 0 },
+      { type: 'line', label: 'Saldo wg faktur', data: invBal, borderColor: '#0f766e', borderDash: [4,3], fill: false, tension: .3, pointRadius: 3, spanGaps: true },
+      { type: 'line', label: 'Prognoza', data: fcBal, borderColor: '#3182ce', borderDash: [6,4], fill: false, tension: .3, pointRadius: 0 },
+      { type: 'bar', label: 'Przedawnienie (zwrot+umorzenie)', data: expiry, backgroundColor: 'rgba(220,38,38,.6)' },
+    ]},
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { position: 'top', labels: { boxWidth: 12, font: { size: 11 } } } },
+      scales: {
+        x: { ticks: { maxTicksLimit: 20, font: { size: 9 }, maxRotation: 45 } },
+        y: { ticks: { callback: v => v + ' zł', font: { size: 10 } } },
+      },
+    },
+  });
 }
 
 /* -- RCEm manual override -- */
@@ -2191,6 +2605,17 @@ async function loadData() {
     renderInvoicesTab(d.invoices || [], d.tariff_drift, d.records, d.layouts_summary);
     if (d.tariff_comparison) renderTariffTab(d.tariff_comparison);
     if (d.rce_comparison) renderRceTab(d.rce_comparison);
+    // v0.17.0
+    _lastRecords = d.records || [];
+    _lastInvoices = d.invoices || [];
+    renderFanChart(d.records, d.predictions, d.summary.gross_investment, d.summary.net_investment);
+    renderCpiRealChart(d.records);
+    renderDegradChart(d.degradation);
+    _populateWaterfallSelect(d.records);
+    redrawWaterfall();
+    _populateSankeySelect(d.records);
+    try { redrawSankey(); } catch (e) { console.warn('sankey:', e); }
+    renderDepositSection(d.deposit, d.invoices || []);
     if (d.version) document.getElementById('appVer').textContent = 'v' + d.version;
   } catch (e) {
     document.getElementById('updated').textContent = 'Blad polaczenia';
@@ -2238,7 +2663,7 @@ function renderInvoicesTab(invoices, tariffDrift, records, layoutsSummary) {
   _renderInvKpiCards(invoices, tariffDrift, records);
   _renderDriftBanner(tariffDrift);
   _renderCoverageGrid(invoices, records);
-  renderDepositChart(invoices);
+  // wykres depozytu rysuje renderDepositSection (fallback: renderDepositChart)
   _renderInvoiceTable(invoices);
   _renderLayoutsPanel(layoutsSummary);
 }

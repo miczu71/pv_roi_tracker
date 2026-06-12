@@ -26,6 +26,12 @@ symulowanej RCE. Współczynnik nie wpływa więc na ZNAK różnicy RCE−RCEm, 
 Zmiana RCEm → RCE godzinowa jest jednokierunkowa (decyzja nieodwracalna); przy RCE
 godzinowej prosument może wypłacić do 30% depozytu w 12 mies. (RCEm: 20%).
 Źródło: lepiej.tauron.pl/zielona-energia/jak-rozliczani-sa-prosumenci-nowelizacja-ustawy-o-oze/
+
+Ceny ujemne: zgodnie z ustawą o OZE (art. 4b, brzmienie od nowelizacji 27.11.2024)
+ujemna RCE jest w rozliczeniu prosumenta zastępowana wartością 0 zł — eksport
+w godzinach ujemnych nie zasila depozytu, ale też nic nie kosztuje. Symulacja
+stosuje tę regułę (p_eff = max(p, 0)) i raportuje skalę zjawiska per miesiąc:
+neg_kwh / neg_share_pct / neg_saved_pln.
 """
 from __future__ import annotations
 
@@ -58,6 +64,10 @@ _MONTHS_PL = ['', 'Sty', 'Lut', 'Mar', 'Kwi', 'Maj', 'Cze',
 # Miesiąc liczymy jako wiarygodny, gdy ≥95% eksportu ma dopasowaną cenę godzinową.
 _MIN_COVERAGE_PCT = 95.0
 
+# Wersja formatu cache: bump unieważnia zamrożone wiersze months (ceny zostają).
+# v2: clamp cen ujemnych do 0 (art. 4b ustawy o OZE) + pola neg_*.
+CACHE_VERSION = 2
+
 
 def _vat_factor(ym: str) -> float:
     return 1.23 if ym >= _MULTIPLIER_FROM else 1.0
@@ -76,6 +86,11 @@ def _load_cache(path: Path) -> dict:
         data = json.loads(path.read_text())
         data.setdefault('prices', {})
         data.setdefault('months', {})
+        if data.get('v') != CACHE_VERSION:
+            # przeliczamy zamrożone miesiące wg nowych reguł; surowe ceny zostają
+            logger.info('rce_hourly: cache v%s → v%d — unieważniam zamrożone miesiące',
+                        data.get('v'), CACHE_VERSION)
+            data['months'] = {}
         return data
     except Exception:
         logger.exception('rce_hourly: nie można wczytać %s — zaczynam od pustego cache', path)
@@ -212,13 +227,31 @@ def compare_month(
     matched_kwh = 0.0
     revenue_rce = 0.0
     weighted_price_sum = 0.0
+    neg_kwh = 0.0
+    neg_saved = 0.0  # o ile reguła "ujemna → 0" podnosi przychód vs surowa RCE
+    # profil dobowy: kWh eksportu i suma kWh×cena (surowa) per godzina 0-23
+    hod_kwh = [0.0] * 24
+    hod_pln = [0.0] * 24
+    hod_neg = [0.0] * 24
     for h, kwh in hours.items():
         p = prices.get(h)
         if p is None:
             continue
         matched_kwh += kwh
-        revenue_rce += kwh * p / 1000.0 * factor
-        weighted_price_sum += kwh * p / 1000.0
+        p_eff = max(p, 0.0)  # art. 4b ustawy o OZE: RCE ujemna → 0 zł
+        if p < 0:
+            neg_kwh += kwh
+            neg_saved += kwh * (-p) / 1000.0 * factor
+        revenue_rce += kwh * p_eff / 1000.0 * factor
+        weighted_price_sum += kwh * p_eff / 1000.0
+        try:
+            hod = int(h[11:13])
+            hod_kwh[hod] += kwh
+            hod_pln[hod] += kwh * p
+            if p < 0:
+                hod_neg[hod] += kwh
+        except (ValueError, IndexError):
+            pass
 
     coverage = round(matched_kwh / total_export_stats * 100, 1)
     if matched_kwh <= 0:
@@ -235,6 +268,16 @@ def compare_month(
         'coverage_pct': coverage,
         'rce_weighted_price_pln_kwh': round(rce_weighted_net * factor, 4),
         'revenue_rce_pln': round(revenue_rce, 2),
+        'neg_kwh': round(neg_kwh, 1),
+        'neg_share_pct': round(neg_kwh / matched_kwh * 100, 1),
+        'neg_saved_pln': round(neg_saved, 2),
+        # heatmapa: per godzina [kWh, śr. cena netto PLN/MWh ważona eksportem, kWh ujemne]
+        'hours_profile': [
+            [round(hod_kwh[i], 1),
+             round(hod_pln[i] / hod_kwh[i], 1) if hod_kwh[i] > 0 else None,
+             round(hod_neg[i], 1)]
+            for i in range(24)
+        ],
         'rcem_price_pln_kwh': rcem_price_gross,
         'rcem_estimated': rcem_estimated,
         'revenue_rcem_pln': None,
@@ -262,6 +305,12 @@ def build_summary(months_out: list) -> dict:
     n_rce_better = sum(1 for d in diffs if d > 0)
     pct_rce_better = round(n_rce_better / n * 100, 1) if n else 0.0
 
+    # Skala cen ujemnych — po wszystkich miesiącach z danymi (nie tylko rozliczonych)
+    with_neg = [m for m in months_out if m.get('neg_kwh') is not None]
+    total_neg_kwh = round(sum(m['neg_kwh'] for m in with_neg), 1)
+    total_matched = sum(m.get('matched_kwh') or 0.0 for m in with_neg)
+    total_neg_saved = round(sum(m.get('neg_saved_pln') or 0.0 for m in with_neg), 2)
+
     if n < 3:
         recommendation = 'BRAK DANYCH'
         reason = f'Za mało rozliczonych miesięcy ({n}) — potrzeba min. 3'
@@ -282,10 +331,14 @@ def build_summary(months_out: list) -> dict:
         'avg_monthly_diff_pln': avg_diff,
         'months_rce_better': n_rce_better,
         'pct_rce_better': pct_rce_better,
+        'neg_kwh_total': total_neg_kwh,
+        'neg_share_pct_total': round(total_neg_kwh / total_matched * 100, 1) if total_matched else 0.0,
+        'neg_saved_pln_total': total_neg_saved,
         'recommendation': recommendation,
         'recommendation_reason': reason,
         'note': ('Symulacja: przychód z tych samych godzinowych kWh eksportu wyceniony '
-                 'ceną RCE (15-min, ważoną profilem) vs ceną RCEm. UWAGA: przejście na '
+                 'ceną RCE (15-min, ważoną profilem) vs ceną RCEm. Godziny z ujemną RCE '
+                 'liczone po 0 zł (art. 4b ustawy o OZE). UWAGA: przejście na '
                  'RCE godzinową (oświadczenie w Strefie Prosumenta) jest NIEODWRACALNE — '
                  'powrót do RCEm nie jest możliwy. Plus RCE: wypłata do 30% depozytu '
                  'w 12 mies. (RCEm: 20%). Współczynnik 1,23 obowiązuje w obu trybach.'),
@@ -346,7 +399,8 @@ def update_and_compare(
             else:
                 cache.setdefault('_volatile', {})[ym] = row
 
-    _save_cache({k: cache[k] for k in ('prices', 'months')}, cache_path)
+    _save_cache({'v': CACHE_VERSION, 'prices': cache['prices'], 'months': cache['months']},
+                cache_path)
 
     months_out = sorted(
         list(cache['months'].values()) + list(cache.get('_volatile', {}).values()),

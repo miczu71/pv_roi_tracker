@@ -16,6 +16,10 @@ SUBSIDY = 28_714.00           # zł — one-time government grant (Mój Prąd / 
 NET_INVESTMENT = GROSS_INVESTMENT - SUBSIDY  # 23_186.00 zł — kept for reference
 SYSTEM_KWP = 6.72
 
+# Wskaźnik emisyjności CO2 dla odbiorców końcowych energii elektrycznej (KOBiZE,
+# dane za 2023, publikacja 2024) — nadpisywalny opcją co2_factor_kg_kwh.
+CO2_FACTOR_KG_KWH = 0.597
+
 
 def _msav(r: MonthlyRecord) -> float:
     return (r.self_consumed_savings_pln or 0.0) + (r.feedin_revenue_pln or 0.0) + (r.battery_arbitrage_savings_pln or 0.0)
@@ -77,6 +81,90 @@ def _walk_payback(
             return cursor
         cursor += relativedelta(months=1)
     return None
+
+
+# ── Degradacja / wydajność znormalizowana ────────────────────────────────────
+
+def degradation_analysis(
+    records: list[MonthlyRecord],
+    system_kwp: float = SYSTEM_KWP,
+    today: Optional[date] = None,
+) -> dict:
+    """Znormalizowana analiza wydajności (kWh/kWp) do wykrywania degradacji/zabrudzenia.
+
+    Zwraca:
+      yearly:            [{year, produced_kwh, yield_kwh_kwp, complete}]
+      rolling:           [{ym, yield_12m}] — krocząca suma 12 mies. / kWp
+      yoy_delta_pct:     produkcja r/r po sparowanych miesiącach (ost. 12 zamkn. mies.
+                         vs te same miesiące rok wcześniej); None gdy <3 par
+      trend_pct_per_year: nachylenie regresji liniowej serii kroczącej, %/rok; None gdy <6 punktów
+    """
+    if today is None:
+        today = date.today()
+    current_ym = (today.year, today.month)
+    complete = sorted(
+        [r for r in records if (r.year, r.month) < current_ym and (r.produced_kwh or 0.0) > 0],
+        key=lambda r: (r.year, r.month),
+    )
+
+    # Suma roczna (rok kompletny = 12 miesięcy z produkcją)
+    by_year: dict[int, list[MonthlyRecord]] = {}
+    for r in complete:
+        by_year.setdefault(r.year, []).append(r)
+    yearly = [{
+        'year': y,
+        'produced_kwh': round(sum(r.produced_kwh for r in recs), 1),
+        'yield_kwh_kwp': round(sum(r.produced_kwh for r in recs) / system_kwp, 1) if system_kwp else None,
+        'complete': len(recs) == 12,
+    } for y, recs in sorted(by_year.items())]
+
+    # Krocząca suma 12 miesięcy
+    rolling = []
+    for i in range(11, len(complete)):
+        window = complete[i - 11:i + 1]
+        first, last = window[0], window[-1]
+        # okno musi być ciągłe (12 kolejnych miesięcy)
+        span = (last.year - first.year) * 12 + (last.month - first.month)
+        if span != 11:
+            continue
+        rolling.append({
+            'ym': f'{last.year}-{last.month:02d}',
+            'yield_12m': round(sum(r.produced_kwh for r in window) / system_kwp, 1) if system_kwp else None,
+        })
+
+    # r/r po sparowanych miesiącach (działa już przy <24 mies. historii)
+    by_ym = {(r.year, r.month): r.produced_kwh for r in complete}
+    recent_sum = prior_sum = 0.0
+    pairs = 0
+    for r in complete[-12:]:
+        prior = by_ym.get((r.year - 1, r.month))
+        if prior:
+            recent_sum += r.produced_kwh
+            prior_sum += prior
+            pairs += 1
+    yoy_delta_pct = (round((recent_sum / prior_sum - 1.0) * 100.0, 2)
+                     if pairs >= 3 and prior_sum > 0 else None)
+
+    # Trend liniowy serii kroczącej (najmniejsze kwadraty), %/rok względem średniej
+    trend_pct_per_year = None
+    pts = [p['yield_12m'] for p in rolling if p['yield_12m'] is not None]
+    if len(pts) >= 6:
+        n = len(pts)
+        mean_x = (n - 1) / 2.0
+        mean_y = sum(pts) / n
+        num = sum((i - mean_x) * (y - mean_y) for i, y in enumerate(pts))
+        den = sum((i - mean_x) ** 2 for i in range(n))
+        if den > 0 and mean_y > 0:
+            slope_per_month = num / den
+            trend_pct_per_year = round(slope_per_month * 12 / mean_y * 100.0, 2)
+
+    return {
+        'yearly': yearly,
+        'rolling': rolling,
+        'yoy_delta_pct': yoy_delta_pct,
+        'trend_pct_per_year': trend_pct_per_year,
+        'pairs_used': pairs,
+    }
 
 
 # ── NPV / IRR helpers ────────────────────────────────────────────────────────
@@ -146,6 +234,11 @@ class RoiResult:
     # CPI provenance (default values allow older callers without breaking)
     inflation_source: str = field(default="flat fallback")
     cumulative_inflation_pct: float = field(default=0.0)
+    # Wskaźniki energetyczne (defaults keep older callers working)
+    self_consumption_rate_pct: Optional[float] = field(default=None)  # Σ autokonsumpcja / Σ produkcja
+    autarky_pct: Optional[float] = field(default=None)                # Σ autokonsumpcja / Σ zużycie
+    co2_avoided_kg: float = field(default=0.0)                        # Σ produkcja × wskaźnik KOBiZE
+    yoy_yield_delta_pct: Optional[float] = field(default=None)        # produkcja r/r (pary miesięcy)
 
 
 # ── Main calculation ─────────────────────────────────────────────────────────
@@ -159,6 +252,7 @@ def calculate(
     discount_rate: float = 0.04,
     inflation: float = 0.05,
     comparison_yield: float = 0.055,
+    co2_factor: float = CO2_FACTOR_KG_KWH,
 ) -> RoiResult:
     if today is None:
         today = date.today()
@@ -209,6 +303,16 @@ def calculate(
     total_produced = sum(r.produced_kwh or 0.0 for r in records)
     total_exported = sum(r.exported_kwh or 0.0 for r in records)
     specific_yield = (total_produced / system_kwp) if system_kwp else 0.0
+
+    # ── Autokonsumpcja / autarkia / CO2 / degradacja ─────────────────────────
+    total_self_consumed = sum(r.self_consumed_kwh or 0.0 for r in records)
+    total_consumed = sum(r.consumed_kwh or 0.0 for r in records)
+    self_consumption_rate = (round(total_self_consumed / total_produced * 100.0, 1)
+                             if total_produced > 0 else None)
+    autarky = (round(total_self_consumed / total_consumed * 100.0, 1)
+               if total_consumed > 0 else None)
+    co2_avoided = round(total_produced * co2_factor, 1)
+    yoy_delta = degradation_analysis(records, system_kwp, today)['yoy_delta_pct']
 
     # ── Commissioning date ───────────────────────────────────────────────────
     commissioning_date: Optional[date] = None
@@ -307,4 +411,8 @@ def calculate(
         counterfactual_delta=counterfactual_delta,
         inflation_source=inflation_src,
         cumulative_inflation_pct=cum_infl_pct,
+        self_consumption_rate_pct=self_consumption_rate,
+        autarky_pct=autarky,
+        co2_avoided_kg=co2_avoided,
+        yoy_yield_delta_pct=yoy_delta,
     )

@@ -1,5 +1,5 @@
 name: PV ROI Tracker
-version: "0.16.1"
+version: "0.17.0"
 slug: pv_roi_tracker
 description: >-
   Tracks the ROI of a residential PV solar system.
@@ -35,6 +35,8 @@ options:
   tariff_offpeak_price: 0.63
   battery_roundtrip_efficiency: 0.92
   monthly_notify: true
+  co2_factor_kg_kwh: 0.597
+  deposit_refund_pct: 0.20
 schema:
   gross_investment: float
   subsidy: float
@@ -53,3 +55,5 @@ schema:
   tariff_offpeak_price: float
   battery_roundtrip_efficiency: float
   monthly_notify: bool
+  co2_factor_kg_kwh: float
+  deposit_refund_pct: float

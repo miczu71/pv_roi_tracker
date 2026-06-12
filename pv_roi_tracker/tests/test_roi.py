@@ -2,7 +2,8 @@
 import pytest
 from datetime import date
 from pv_roi_tracker.models import MonthlyRecord
-from pv_roi_tracker.roi import calculate, GROSS_INVESTMENT, SUBSIDY, SYSTEM_KWP
+from pv_roi_tracker.roi import (calculate, degradation_analysis,
+                                GROSS_INVESTMENT, SUBSIDY, SYSTEM_KWP)
 
 _GROSS = GROSS_INVESTMENT   # 51_900.00
 _SUB   = SUBSIDY            # 28_714.00
@@ -123,3 +124,70 @@ def test_specific_yield():
     records = [month(2023, 5, produced=672.0)]
     r = calculate(records, system_kwp=6.72)
     assert r.specific_yield_lifetime == pytest.approx(100.0)
+
+
+# ── Autokonsumpcja / autarkia / CO2 ──────────────────────────────────────────
+
+def test_self_consumption_rate_and_autarky():
+    rec = MonthlyRecord(year=2025, month=5, produced_kwh=600.0,
+                        consumed_kwh=400.0, self_consumed_kwh=240.0)
+    r = calculate([rec])
+    assert r.self_consumption_rate_pct == pytest.approx(40.0)   # 240/600
+    assert r.autarky_pct == pytest.approx(60.0)                 # 240/400
+
+
+def test_ratios_none_without_data():
+    r = calculate([])
+    assert r.self_consumption_rate_pct is None
+    assert r.autarky_pct is None
+
+
+def test_co2_avoided_uses_factor():
+    records = [month(2023, 5, produced=1000.0)]
+    r = calculate(records, co2_factor=0.6)
+    assert r.co2_avoided_kg == pytest.approx(600.0)
+
+
+# ── Degradacja ────────────────────────────────────────────────────────────────
+
+def _prod(y, m, kwh):
+    return MonthlyRecord(year=y, month=m, produced_kwh=kwh)
+
+
+def test_degradation_yoy_paired_months():
+    # 2025: 100/mies., 2026 (sty–maj): 95/mies. → r/r −5%
+    records = ([_prod(2025, m, 100.0) for m in range(1, 13)]
+               + [_prod(2026, m, 95.0) for m in range(1, 6)])
+    out = degradation_analysis(records, system_kwp=1.0, today=date(2026, 6, 15))
+    assert out['pairs_used'] == 5
+    assert out['yoy_delta_pct'] == pytest.approx(-5.0)
+
+
+def test_degradation_yoy_none_with_few_pairs():
+    records = [_prod(2026, m, 100.0) for m in range(1, 6)]
+    out = degradation_analysis(records, system_kwp=1.0, today=date(2026, 6, 15))
+    assert out['yoy_delta_pct'] is None
+
+
+def test_degradation_rolling_and_trend():
+    # 24 mies. liniowego spadku 120→97 kWh/mies. → ujemny trend
+    records = []
+    y, m = 2024, 7
+    for i in range(24):
+        records.append(_prod(y, m, 120.0 - i))
+        m += 1
+        if m > 12:
+            y, m = y + 1, 1
+    out = degradation_analysis(records, system_kwp=1.0, today=date(2026, 7, 15))
+    assert len(out['rolling']) == 13   # okna 12-mies. od mies. 12 do 24
+    assert out['trend_pct_per_year'] is not None
+    assert out['trend_pct_per_year'] < -5.0
+
+
+def test_degradation_yearly_complete_flag():
+    records = [_prod(2025, m, 100.0) for m in range(1, 13)] + [_prod(2026, 1, 100.0)]
+    out = degradation_analysis(records, system_kwp=2.0, today=date(2026, 3, 1))
+    yearly = {r['year']: r for r in out['yearly']}
+    assert yearly[2025]['complete'] is True
+    assert yearly[2025]['yield_kwh_kwp'] == pytest.approx(600.0)
+    assert yearly[2026]['complete'] is False

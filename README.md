@@ -1,6 +1,6 @@
 # PV ROI Tracker — Home Assistant Add-on
 
-Tracks the return-on-investment of a residential photovoltaic system (Polish net-billing market), publishes 24 sensors to Home Assistant via MQTT discovery and serves an ingress dashboard with ROI history, payback forecast, Tauron invoice reconciliation, tariff analysis and an RCEm-vs-hourly-RCE settlement simulation.
+Tracks the return-on-investment of a residential photovoltaic system (Polish net-billing market), publishes 30 sensors to Home Assistant via MQTT discovery and serves an ingress dashboard with ROI history, payback forecast (fan chart with P10–P90 band), Tauron invoice reconciliation, prosumer-deposit expiry tracking, tariff analysis, degradation tracking, and an RCEm-vs-hourly-RCE settlement simulation with an export×price heatmap.
 
 ## What it does
 
@@ -16,11 +16,15 @@ Tracks the return-on-investment of a residential photovoltaic system (Polish net
 
 ## Web UI (ingress)
 
-Tabs: **Historia miesięczna** · **Prognoza spłaty** · **Podsumowanie roczne** (z kolumnami r/r) · **Wykresy** · **Faktury** (upload PDF Tauron, trening parsera, depozyt prosumencki) · **Analiza taryf** (G12w vs dynamiczna) · **RCE vs RCEm** (symulacja rozliczenia godzinowego). Nagłówek pokazuje wersję add-onu.
+Tabs: **Historia miesięczna** · **Prognoza spłaty** (wachlarz spłaty P10–P90) · **Podsumowanie roczne** (z kolumnami r/r) · **Wykresy** (m.in. waterfall miesięczny, Sankey przepływu energii, oszczędności nominalne vs realne CPI, trend degradacji kWh/kWp) · **Faktury** (upload PDF Tauron, trening parsera, depozyt prosumencki z prognozą przedawnienia) · **Analiza taryf** (G12w vs dynamiczna) · **RCE vs RCEm** (symulacja rozliczenia godzinowego + heatmapa eksport × cena). Nagłówek pokazuje wersję add-onu.
 
 ### RCE vs RCEm
 
-Simulates what feed-in revenue would have been under hourly RCE settlement instead of monthly RCEm: hourly export energy (HA long-term statistics) × 15-min RCE prices. Today's prices come from the `rce_pse` HA integration (`prices` attribute); historic months are fetched once from the official PSE REST API (`api.raporty.pse.pl/api/rce-pln`) and cached in `/data/rce_hourly.json`. Settled months are frozen. Gross ×1.23 VAT applies from 2025-02 (same rule as RCEm). Produces a ROZWAŻ RCE / ZOSTAŃ PRZY RCEm / NEUTRALNA recommendation after ≥3 settled months.
+Simulates what feed-in revenue would have been under hourly RCE settlement instead of monthly RCEm: hourly export energy (HA long-term statistics) × 15-min RCE prices. Today's prices come from the `rce_pse` HA integration (`prices` attribute); historic months are fetched once from the official PSE REST API (`api.raporty.pse.pl/api/rce-pln`) and cached in `/data/rce_hourly.json`. Settled months are frozen. Gross ×1.23 VAT applies from 2025-02 (same rule as RCEm). **Negative RCE prices are replaced with 0 zł** in the simulation (art. 4b ustawy o OZE — the statutory default for prosumers); per-month columns show export volume in negative-price hours and how much the zero-floor rule protects. A 24h×month heatmap shows when you export vs when prices are high or negative. Produces a ROZWAŻ RCE / ZOSTAŃ PRZY RCEm / NEUTRALNA recommendation after ≥3 settled months.
+
+### Depozyt prosumencki (12-month expiry)
+
+A pure FIFO ledger (`deposit.py`) models the prosumer deposit: monthly accruals (= feed-in revenue), consumption (from invoices, or inverter estimate), the statutory **12-month expiry** of each month's accrual, and the refund cap on unused funds (`deposit_refund_pct`: 20% under RCEm, 30% under hourly RCE). The Faktury tab shows the estimated balance (anchored to the latest invoice), value expiring in 1/3 months, and a 12-month refund/forfeit forecast; two sensors expose the balance and the next-month expiry for automations.
 
 ## ROI formula
 
@@ -67,6 +71,12 @@ All sensors appear under one device **PV ROI Tracker** in HA Settings → Device
 | `pv_roi_tracker_irr_pct` | PV IRR | % | |
 | `pv_roi_tracker_vs_bond_delta` | PV vs Bond Delta | PLN | vs `comparison_yield_rate` |
 | `pv_roi_tracker_cumulative_inflation` | PV Cumulative Inflation | % | GUS CPI |
+| `pv_roi_tracker_self_consumption_rate` | PV Self-Consumption Rate | % | Σ self-consumed / Σ produced |
+| `pv_roi_tracker_autarky` | PV Autarky | % | Σ self-consumed / Σ consumed |
+| `pv_roi_tracker_co2_avoided` | PV CO2 Avoided | kg | Σ produced × `co2_factor_kg_kwh` (KOBiZE) |
+| `pv_roi_tracker_yoy_yield_delta` | PV YoY Yield Delta | % | production year-over-year, paired months |
+| `pv_roi_tracker_deposit_balance_est` | PV Deposit Balance Est | PLN | FIFO model anchored to latest invoice |
+| `pv_roi_tracker_deposit_expiring_30d` | PV Deposit Expiring 30d | PLN | deposit value hitting 12-month expiry next month |
 | `pv_roi_tracker_health` | PV ROI Tracker Health | — | `ok`/`degraded`/`error`; JSON attributes per job + `solcast_available` |
 
 ## Live HA sensor mapping (current month)
@@ -118,6 +128,8 @@ Add `https://github.com/miczu71/pv_roi_tracker` in **Settings → Add-ons → Ad
 | `tariff_offpeak_price` | `0.63` | G12w off-peak rate (PLN/kWh, gross) |
 | `battery_roundtrip_efficiency` | `0.92` | Battery round-trip efficiency for arbitrage savings |
 | `monthly_notify` | `true` | Push a Polish month-close summary via `notify.family` |
+| `co2_factor_kg_kwh` | `0.597` | Grid CO₂ emission factor for the avoided-emissions sensor (KOBiZE, end-user electricity) |
+| `deposit_refund_pct` | `0.20` | Refund cap on expired deposit: `0.20` under RCEm, `0.30` under hourly RCE |
 
 ## Data files
 

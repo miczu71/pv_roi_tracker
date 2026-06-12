@@ -44,6 +44,8 @@ MQTT_PASSWORD      = os.environ.get('MQTT_PASSWORD', '')
 DISCOUNT_RATE      = float(os.environ.get('DISCOUNT_RATE_REAL', '0.04'))
 INFLATION_RATE     = float(os.environ.get('INFLATION_RATE', '0.05'))
 COMPARISON_YIELD   = float(os.environ.get('COMPARISON_YIELD_RATE', '0.055'))
+CO2_FACTOR         = float(os.environ.get('CO2_FACTOR_KG_KWH', '0.597'))
+DEPOSIT_REFUND_PCT = float(os.environ.get('DEPOSIT_REFUND_PCT', '0.20'))
 
 
 def _notify_ha(title: str, message: str) -> None:
@@ -290,7 +292,8 @@ def main() -> None:
                                    system_kwp=SYSTEM_KWP,
                                    discount_rate=DISCOUNT_RATE,
                                    inflation=INFLATION_RATE,
-                                   comparison_yield=COMPARISON_YIELD)
+                                   comparison_yield=COMPARISON_YIELD,
+                                   co2_factor=CO2_FACTOR)
             _now = date.today()
             month_closed = any(r.year == _now.year and r.month == _now.month for r in historic)
             current_month_savings = (
@@ -298,13 +301,33 @@ def main() -> None:
                 if current else None
             )
             scrape_status = _rcem_scrape_status(_now)
+
+            # --- Depozyt prosumencki: ledger FIFO z przedawnieniem ---
+            deposit_result = None
+            try:
+                from . import deposit as _deposit
+                deposit_result = _deposit.calculate(
+                    all_records,
+                    invoice_store.load(INVOICE_PATH),
+                    refund_cap=DEPOSIT_REFUND_PCT,
+                )
+                _record_job('deposit', True)
+            except Exception:
+                logger.exception('Deposit ledger failed — continuing')
+                _record_job('deposit', False, 'ledger depozytu nie powiódł się')
+
             pub.publish_roi(result,
                             current_month_savings=current_month_savings,
                             rcem_scrape_status=scrape_status,
                             projected_month_kwh=current.projected_month_kwh if current else None,
-                            projected_month_savings=current.projected_month_savings_pln if current else None)
+                            projected_month_savings=current.projected_month_savings_pln if current else None,
+                            deposit_balance=(deposit_result.balance_estimate
+                                             if deposit_result and deposit_result.balance_estimate is not None
+                                             else (deposit_result.balance_model if deposit_result else None)),
+                            deposit_expiring_30d=deposit_result.expiring_1m if deposit_result else None)
             _web.update_state(result, all_records, rcem_price, month_closed=month_closed,
                               rcem_scrape_status=scrape_status)
+            _web.update_deposit(deposit_result)
 
             # --- Tariff comparison tab ---
             try:
