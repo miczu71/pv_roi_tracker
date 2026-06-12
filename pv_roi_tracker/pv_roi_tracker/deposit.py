@@ -40,7 +40,10 @@ from .models import MonthlyRecord
 REFUND_CAP_DEFAULT = 0.20   # RCEm; 0.30 przy rozliczeniu godzinowym RCE
 EXPIRY_MONTHS = 12
 DEFAULT_POSTING_LAG = 2     # mies. między eksportem a dopisaniem depozytu (Tauron)
-_MIN_LAG_SAMPLES = 6        # min. par implied↔accrued do detekcji lagu
+_MIN_LAG_SAMPLES = 4        # min. par implied↔accrued do detekcji lagu
+_LAG_WINDOW = 6             # detekcja na ostatnich parach — liczy się bieżący rytm
+                            # księgowania, nie historia (stare miesiące z nasyconym
+                            # depozytem i zbiorczymi księgowaniami zaśmiecają średnią)
 
 
 @dataclass
@@ -215,7 +218,8 @@ def calculate(
     best_err: Optional[float] = None
     for lag in (1, 2, 3):
         errs = [abs(v - accrued_by_ym[_ym_shift(mk, -lag)])
-                for mk, v in implied.items() if _ym_shift(mk, -lag) in accrued_by_ym]
+                for mk, v in sorted(implied.items())
+                if _ym_shift(mk, -lag) in accrued_by_ym][-_LAG_WINDOW:]
         if len(errs) >= _MIN_LAG_SAMPLES:
             err = mean(errs)
             if best_err is None or err < best_err:

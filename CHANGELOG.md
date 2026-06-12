@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.18.1] — 2026-06-12
+
+### Fixed
+
+- **Detekcja lagu księgowania na oknie ostatnich 6 par** — globalna średnia błędu obejmowała miesiące 2023–24 z nasyconym depozytem i zbiorczymi księgowaniami, przez co wybierała lag 3. Bieżący rytm Taurona to lag 1 (trzy ostatnie dopasowania implied↔accrued **co do grosza**). Detekcja używa teraz ostatnich `_LAG_WINDOW = 6` par (min. 4; przy mniejszej liczbie — fallback 2 mies.). Efekt na danych referencyjnych: lag 3→1, estymat salda 238 zł → 89 zł (tylko realnie niezaksięgowane miesiące).
+
+---
+
 ## [0.18.0] — 2026-06-12
 
 ### Fixed
