@@ -874,13 +874,18 @@ main { max-width: 1600px; margin: 0 auto; padding: 18px 16px; }
 /* -- Charts -- */
 .charts  { display: grid; grid-template-columns: 3fr 2fr; gap: 12px; margin-bottom: 12px; }
 .charts2 { display: grid; grid-template-columns: 1fr; gap: 12px; margin-bottom: 18px; }
+.grid2   { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 @media (max-width: 900px) { .charts { grid-template-columns: 1fr; } }
+@media (max-width: 700px) { .grid2  { grid-template-columns: 1fr; } }
 .chart-wrap    { background: var(--card); border-radius: var(--radius); padding: 16px; box-shadow: var(--shadow); height: 280px; position: relative; }
 .chart-wrap.sm { height: 200px; }
 .chart-wrap h3 { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 8px; }
 
 /* -- Tabs -- */
-.tabs { display: flex; gap: 3px; }
+.tabs { display: flex; gap: 3px; flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch;
+        scrollbar-width: none; }
+.tabs::-webkit-scrollbar { display: none; }
+.tab-btn { flex-shrink: 0; }
 .tab-btn {
   padding: 8px 18px; border: none; cursor: pointer; font-size: 12px; font-weight: 600;
   border-radius: var(--radius) var(--radius) 0 0;
@@ -974,10 +979,39 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
 .rcem-badge.error    { background: #fee2e2; color: #991b1b; }
 
 /* -- Train modal source highlighting -- */
+.train-grid { display: grid; grid-template-columns: 55% 43%; gap: 16px; align-items: start; }
+.train-pane { height: 460px; overflow-y: auto; }
+@media (max-width: 700px) {
+  .train-grid { grid-template-columns: 1fr; }
+  .train-pane { height: 40vh; }
+}
 .tx-span { border-radius: 2px; cursor: pointer; transition: outline 0.08s; }
 .tx-span:hover, .tx-active { outline: 2px solid #2b6cb0 !important; position: relative; z-index: 1; }
 .tf-found { border-left: 3px solid transparent; transition: background 0.1s; }
 .tf-active { background: #ebf8ff !important; }
+
+/* -- Mobile (RWD) -- */
+@media (max-width: 640px) {
+  main { padding: 10px 8px; }
+  header { padding: 10px 12px; gap: 10px; }
+  header h1 { font-size: 15px; }
+  #updated { display: none; }
+  .cards { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin-bottom: 12px; }
+  .card { padding: 10px 12px; }
+  .card .val { font-size: 18px; }
+  .chart-wrap { height: 240px; padding: 12px 10px; }
+  .chart-wrap.sm { height: 180px; }
+  .tab-btn { padding: 7px 12px; font-size: 11px; }
+  .tbl-wrap { max-height: 440px; }
+  /* pierwsza kolumna tabel przyklejona przy przewijaniu poziomym */
+  .tbl-wrap tbody td:first-child, .tbl-wrap thead th:first-child {
+    position: sticky; left: 0; z-index: 1; background: var(--card);
+  }
+  .tbl-wrap thead th:first-child { z-index: 3; background: #f7fafc; }
+  .tbl-wrap tbody tr.cur td:first-child { background: #eff6ff; }
+  .tbl-wrap tbody tr.pb  td:first-child { background: #f0fdf4; }
+  .tbl-wrap tbody tr.yr  td:first-child { background: #f7fafc; }
+}
 
 </style>
 </head>
@@ -1107,7 +1141,7 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
             </div>
           </div>
           <div class="charts2">
-            <div class="chart-wrap" id="prodRankWrap" style="height:720px">
+            <div class="chart-wrap" id="prodRankWrap">
               <h3>Produkcja miesięczna — ranking (najlepsza → najgorsza)</h3>
               <canvas id="prodRankChart"></canvas>
             </div>
@@ -1135,7 +1169,7 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
           <h3>Koszt miesięczny G12w vs Dynamiczna</h3>
           <canvas id="tariffCompChart"></canvas>
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
+        <div class="grid2" style="margin-bottom:16px">
           <div class="chart-wrap" style="height:220px">
             <h3>Skumulowane oszczędności (PLN)</h3>
             <canvas id="tariffCumChart"></canvas>
@@ -1145,7 +1179,7 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
             <canvas id="tariffSeasonChart"></canvas>
           </div>
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
+        <div class="grid2" style="margin-bottom:16px">
           <div class="chart-wrap" style="height:200px">
             <h3>Rozkład różnic miesięcznych (PLN)</h3>
             <canvas id="tariffHistChart"></canvas>
@@ -1236,6 +1270,13 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
             <canvas id="depositChart"></canvas>
           </div>
           <div id="depositNote" style="font-size:11px;color:var(--muted)"></div>
+        </div>
+        <!-- Deposit reconciliation: invoices vs inverter model -->
+        <div style="margin-bottom:16px">
+          <h4 style="margin:0 0 8px;font-size:13px;font-weight:600">Depozyt — faktury vs falownik (rekonsyliacja zasileń)</h4>
+          <div id="reconKpiCards" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:10px"></div>
+          <div id="reconTableWrap" class="tbl-wrap" style="max-height:380px"></div>
+          <div id="reconNote" style="font-size:11px;color:var(--muted);margin-top:6px"></div>
         </div>
         <!-- Invoice table (click to expand) -->
         <div style="margin-bottom:16px">
@@ -1772,33 +1813,60 @@ function renderYearCompChart(records) {
 }
 
 /* -- Production ranking chart (best to worst months) -- */
-function renderProdRankChart(records) {
-  const PL_M = ['Sty','Lut','Mar','Kwi','Maj','Cze','Lip','Sie','Wrz','Paź','Lis','Gru'];
-  const seasonColor = [
-    'rgba(100,116,139,0.70)', // Sty
-    'rgba(100,116,139,0.70)', // Lut
-    'rgba(37,99,235,0.65)',   // Mar
-    'rgba(37,99,235,0.75)',   // Kwi
-    'rgba(234,179,8,0.80)',   // Maj
-    'rgba(234,88,12,0.85)',   // Cze
-    'rgba(234,88,12,0.85)',   // Lip
-    'rgba(234,179,8,0.80)',   // Sie
-    'rgba(37,99,235,0.70)',   // Wrz
-    'rgba(37,99,235,0.60)',   // Paź
-    'rgba(100,116,139,0.65)', // Lis
-    'rgba(100,116,139,0.60)', // Gru
-  ];
+const _prodRankPlugin = {
+  id: 'prodRankExtras',
+  afterDatasetsDraw(chart) {
+    const ctx = chart.ctx, area = chart.chartArea;
+    const values = chart.data.datasets[0].data;
+    const meta = chart.getDatasetMeta(0);
+    ctx.save();
+    ctx.font = '10px system-ui, sans-serif';
+    // wartości kWh na końcach słupków
+    ctx.fillStyle = '#475569';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+    meta.data.forEach((bar, i) => {
+      ctx.fillText(Number(values[i]).toLocaleString('pl-PL', {maximumFractionDigits: 0}) + ' kWh',
+                   Math.min(bar.x, area.right) + 4, bar.y);
+    });
+    // linia średniej
+    const avg = chart.options._avgValue;
+    if (avg != null && chart.scales.x) {
+      const x = chart.scales.x.getPixelForValue(avg);
+      if (x > area.left && x < area.right) {
+        ctx.strokeStyle = 'rgba(220,38,38,0.65)';
+        ctx.setLineDash([4, 3]);
+        ctx.beginPath(); ctx.moveTo(x, area.top); ctx.lineTo(x, area.bottom); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = 'rgba(220,38,38,0.9)';
+        ctx.textAlign = 'center';
+        ctx.fillText('śr. ' + Math.round(avg).toLocaleString('pl-PL') + ' kWh', x, area.bottom - 10);
+      }
+    }
+    ctx.restore();
+  },
+};
 
+function renderProdRankChart(records) {
   const ranked = records
     .filter(r => r.produced_kwh != null && !r.is_current)
     .sort((a, b) => b.produced_kwh - a.produced_kwh);
+  if (!ranked.length) return;
 
-  const labels = ranked.map(r => r.month_label);
+  const years = [...new Set(ranked.map(r => r.month_label.slice(0, 4)))].sort();
+  const YEAR_COLORS = ['rgba(100,116,139,0.80)', 'rgba(37,99,235,0.80)', 'rgba(22,163,74,0.80)',
+                       'rgba(234,88,12,0.85)', 'rgba(147,51,234,0.80)', 'rgba(202,138,4,0.85)'];
+  const colorOfYear = y => YEAR_COLORS[years.indexOf(y) % YEAR_COLORS.length];
+  const MEDALS = ['\u{1F947}', '\u{1F948}', '\u{1F949}'];
+
+  const labels = ranked.map((r, i) => (i < 3 ? MEDALS[i] + ' ' : '') + r.month_label);
   const values = ranked.map(r => Math.round(r.produced_kwh * 10) / 10);
-  const colors = ranked.map(r => {
-    const mi = PL_M.indexOf(r.month_label.slice(5));
-    return mi >= 0 ? seasonColor[mi] : 'rgba(37,99,235,0.75)';
-  });
+  const colors = ranked.map(r => colorOfYear(r.month_label.slice(0, 4)));
+  const avg = values.reduce((s, v) => s + v, 0) / values.length;
+
+  // wysokość dopasowana do liczby miesięcy (22 px na słupek + legenda/osie)
+  const wrap = document.getElementById('prodRankWrap');
+  if (wrap) wrap.style.height = Math.max(260, ranked.length * 22 + 110) + 'px';
 
   const ctx = document.getElementById('prodRankChart').getContext('2d');
   if (_prodRankChart) _prodRankChart.destroy();
@@ -1811,15 +1879,30 @@ function renderProdRankChart(records) {
     options: {
       indexAxis: 'y',
       responsive: true, maintainAspectRatio: false,
+      layout: { padding: { right: 64 } },
+      _avgValue: avg,
       plugins: {
-        legend: { display: false },
-        tooltip: { callbacks: { label: c => 'Produkcja: ' + Number(c.raw).toLocaleString('pl-PL', {maximumFractionDigits: 0}) + ' kWh' } },
+        legend: {
+          display: true, position: 'top', onClick: () => {},
+          labels: {
+            boxWidth: 12, font: { size: 10 },
+            generateLabels: () => years.map(y => ({
+              text: y, fillStyle: colorOfYear(y), strokeStyle: colorOfYear(y), lineWidth: 0,
+            })),
+          },
+        },
+        tooltip: { callbacks: {
+          label: c => 'Produkcja: ' + Number(c.raw).toLocaleString('pl-PL', {maximumFractionDigits: 0}) + ' kWh',
+          afterLabel: c => '#' + (c.dataIndex + 1) + ' z ' + values.length + ' • ' +
+            (Number(c.raw) >= avg ? 'powyżej' : 'poniżej') + ' średniej (' + Math.round(avg) + ' kWh)',
+        } },
       },
       scales: {
         x: { beginAtZero: true, ticks: { callback: v => v.toLocaleString('pl-PL', {maximumFractionDigits: 0}) + ' kWh', font: { size: 10 } } },
-        y: { ticks: { font: { size: 10 } } },
+        y: { ticks: { font: { size: 10 }, autoSkip: false } },
       },
     },
+    plugins: [_prodRankPlugin],
   });
 }
 
@@ -2484,9 +2567,13 @@ function renderDepositSection(dep, invoices) {
   const val = (v, col) => '<div style="font-size:18px;font-weight:700' + (col ? ';color:' + col : '') + '">' + v + '</div>';
   const bal = dep.balance_estimate != null ? dep.balance_estimate : dep.balance_model;
   const expCol = dep.expiring_3m > 0 ? '#e67e22' : '#27ae60';
+  const balSub = dep.balance_estimate != null
+    ? 'po fakturze ' + (dep.invoice_latest_month || '—') + ': ' + pln(dep.anchor_balance || 0, 2) +
+      ' + niezaksięgowane: ' + pln(dep.unposted_accrual || 0, 2)
+    : 'model FIFO (brak faktur)';
   kpiWrap.innerHTML =
-    '<div style="' + kpiStyle + '">' + lbl('Szacowane saldo') + val(pln(bal, 2)) +
-      '<div style="font-size:10px;color:var(--muted)">kotwica: faktura ' + (dep.invoice_latest_month || '—') + '</div></div>' +
+    '<div style="' + kpiStyle + '">' + lbl('Stan bieżący (estymat)') + val(pln(bal, 2)) +
+      '<div style="font-size:10px;color:var(--muted)">' + balSub + '</div></div>' +
     '<div style="' + kpiStyle + '">' + lbl('Traci ważność za 1 mies.') + val(pln(dep.expiring_1m, 2), dep.expiring_1m > 0 ? '#e67e22' : null) + '</div>' +
     '<div style="' + kpiStyle + '">' + lbl('Traci ważność za 3 mies.') + val(pln(dep.expiring_3m, 2), expCol) + '</div>' +
     '<div style="' + kpiStyle + '">' + lbl('Prognoza 12 mies.: zwrot / umorzenie') +
@@ -2494,8 +2581,11 @@ function renderDepositSection(dep, invoices) {
       '<div style="font-size:10px;color:var(--muted)">limit zwrotu ' + fmt(dep.refund_cap_pct, 0, '%') + ' zasilenia mies. (12 mies. od przypisania)</div></div>';
 
   if (note) note.textContent =
-    'Saldo to szacunek: model FIFO z falownika kotwiczony na ostatniej fakturze; Tauron dopisuje depozyt z 1–2-mies. opóźnieniem. '
+    'Stan bieżący = saldo po ostatniej fakturze (previous − rozliczone) + zasilenia z falownika za miesiące, których Tauron jeszcze nie zaksięgował '
+    + '(lag ~' + (dep.posting_lag_months || 2) + ' mies.). '
     + 'Po 12 mies. od przypisania niewykorzystane środki przepadają poza zwrotem do ' + fmt(dep.refund_cap_pct, 0, '%') + ' wartości energii z danego miesiąca (art. 4 ust. 11 ustawy o OZE).';
+
+  renderReconSection(dep);
 
   // Wykres: saldo modelowe + fakturowe + prognoza + przedawnienia
   const ctxEl = document.getElementById('depositChart');
@@ -2527,6 +2617,58 @@ function renderDepositSection(dep, invoices) {
       },
     },
   });
+}
+
+/* Depozyt: rekonsyliacja zasileń — faktury (Tauron) vs falownik (model) */
+function renderReconSection(dep) {
+  const kpiWrap = document.getElementById('reconKpiCards');
+  const tblWrap = document.getElementById('reconTableWrap');
+  const note = document.getElementById('reconNote');
+  if (!kpiWrap || !tblWrap) return;
+  const rec = dep && dep.reconciliation;
+  if (!rec || !rec.rows || !rec.rows.length) {
+    kpiWrap.innerHTML = ''; tblWrap.innerHTML = '';
+    if (note) note.textContent = 'Brak danych do rekonsyliacji — wgraj faktury z saldem depozytu.';
+    return;
+  }
+
+  const kpiStyle = 'min-width:150px;padding:12px 16px;background:var(--card);border-radius:var(--radius);box-shadow:var(--shadow);flex:1 1 150px';
+  const lbl = t => '<div style="font-size:11px;color:var(--muted);margin-bottom:4px">' + t + '</div>';
+  const val = (v, col) => '<div style="font-size:18px;font-weight:700' + (col ? ';color:' + col : '') + '">' + v + '</div>';
+  const tot = rec.totals || {};
+  const diffCol = (tot.diff || 0) > 0 ? '#e67e22' : '#27ae60';
+  kpiWrap.innerHTML =
+    '<div style="' + kpiStyle + '">' + lbl('Σ z falownika (model)') + val(pln(tot.model, 2)) + '</div>' +
+    '<div style="' + kpiStyle + '">' + lbl('Σ z faktur (Tauron)') + val(pln(tot.tauron, 2)) + '</div>' +
+    '<div style="' + kpiStyle + '">' + lbl('Różnica skumulowana') +
+      val(pln(tot.diff, 2) + (tot.diff_pct != null ? ' (' + (tot.diff_pct > 0 ? '+' : '') + tot.diff_pct.toFixed(1) + '%)' : ''), diffCol) + '</div>' +
+    '<div style="' + kpiStyle + '">' + lbl('Lag księgowania Taurona') + val('~' + (dep.posting_lag_months || 2) + ' mies.') + '</div>';
+
+  const fmtD = (v, signed) => v == null ? '—'
+    : (signed && v > 0 ? '+' : '') + v.toLocaleString('pl-PL', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' zł';
+  let html = '<table><thead><tr>' +
+    '<th>Mies. eksportu</th>' +
+    '<th title="Zasilenie wyliczone z falownika: eksport × RCEm (×1,23 od 2025-02)">Falownik (model)</th>' +
+    '<th title="Zasilenie implikowane z łańcucha faktur, przesunięte o lag księgowania">Faktury (Tauron)</th>' +
+    '<th>Różnica</th><th>Różnica %</th>' +
+    '</tr></thead><tbody>';
+  [...rec.rows].reverse().forEach(r => {
+    const pctStyle = (r.diff_pct != null && Math.abs(r.diff_pct) > 10) ? 'color:#e67e22;font-weight:700' : '';
+    html += '<tr><td>' + r.ym + '</td>' +
+      '<td>' + fmtD(r.model_accrued) + '</td>' +
+      '<td>' + (r.tauron_implied == null ? '<span style="color:var(--muted)">jeszcze niezaksięgowane</span>' : fmtD(r.tauron_implied)) + '</td>' +
+      '<td>' + fmtD(r.diff, true) + '</td>' +
+      '<td style="' + pctStyle + '">' + (r.diff_pct == null ? '—' : (r.diff_pct > 0 ? '+' : '') + r.diff_pct.toFixed(1) + '%') + '</td></tr>';
+  });
+  html += '</tbody><tfoot><tr style="font-weight:700;border-top:2px solid var(--border)">' +
+    '<td>Σ</td><td>' + fmtD(tot.model) + '</td><td>' + fmtD(tot.tauron) + '</td>' +
+    '<td>' + fmtD(tot.diff, true) + '</td>' +
+    '<td>' + (tot.diff_pct != null ? (tot.diff_pct > 0 ? '+' : '') + tot.diff_pct.toFixed(1) + '%' : '—') + '</td></tr></tfoot></table>';
+  tblWrap.innerHTML = html;
+
+  if (note) note.textContent =
+    'Wartość z faktur to zasilenie zrekonstruowane z łańcucha sald (previous − saldo po poprzedniej fakturze), dopasowane do miesiąca eksportu '
+    + 'przez przesunięcie o wykryty lag księgowania. Wartości surowe — bez kalibracji; różnica % pokazuje, o ile model z falownika odbiega od rozliczeń Taurona.';
 }
 
 /* -- RCEm manual override -- */
@@ -2987,17 +3129,17 @@ function _ensureTrainModal() {
   overlay.id = 'trainOverlay';
   overlay.style.cssText = 'display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1000;overflow-y:auto;padding:16px';
   overlay.innerHTML =
-    '<div style="background:var(--card);border-radius:8px;max-width:1100px;margin:0 auto;padding:20px;position:relative">' +
+    '<div style="background:var(--card);border-radius:8px;width:min(1100px, 96vw);margin:0 auto;padding:20px;position:relative">' +
       '<button onclick="closeTrainModal()" style="position:absolute;top:10px;right:12px;font-size:18px;background:none;border:none;cursor:pointer;color:var(--muted)">✕</button>' +
       '<h3 style="margin:0 0 12px;font-size:14px">Trenuj parser — skoryguj dane i naucz nowy układ</h3>' +
-      '<div style="display:grid;grid-template-columns:55% 43%;gap:16px;align-items:start">' +
+      '<div class="train-grid">' +
         '<div style="display:flex;flex-direction:column;gap:6px">' +
           '<div style="font-size:11px;font-weight:600;color:var(--muted)">Surowy tekst PDF <span style="font-weight:400">(najechaj na pole, aby podświetlić)</span></div>' +
-          '<pre id="trainRawText" style="font-size:10px;white-space:pre-wrap;word-break:break-all;background:var(--bg);padding:10px;border-radius:4px;height:460px;overflow-y:auto;margin:0;line-height:1.5"></pre>' +
+          '<pre id="trainRawText" class="train-pane" style="font-size:10px;white-space:pre-wrap;word-break:break-all;background:var(--bg);padding:10px;border-radius:4px;margin:0;line-height:1.5"></pre>' +
         '</div>' +
         '<div style="display:flex;flex-direction:column;gap:4px">' +
           '<div style="font-size:11px;font-weight:600;color:var(--muted);margin-bottom:2px">Pola faktury <span style="font-weight:400">● znalezione &nbsp; ○ brakuje</span></div>' +
-          '<div id="trainFieldsWrap" style="overflow-y:auto;height:460px;padding-right:4px"></div>' +
+          '<div id="trainFieldsWrap" class="train-pane" style="padding-right:4px"></div>' +
         '</div>' +
       '</div>' +
       '<div style="margin-top:12px;display:flex;gap:10px;align-items:center">' +

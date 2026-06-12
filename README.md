@@ -1,6 +1,6 @@
 # PV ROI Tracker — Home Assistant Add-on
 
-Tracks the return-on-investment of a residential photovoltaic system (Polish net-billing market), publishes 30 sensors to Home Assistant via MQTT discovery and serves an ingress dashboard with ROI history, payback forecast (fan chart with P10–P90 band), Tauron invoice reconciliation, prosumer-deposit expiry tracking, tariff analysis, degradation tracking, and an RCEm-vs-hourly-RCE settlement simulation with an export×price heatmap.
+Tracks the return-on-investment of a residential photovoltaic system (Polish net-billing market), publishes 30 sensors to Home Assistant via MQTT discovery and serves a mobile-friendly ingress dashboard with ROI history, payback forecast (fan chart with P10–P90 band), Tauron invoice reconciliation, prosumer-deposit tracking with an invoices-vs-inverter reconciliation table, tariff analysis, degradation tracking, and an RCEm-vs-hourly-RCE settlement simulation with an export×price heatmap.
 
 ## What it does
 
@@ -16,7 +16,7 @@ Tracks the return-on-investment of a residential photovoltaic system (Polish net
 
 ## Web UI (ingress)
 
-Tabs: **Historia miesięczna** · **Prognoza spłaty** (wachlarz spłaty P10–P90) · **Podsumowanie roczne** (z kolumnami r/r) · **Wykresy** (m.in. waterfall miesięczny, Sankey przepływu energii, oszczędności nominalne vs realne CPI, trend degradacji kWh/kWp) · **Faktury** (upload PDF Tauron, trening parsera, depozyt prosumencki z prognozą przedawnienia) · **Analiza taryf** (G12w vs dynamiczna) · **RCE vs RCEm** (symulacja rozliczenia godzinowego + heatmapa eksport × cena). Nagłówek pokazuje wersję add-onu.
+Tabs: **Historia miesięczna** · **Prognoza spłaty** (wachlarz spłaty P10–P90) · **Podsumowanie roczne** (z kolumnami r/r) · **Wykresy** (m.in. waterfall miesięczny, Sankey przepływu energii, oszczędności nominalne vs realne CPI, trend degradacji kWh/kWp, ranking produkcji miesięcznej z kolorem per rok i medalami top 3) · **Faktury** (upload PDF Tauron, trening parsera, depozyt prosumencki z prognozą przedawnienia, rekonsyliacja faktury vs falownik) · **Analiza taryf** (G12w vs dynamiczna) · **RCE vs RCEm** (symulacja rozliczenia godzinowego + heatmapa eksport × cena). Nagłówek pokazuje wersję add-onu. The layout is responsive — tabs scroll horizontally and tables keep a sticky first column on phones.
 
 ### RCE vs RCEm
 
@@ -24,7 +24,9 @@ Simulates what feed-in revenue would have been under hourly RCE settlement inste
 
 ### Depozyt prosumencki (12-month expiry)
 
-A pure FIFO ledger (`deposit.py`) models the prosumer deposit: monthly accruals (= feed-in revenue), consumption (from invoices, or inverter estimate), the statutory **12-month expiry** of each month's accrual, and the refund cap on unused funds (`deposit_refund_pct`: 20% under RCEm, 30% under hourly RCE). The Faktury tab shows the estimated balance (anchored to the latest invoice), value expiring in 1/3 months, and a 12-month refund/forfeit forecast; two sensors expose the balance and the next-month expiry for automations.
+A pure FIFO ledger (`deposit.py`) models the prosumer deposit: monthly accruals (= feed-in revenue), consumption (from invoices, or inverter estimate), the statutory **12-month expiry** of each month's accrual, and the refund cap on unused funds (`deposit_refund_pct`: 20% under RCEm, 30% under hourly RCE). The current-balance estimate anchors on the **post-invoice balance** of the latest invoice (`previous − used` — Tauron typically consumes the whole deposit on each invoice) plus inverter-computed accruals for export months the utility has not posted yet (posting lag auto-detected from the invoice chain, 1–3 months, default 2).
+
+The Faktury tab additionally shows a **reconciliation table — invoices vs inverter**: implied utility accruals reconstructed from the invoice balance chain (`implied(M) = previous(M) − post-invoice balance(M−1)`), shifted by the detected posting lag and compared month-by-month with the model (export × RCEm ×1.23), with the difference in PLN and % — raw values, no calibration. KPI cards show both totals, the cumulative difference and the detected lag; two sensors expose the balance and the next-month expiry for automations.
 
 ## ROI formula
 
@@ -75,7 +77,7 @@ All sensors appear under one device **PV ROI Tracker** in HA Settings → Device
 | `pv_roi_tracker_autarky` | PV Autarky | % | Σ self-consumed / Σ consumed |
 | `pv_roi_tracker_co2_avoided` | PV CO2 Avoided | kg | Σ produced × `co2_factor_kg_kwh` (KOBiZE) |
 | `pv_roi_tracker_yoy_yield_delta` | PV YoY Yield Delta | % | production year-over-year, paired months |
-| `pv_roi_tracker_deposit_balance_est` | PV Deposit Balance Est | PLN | FIFO model anchored to latest invoice |
+| `pv_roi_tracker_deposit_balance_est` | PV Deposit Balance Est | PLN | post-invoice balance + unposted inverter accruals |
 | `pv_roi_tracker_deposit_expiring_30d` | PV Deposit Expiring 30d | PLN | deposit value hitting 12-month expiry next month |
 | `pv_roi_tracker_health` | PV ROI Tracker Health | — | `ok`/`degraded`/`error`; JSON attributes per job + `solcast_available` |
 

@@ -74,16 +74,65 @@ def test_invoice_consumption_overrides_inverter_estimate():
 def test_balance_estimate_anchored_to_latest_invoice():
     records = [
         _rec(2025, 1, feedin=100.0),
-        _rec(2025, 2, feedin=50.0),                       # po fakturze: +50
-        _rec(2025, 3, purchased=10.0, buy_price=1.0),      # po fakturze: −10
+        _rec(2025, 2, feedin=50.0),
+        _rec(2025, 3, purchased=10.0, buy_price=1.0),
     ]
     invoices = {'2025-01': {'deposit_used_pln': 0.0, 'deposit_previous_pln': 200.0}}
     out = calculate(records, invoices, today=date(2025, 4, 1))
-    # kotwica 200 + 50 − 10 = 240 (model widzi tylko 140)
-    assert out.balance_estimate == pytest.approx(240.0)
+    # kotwica = previous − used = 200; lag domyślny 2 → niezaksięgowane od 2024-12,
+    # czyli wszystkie zasilenia modelu (100 + 50 + 0) = 150
+    assert out.anchor_balance == pytest.approx(200.0)
+    assert out.unposted_accrual == pytest.approx(150.0)
+    assert out.balance_estimate == pytest.approx(350.0)
     assert out.balance_model == pytest.approx(140.0)
     # struktura wiekowa przeskalowana do szacunku
-    assert sum(l['remaining'] for l in out.lots) == pytest.approx(240.0, abs=0.1)
+    assert sum(l['remaining'] for l in out.lots) == pytest.approx(350.0, abs=0.1)
+
+
+def test_anchor_is_balance_after_invoice_when_fully_consumed():
+    # Tauron konsumuje cały depozyt co miesiąc: previous == used → saldo po fakturze 0;
+    # estymat = wyłącznie niezaksięgowane zasilenia z falownika (bez skalowania)
+    records = [_rec(2025, m, feedin=100.0) for m in range(1, 5)]
+    invoices = {'2025-03': {'deposit_previous_pln': 95.0, 'deposit_used_pln': 95.0}}
+    out = calculate(records, invoices, today=date(2025, 5, 1))
+    assert out.anchor_balance == pytest.approx(0.0)
+    # lag domyślny 2 → niezaksięgowane: 2025-02, 03, 04
+    assert out.unposted_accrual == pytest.approx(300.0)
+    assert out.balance_estimate == pytest.approx(300.0)
+
+
+def test_posting_lag_detection_from_invoice_chain():
+    # accrued(M) rosnące o 10; faktury: previous(M) = accrued(M−2), w całości konsumowane
+    feedins = {m: 90.0 + 10 * m for m in range(1, 13)}     # 100..210
+    records = [_rec(2024, m, feedin=feedins[m]) for m in range(1, 13)]
+    invoices = {
+        f'2024-{m:02d}': {'deposit_previous_pln': feedins[m - 2],
+                          'deposit_used_pln': feedins[m - 2]}
+        for m in range(3, 13)
+    }
+    out = calculate(records, invoices, today=date(2025, 1, 15))
+    assert out.posting_lag_months == 2
+    # saldo po fakturze 2024-12 = 0; niezaksięgowane: eksport 2024-11 (200) + 2024-12 (210)
+    assert out.anchor_balance == pytest.approx(0.0)
+    assert out.balance_estimate == pytest.approx(410.0)
+    # rekonsyliacja 1:1 (bez kalibracji): eksport 2024-01..10 dopasowany idealnie
+    tot = out.reconciliation['totals']
+    assert tot['model'] == pytest.approx(sum(feedins[m] for m in range(1, 11)))
+    assert tot['tauron'] == pytest.approx(tot['model'])
+    assert tot['diff_pct'] == pytest.approx(0.0)
+    row = next(r for r in out.reconciliation['rows'] if r['ym'] == '2024-05')
+    assert row['tauron_implied'] == pytest.approx(feedins[5])
+    assert row['diff'] == pytest.approx(0.0)
+
+
+def test_no_invoices_keeps_model_only():
+    records = [_rec(2025, 1, feedin=100.0), _rec(2025, 2, feedin=50.0)]
+    out = calculate(records, {}, today=date(2025, 3, 1))
+    assert out.balance_estimate is None
+    assert out.anchor_balance is None
+    assert out.posting_lag_months == 2
+    assert out.reconciliation['totals']['tauron'] == pytest.approx(0.0)
+    assert all(r['tauron_implied'] is None for r in out.reconciliation['rows'])
 
 
 def test_forecast_reports_upcoming_expiry():

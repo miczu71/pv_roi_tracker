@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.18.0] — 2026-06-12
+
+### Fixed
+
+- **Kotwica salda depozytu** — `balance_estimate` startował od `deposit_previous` z ostatniej faktury, ignorując że ta kwota została rozliczona (`deposit_used`) na tej samej fakturze. U Taurona `previous == used` praktycznie co miesiąc (depozyt konsumowany w całości), więc sensor `PV Deposit Balance Est` zaniżał stan. Nowa kotwica: **saldo po fakturze** (`max(0, previous − used)`) + zasilenia z falownika za miesiące eksportu jeszcze niezaksięgowane przez Taurona (wykrywany lag księgowania, domyślnie 2 mies.), łącznie z bieżącym częściowym miesiącem. Konsumpcja szacunkowa nie jest już odejmowana od estymatu — następuje dopiero przy fakturze.
+
+### Added
+
+- **Rekonsyliacja depozytu: faktury vs falownik** (zakładka Faktury) — odpowiedź na pytanie „czy symulacja z falownika pokrywa się z fakturami?". Z łańcucha sald fakturowych rekonstruowane są zasilenia implikowane (`implied(M) = previous(M) − saldo po fakturze M−1`), automatycznie dopasowywany jest lag księgowania (1–3 mies., ≥6 próbek; fallback 2), a tabela zestawia miesiąc-po-miesiącu wartość z falownika (eksport × RCEm ×1,23) z wartością z faktur — **bez kalibracji**, z różnicą w zł i % (wiersze >10% wyróżnione). KPI: Σ model, Σ Tauron, różnica skumulowana (zł i %), wykryty lag. Nowe pola w `/api/data` → `deposit`: `posting_lag_months`, `anchor_balance`, `unposted_accrual`, `reconciliation{rows, totals}`. KPI „Stan bieżący (estymat)" pokazuje rozbicie: saldo po fakturze + niezaksięgowane.
+- **Przebudowany wykres „Produkcja miesięczna — ranking"** (Wykresy) — kolor słupka = rok (legenda u góry), wartości kWh zawsze widoczne na końcach słupków, medale 🥇🥈🥉 dla top 3, przerywana linia średniej z podpisem, wysokość dopasowana do liczby miesięcy (22 px/słupek), tooltip z pozycją w rankingu („#5 z 36 • powyżej średniej").
+- **RWD — pełne wsparcie ekranów mobilnych** — zakładki przewijane poziomo (bez zawijania, ukryty scrollbar); gridy 2-kolumnowe (Analiza taryf) składane do 1 kolumny <700 px; breakpoint <640 px: ciaśniejsze karty/nagłówek/wykresy; tabele z przyklejoną pierwszą kolumną przy przewijaniu poziomym; modal treningu parsera mieści się w 96vw, panele 40vh na telefonie.
+
+### Entities / services touched
+
+| Encja | Zmiana |
+|---|---|
+| `sensor.pv_roi_tracker_deposit_balance_est` | POPRAWKA wartości — kotwica = saldo po fakturze + niezaksięgowane zasilenia (skok wartości po aktualizacji jest zamierzony) |
+
+> Pozostałe sensory bez zmian. Nazwy/unique_id bez zmian — żadnych zmian w automatyzacjach nie trzeba.
+
+---
+
 ## [0.17.0] — 2026-06-12
 
 ### Fixed
