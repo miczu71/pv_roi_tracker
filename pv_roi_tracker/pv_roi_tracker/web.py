@@ -267,6 +267,7 @@ def api_data():
             'self_sufficiency_pct': self_suff,
             'purchased_kwh_peak': r.purchased_kwh_peak,
             'purchased_kwh_offpeak': r.purchased_kwh_offpeak,
+            'tariff': r.tariff,
             'feedin_corrections': corrections.get(month_key) or None,
             'cpi_deflator': round(_cpi.get_deflator((r.year, r.month), today_ym_t, _infl), 4),
         })
@@ -1909,6 +1910,7 @@ function renderProdRankChart(records) {
 
 /* -- History table -- */
 function renderHistTable(records, monthClosed, invoices) {
+  const g11BadgeSpan = (title) => ' <span class="badge badge-g11" title="' + title + '">G11</span>';
   // Build lookup: YYYY-MM → invoice data
   const invByMonth = {};
   (invoices || []).forEach(inv => { invByMonth[inv.month] = inv; });
@@ -1954,14 +1956,14 @@ function renderHistTable(records, monthClosed, invoices) {
     t.consumed    += r.consumed_kwh          || 0;
     if (r.purchased_kwh_peak != null) { t.peak_kw += r.purchased_kwh_peak; t.peak_kw_count++; }
     if (r.purchased_kwh_offpeak != null) t.offpeak_kw += r.purchased_kwh_offpeak;
-    if (r.purchased_kwh_peak != null && r.purchased_kwh_offpeak == null) t.g11_count++;
+    if (r.tariff === 'G11') t.g11_count++;
   }
 
   function yearSummaryRow(y) {
     const t = yearTotals[y];
     const suff = t.consumed > 0 ? pct(t.sc / t.consumed * 100) : '—';
     const g11YearBadge = t.g11_count > 0
-      ? ' <span class="badge badge-g11" title="Zawiera ' + t.g11_count + ' mies. taryfy G11 (całodobowa) — suma szczyt obejmuje pełne zużycie tych miesięcy">G11</span>'
+      ? g11BadgeSpan('Zawiera ' + t.g11_count + ' mies. taryfy G11 (całodobowa) — suma szczyt obejmuje pełne zużycie tych miesięcy')
       : '';
     const pkCell  = t.peak_kw_count > 0 ? kwh(t.peak_kw) + g11YearBadge : '—';
     const opkCell = t.peak_kw_count > 0 ? kwh(t.offpeak_kw) : '—';
@@ -2019,9 +2021,8 @@ function renderHistTable(records, monthClosed, invoices) {
 
     const autarkia = r.self_sufficiency_pct != null ? pct(r.self_sufficiency_pct) : '—';
 
-    const isG11   = r.purchased_kwh_peak != null && r.purchased_kwh_offpeak == null;
-    const g11Badge = isG11
-      ? ' <span class="badge badge-g11" title="Taryfa G11 (całodobowa) — pełne zużycie ujęte w kolumnie szczyt; brak strefy poza szczytem">G11</span>'
+    const g11Badge = r.tariff === 'G11'
+      ? g11BadgeSpan('Taryfa G11 (całodobowa) — pełne zużycie ujęte w kolumnie szczyt; brak strefy poza szczytem')
       : '';
     const pkCell  = r.purchased_kwh_peak    != null ? kwh(r.purchased_kwh_peak) + g11Badge : '—';
     const opkCell = r.purchased_kwh_offpeak != null ? kwh(r.purchased_kwh_offpeak)         : '—';

@@ -285,6 +285,9 @@ class InvoiceData:
     # Fixed monthly net sum (for comparison with energy_simulation.yaml)
     fixed_total_net: Optional[float] = field(default=None)
 
+    # Tariff zone: 'G11' for single-zone (całodobowa), 'G12W' for two-zone (szczyt/pozaszczyt)
+    tariff: Optional[str] = field(default=None)
+
     # Invoice identity
     invoice_number: Optional[str] = field(default=None)
     billing_period_raw: Optional[str] = field(default=None)
@@ -768,6 +771,7 @@ def _parse_text(text: str) -> InvoiceData:
         amount_due_pln=amount_due_pln,
         avg_price_pln_kwh=avg_price_pln_kwh,
         fixed_total_net=fixed_total_net,
+        tariff='G11' if _is_single_zone else 'G12W',
         invoice_number=invoice_number,
         billing_period_raw=billing_period_raw,
         warnings=unique_warnings,

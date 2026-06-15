@@ -108,6 +108,7 @@ _RECONCILE_FIELDS = (
     'purchased_kwh', 'purchased_kwh_peak', 'purchased_kwh_offpeak',
     'exported_kwh', 'buy_price_pln_kwh', 'self_consumed_kwh',
     'self_consumed_savings_pln', 'feedin_revenue_pln', 'purchase_cost_pln',
+    'tariff',
 )
 
 
@@ -165,6 +166,7 @@ def reconcile_invoice(
         m['purchased_kwh']         = data.imported_kwh
         m['purchased_kwh_peak']    = data.imported_kwh_peak
         m['purchased_kwh_offpeak'] = data.imported_kwh_offpeak
+        m['tariff']                = data.tariff
         m['exported_kwh']          = data.exported_kwh
         if data.blended_gross is not None:
             m['buy_price_pln_kwh'] = data.blended_gross
