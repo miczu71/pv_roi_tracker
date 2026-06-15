@@ -930,6 +930,7 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
 .badge-updated { background: #e0f2fe; color: #0369a1; }
 .badge-live    { background: #fef3c7; color: var(--yellow); }
 .badge-snap    { background: #dcfce7; color: var(--green); }
+.badge-g11     { background: #ede9fe; color: #6d28d9; }
 
 /* -- Projected hint -- */
 .proj-hint { font-size: 10px; color: var(--muted); font-weight: 400; }
@@ -1939,7 +1940,7 @@ function renderHistTable(records, monthClosed, invoices) {
   const yearTotals = {};
   for (const r of records) {
     const y = r.month_label.substring(0, 4);
-    if (!yearTotals[y]) yearTotals[y] = {produced: 0, exported: 0, sc: 0, self_sav: 0, feedin: 0, arbitrage: 0, total: 0, purchase: 0, net_grid: 0, consumed: 0, peak_kw: 0, offpeak_kw: 0, peak_kw_count: 0};
+    if (!yearTotals[y]) yearTotals[y] = {produced: 0, exported: 0, sc: 0, self_sav: 0, feedin: 0, arbitrage: 0, total: 0, purchase: 0, net_grid: 0, consumed: 0, peak_kw: 0, offpeak_kw: 0, peak_kw_count: 0, g11_count: 0};
     const t = yearTotals[y];
     t.produced    += r.produced_kwh          || 0;
     t.exported    += r.exported_kwh          || 0;
@@ -1953,12 +1954,16 @@ function renderHistTable(records, monthClosed, invoices) {
     t.consumed    += r.consumed_kwh          || 0;
     if (r.purchased_kwh_peak != null) { t.peak_kw += r.purchased_kwh_peak; t.peak_kw_count++; }
     if (r.purchased_kwh_offpeak != null) t.offpeak_kw += r.purchased_kwh_offpeak;
+    if (r.purchased_kwh_peak != null && r.purchased_kwh_offpeak == null) t.g11_count++;
   }
 
   function yearSummaryRow(y) {
     const t = yearTotals[y];
     const suff = t.consumed > 0 ? pct(t.sc / t.consumed * 100) : '—';
-    const pkCell  = t.peak_kw_count > 0 ? kwh(t.peak_kw)    : '—';
+    const g11YearBadge = t.g11_count > 0
+      ? ' <span class="badge badge-g11" title="Zawiera ' + t.g11_count + ' mies. taryfy G11 (całodobowa) — suma szczyt obejmuje pełne zużycie tych miesięcy">G11</span>'
+      : '';
+    const pkCell  = t.peak_kw_count > 0 ? kwh(t.peak_kw) + g11YearBadge : '—';
     const opkCell = t.peak_kw_count > 0 ? kwh(t.offpeak_kw) : '—';
     return '<tr class="yr">' +
       '<td>' + y + ' – suma</td>' +
@@ -2014,8 +2019,12 @@ function renderHistTable(records, monthClosed, invoices) {
 
     const autarkia = r.self_sufficiency_pct != null ? pct(r.self_sufficiency_pct) : '—';
 
-    const pkCell  = r.purchased_kwh_peak    != null ? kwh(r.purchased_kwh_peak)    : '—';
-    const opkCell = r.purchased_kwh_offpeak != null ? kwh(r.purchased_kwh_offpeak) : '—';
+    const isG11   = r.purchased_kwh_peak != null && r.purchased_kwh_offpeak == null;
+    const g11Badge = isG11
+      ? ' <span class="badge badge-g11" title="Taryfa G11 (całodobowa) — pełne zużycie ujęte w kolumnie szczyt; brak strefy poza szczytem">G11</span>'
+      : '';
+    const pkCell  = r.purchased_kwh_peak    != null ? kwh(r.purchased_kwh_peak) + g11Badge : '—';
+    const opkCell = r.purchased_kwh_offpeak != null ? kwh(r.purchased_kwh_offpeak)         : '—';
 
     html += '<tr' + cls + '>' +
       '<td>' + monthLabel + '</td>' +
