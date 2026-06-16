@@ -69,7 +69,40 @@ _SENSORS: list[_Sensor] = [
     # Depozyt prosumencki (v0.17.0)
     _Sensor('deposit_balance_est',        'PV Deposit Balance Est',         None,                          'PLN',  'monetary', 'measurement',      'mdi:piggy-bank'),
     _Sensor('deposit_expiring_30d',       'PV Deposit Expiring 30d',        None,                          'PLN',  'monetary', 'measurement',      'mdi:timer-sand'),
+    # Latest-invoice rates (v0.20.0) — single source of truth for energy_simulation.yaml
+    # and Analiza taryf; values come from invoice_rates (see _render_value), not RoiResult.
+    _Sensor('rate_energy_peak_net',       'PV Rate Energy Peak',            None,                          'PLN/kWh', 'monetary', 'measurement', 'mdi:flash'),
+    _Sensor('rate_energy_offpeak_net',    'PV Rate Energy Offpeak',         None,                          'PLN/kWh', 'monetary', 'measurement', 'mdi:flash-outline'),
+    _Sensor('rate_dist_var_peak_net',     'PV Rate Dist Var Peak',          None,                          'PLN/kWh', 'monetary', 'measurement', 'mdi:transmission-tower'),
+    _Sensor('rate_dist_var_offpeak_net',  'PV Rate Dist Var Offpeak',       None,                          'PLN/kWh', 'monetary', 'measurement', 'mdi:transmission-tower'),
+    _Sensor('rate_jakosciowa_net',        'PV Rate Jakościowa',             None,                          'PLN/kWh', 'monetary', 'measurement', 'mdi:certificate'),
+    _Sensor('rate_oze_net',               'PV Rate OZE',                    None,                          'PLN/kWh', 'monetary', 'measurement', 'mdi:leaf'),
+    _Sensor('rate_kogeneracja_net',       'PV Rate Kogeneracja',            None,                          'PLN/kWh', 'monetary', 'measurement', 'mdi:factory'),
+    _Sensor('fixed_mocowa_net',           'PV Fixed Mocowa',                None,                          'PLN',     'monetary', 'measurement', 'mdi:gauge'),
+    _Sensor('fixed_abonament_net',        'PV Fixed Abonament',             None,                          'PLN',     'monetary', 'measurement', 'mdi:receipt'),
+    _Sensor('fixed_stalysieciowy_net',    'PV Fixed Stały Sieciowy',        None,                          'PLN',     'monetary', 'measurement', 'mdi:transmission-tower'),
+    _Sensor('fixed_total_net',            'PV Fixed Total Net',             None,                          'PLN',     'monetary', 'measurement', 'mdi:sigma'),
+    _Sensor('rate_peak_gross',            'PV Rate Peak Gross',             None,                          'PLN/kWh', 'monetary', 'measurement', 'mdi:cash'),
+    _Sensor('rate_offpeak_gross',         'PV Rate Offpeak Gross',          None,                          'PLN/kWh', 'monetary', 'measurement', 'mdi:cash-outline'),
 ]
+
+# slug → key in the invoice_rates dict (web.latest_invoice_rates()) for the
+# sensors above. Kept separate from _SENSORS so the table stays scannable.
+_INVOICE_RATE_SENSORS: dict[str, str] = {
+    'rate_energy_peak_net':      'energy_peak_net',
+    'rate_energy_offpeak_net':   'energy_offpeak_net',
+    'rate_dist_var_peak_net':    'dist_var_peak_net',
+    'rate_dist_var_offpeak_net': 'dist_var_offpeak_net',
+    'rate_jakosciowa_net':       'dist_jakosciowa_net',
+    'rate_oze_net':              'dist_oze_net',
+    'rate_kogeneracja_net':      'dist_kogeneracja_net',
+    'fixed_mocowa_net':          'fixed_mocowa_net',
+    'fixed_abonament_net':       'fixed_abonament_net',
+    'fixed_stalysieciowy_net':   'fixed_stalysieciowy_net',
+    'fixed_total_net':           'fixed_total_net',
+    'rate_peak_gross':           'peak_gross',
+    'rate_offpeak_gross':        'offpeak_gross',
+}
 
 # Sensors removed in previous versions — clear their retained discovery messages on connect.
 _TOMBSTONED_SLUGS: list[str] = ['rcem_current_month']
@@ -92,7 +125,8 @@ def _render_value(sensor: _Sensor, result: RoiResult,
                   projected_month_kwh: Optional[float] = None,
                   projected_month_savings: Optional[float] = None,
                   deposit_balance: Optional[float] = None,
-                  deposit_expiring_30d: Optional[float] = None) -> str:
+                  deposit_expiring_30d: Optional[float] = None,
+                  invoice_rates: Optional[dict] = None) -> str:
     if sensor.slug == 'net_investment':
         v: Any = round(result.gross_investment - result.subsidy, 2)
     elif sensor.slug == 'current_month_savings':
@@ -107,6 +141,8 @@ def _render_value(sensor: _Sensor, result: RoiResult,
         v = deposit_balance
     elif sensor.slug == 'deposit_expiring_30d':
         v = deposit_expiring_30d
+    elif sensor.slug in _INVOICE_RATE_SENSORS:
+        v = (invoice_rates or {}).get(_INVOICE_RATE_SENSORS[sensor.slug])
     else:
         v = getattr(result, sensor.attr) if sensor.attr else None
 
@@ -203,14 +239,15 @@ class MQTTPublisher:
                     projected_month_kwh: Optional[float] = None,
                     projected_month_savings: Optional[float] = None,
                     deposit_balance: Optional[float] = None,
-                    deposit_expiring_30d: Optional[float] = None) -> None:
+                    deposit_expiring_30d: Optional[float] = None,
+                    invoice_rates: Optional[dict] = None) -> None:
         if not self._connected:
             logger.debug('MQTT not connected — skipping publish')
             return
         for s in _SENSORS:
             payload = _render_value(s, result, current_month_savings, rcem_scrape_status,
                                     projected_month_kwh, projected_month_savings,
-                                    deposit_balance, deposit_expiring_30d)
+                                    deposit_balance, deposit_expiring_30d, invoice_rates)
             self._client.publish(_state_topic(s.slug), payload, retain=True)
         logger.debug('Published ROI state to MQTT (roi_pct=%.2f%%)', result.roi_pct)
 

@@ -1,6 +1,6 @@
 # PV ROI Tracker — Home Assistant Add-on
 
-Tracks the return-on-investment of a residential photovoltaic system (Polish net-billing market), publishes 30 sensors to Home Assistant via MQTT discovery and serves a mobile-friendly ingress dashboard with ROI history, payback forecast (fan chart with P10–P90 band), Tauron invoice reconciliation, prosumer-deposit tracking with an invoices-vs-inverter reconciliation table, tariff analysis, degradation tracking, and an RCEm-vs-hourly-RCE settlement simulation with an export×price heatmap.
+Tracks the return-on-investment of a residential photovoltaic system (Polish net-billing market), publishes 42 sensors to Home Assistant via MQTT discovery (including the latest-invoice rate sensors consumed by `energy_simulation.yaml`) and serves a mobile-friendly ingress dashboard with ROI history, payback forecast (fan chart with P10–P90 band), Tauron invoice reconciliation, prosumer-deposit tracking with an invoices-vs-inverter reconciliation table, tariff analysis, degradation tracking, and an RCEm-vs-hourly-RCE settlement simulation with an export×price heatmap.
 
 ## What it does
 
@@ -23,6 +23,14 @@ Tabs: **Historia miesięczna** · **Prognoza spłaty** (wachlarz spłaty P10–P
 Parser wyciąga z faktury Tauron nie tylko stawki jednostkowe, ale też realne kwoty złotówkowe ("wartość netto") dla energii, składnika zmiennego sieciowego, jakościowej, OZE i kogeneracji, oraz opłatę przejściową/handlową i akcyzę, jeśli występują. Zakładka Faktury pokazuje **rozbicie kosztów** — tabelę sum per składnik (z % udziału) i wykres słupkowy skumulowany per miesiąc, z przełącznikiem **Netto / Brutto**. Faktury przetworzone przed wprowadzeniem realnych kwot (lub bez odnalezionej kolumny wartości) dolicza się ze stawki × kWh — UI sygnalizuje to notatką.
 
 Oryginalne wgrane pliki PDF są **trwale przechowywane** w `/data/pdfs/`, obok `invoices.json`. Każdy wiersz faktury ma przyciski **PDF** (podgląd oryginału) i **↻ PDF** (przeliczenie faktury ponownie z zapisanego pliku — przydatne po poprawce parsera, bez ponownego wgrywania).
+
+### Najnowsza faktura jako jedno źródło prawdy
+
+Stawki z **chronologicznie najnowszej** przetworzonej faktury (wybór po miesiącu rozliczeniowym, nie po kolejności wgrywania — wgranie starszej faktury po nowszej nigdy nie nadpisuje aktualnie używanych stawek) są publikowane jako 13 sensorów MQTT (`sensor.pv_roi_rate_*` / `sensor.pv_roi_fixed_*`, patrz tabela sensorów) i czytane:
+- przez **pakiet `energy_simulation.yaml`** w głównej konfiguracji HA — opłaty OZE/jakościowa/kogeneracyjna i suma opłat stałych w symulacji taryfy dynamicznej oraz G12w/G12 są odczytywane z tych sensorów, z fallbackiem identycznym jak poprzednie stałe wartości, gdy żadna faktura nie jest jeszcze wgrana;
+- przez zakładkę **Analiza taryf** — referencyjne stawki G12w na wykresie 7-dniowym i w podsumowaniu pochodzą z faktury, nie z konfiguracji dodatku.
+
+Sensory mają stan `unknown`, dopóki żadna faktura nie zostanie wgrana — wszystkie powyższe miejsca działają wtedy identycznie jak przed tą funkcją (na stałych domyślnych).
 
 ### RCE vs RCEm
 
@@ -86,6 +94,11 @@ All sensors appear under one device **PV ROI Tracker** in HA Settings → Device
 | `pv_roi_tracker_deposit_balance_est` | PV Deposit Balance Est | PLN | post-invoice balance + unposted inverter accruals |
 | `pv_roi_tracker_deposit_expiring_30d` | PV Deposit Expiring 30d | PLN | deposit value hitting 12-month expiry next month |
 | `pv_roi_tracker_health` | PV ROI Tracker Health | — | `ok`/`degraded`/`error`; JSON attributes per job + `solcast_available` |
+| `pv_roi_tracker_rate_energy_peak_net` / `rate_energy_offpeak_net` | PV Rate Energy Peak/Offpeak | PLN/kWh | net energy rate from the **latest parsed invoice** — `unknown` until one is uploaded |
+| `pv_roi_tracker_rate_dist_var_peak_net` / `rate_dist_var_offpeak_net` | PV Rate Dist Var Peak/Offpeak | PLN/kWh | variable distribution component, latest invoice |
+| `pv_roi_tracker_rate_jakosciowa_net` / `rate_oze_net` / `rate_kogeneracja_net` | PV Rate Jakościowa/OZE/Kogeneracja | PLN/kWh | latest invoice |
+| `pv_roi_tracker_fixed_mocowa_net` / `fixed_abonament_net` / `fixed_stalysieciowy_net` / `fixed_total_net` | PV Fixed Mocowa/Abonament/Stały Sieciowy/Total Net | PLN | fixed monthly charges, latest invoice |
+| `pv_roi_tracker_rate_peak_gross` / `rate_offpeak_gross` | PV Rate Peak/Offpeak Gross | PLN/kWh | computed gross marginal G12w rate, latest invoice |
 
 ## Live HA sensor mapping (current month)
 

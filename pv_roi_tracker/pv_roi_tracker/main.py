@@ -327,7 +327,8 @@ def main() -> None:
                             deposit_balance=(deposit_result.balance_estimate
                                              if deposit_result and deposit_result.balance_estimate is not None
                                              else (deposit_result.balance_model if deposit_result else None)),
-                            deposit_expiring_30d=deposit_result.expiring_1m if deposit_result else None)
+                            deposit_expiring_30d=deposit_result.expiring_1m if deposit_result else None,
+                            invoice_rates=_web.latest_invoice_rates())
             _web.update_state(result, all_records, rcem_price, month_closed=month_closed,
                               rcem_scrape_status=scrape_status)
             _web.update_deposit(deposit_result)
@@ -349,6 +350,10 @@ def main() -> None:
                     'sensor.roznica_dzienna_g12w_vs_dynamiczna',
                 ])
                 live_tariff = live_reader.read_tariff_live()
+                # Single source of truth: latest parsed invoice overrides the
+                # FIXED_GROSS_PLN / 1.23 / 0.63 fallback constants when available.
+                _inv_rates = _web.latest_invoice_rates()
+                _fixed_net = _inv_rates.get('fixed_total_net')
                 tariff_data = compute_tariff_tab(
                     records=all_records,
                     dynamic_monthly_stats=dyn_monthly,
@@ -356,6 +361,9 @@ def main() -> None:
                     current_roi=result,
                     current_month_live=live_tariff,
                     tariff_history_7d=history_7d,
+                    fixed_gross_pln=round(_fixed_net * 1.23, 2) if _fixed_net is not None else None,
+                    peak_gross=_inv_rates.get('peak_gross'),
+                    offpeak_gross=_inv_rates.get('offpeak_gross'),
                 )
                 _web.update_tariff_comparison(tariff_data)
                 _record_job('tariff_comparison', True)

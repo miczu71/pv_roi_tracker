@@ -2,6 +2,35 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.20.0] — 2026-06-16
+
+### Added
+
+- **Najnowsza faktura jako jedno źródło prawdy dla stawek** — `latest_invoice_rates()` (i wewnętrzny `_latest_real_invoice()`, używany też przez detekcję driftu) udostępnia stawki netto + opłaty stałe z chronologicznie najnowszej przetworzonej faktury (wybór po kluczu `YYYY-MM`, niezależnie od kolejności wgrywania — wgranie starszej faktury po nowszej **nigdy** nie nadpisuje aktualnie używanych stawek).
+- **13 nowych sensorów MQTT** publikujących stawki z najnowszej faktury: `sensor.pv_roi_rate_energy_peak_net`, `rate_energy_offpeak_net`, `rate_dist_var_peak_net`, `rate_dist_var_offpeak_net`, `rate_jakosciowa_net`, `rate_oze_net`, `rate_kogeneracja_net`, `fixed_mocowa_net`, `fixed_abonament_net`, `fixed_stalysieciowy_net`, `fixed_total_net`, `rate_peak_gross`, `rate_offpeak_gross`. Stan `unknown` gdy żadna faktura nie jest jeszcze wgrana.
+- **`energy_simulation.yaml` (pakiet HA) czyta stawki z faktury** — opłaty OZE/jakościowa/kogeneracyjna oraz suma opłat stałych (abonament+składnik stały sieciowy+mocowa) są teraz odczytywane z sensorów `sensor.pv_roi_rate_*`/`sensor.pv_roi_fixed_*`, z **fallbackiem identycznym jak dotychczasowe stałe** (np. `0.0073`, `39.47`) gdy sensor nie istnieje/jest `unknown`. Formuły bez zmian — zmieniono tylko źródło wartości.
+- **Analiza taryf zsynchronizowana z fakturą** — `compute_tariff_tab()` przyjmuje opcjonalne `fixed_gross_pln`/`peak_gross`/`offpeak_gross`, źródłowane z najnowszej faktury (fallback = stałe `FIXED_GROSS_PLN`/`1.23`/`0.63` jak dotychczas). Linie referencyjne na wykresie 7-dniowym i podsumowanie zakładki odzwierciedlają realne stawki z faktury. Baner driftu konfiguracji vs faktury zmienił charakter z ostrzeżenia (akcja wymagana) na informację (system już automatycznie synchronizuje się z fakturą; `config.yaml` to tylko wartość zapasowa).
+
+### Fixed
+
+- **Detekcja "najnowszej" faktury ignorowała kluczowanie stub-ów** — rekordy nieudanego parsowania (`unparsed-<epoch>-<nazwa>`) sortują się leksykograficznie *za* każdym realnym kluczem `YYYY-MM`, więc `max(stored)` mógł wybrać stub (bez pól stawek) zamiast realnej najnowszej faktury, cicho gubiąc detekcję driftu. Naprawione przez `_latest_real_invoice()`, który filtruje stuby przed wyborem `max()` — używane teraz przez `_build_tariff_drift()` i `latest_invoice_rates()`.
+
+### Entities / services touched
+
+| Encja | Zmiana |
+|---|---|
+| `sensor.pv_roi_rate_energy_peak_net` / `rate_energy_offpeak_net` | NOWA — stawka netto energii (zł/kWh) z najnowszej faktury |
+| `sensor.pv_roi_rate_dist_var_peak_net` / `rate_dist_var_offpeak_net` | NOWA — składnik zmienny sieciowy netto (zł/kWh) |
+| `sensor.pv_roi_rate_jakosciowa_net` | NOWA — stawka jakościowa netto (zł/kWh) |
+| `sensor.pv_roi_rate_oze_net` | NOWA — opłata OZE netto (zł/kWh) |
+| `sensor.pv_roi_rate_kogeneracja_net` | NOWA — opłata kogeneracyjna netto (zł/kWh) |
+| `sensor.pv_roi_fixed_mocowa_net` / `fixed_abonament_net` / `fixed_stalysieciowy_net` / `fixed_total_net` | NOWA — opłaty stałe netto (zł/mc) |
+| `sensor.pv_roi_rate_peak_gross` / `rate_offpeak_gross` | NOWA — stawki brutto G12w (zł/kWh) z faktury |
+
+> Pozostałe sensory bez zmian.
+
+---
+
 ## [0.19.0] — 2026-06-16
 
 ### Added

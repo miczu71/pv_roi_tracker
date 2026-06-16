@@ -24,6 +24,12 @@ from .models import MonthlyRecord
 
 FIXED_GROSS_PLN = round((4.56 + 10.86 + 24.05) * 1.23, 2)  # 48.55 PLN/month, same for all tariffs
 
+# Fallback G12w reference rates (PLN/kWh) — used only when no parsed invoice
+# is available to source them from (see compute_tariff_tab's peak_gross/
+# offpeak_gross params, sourced by main.py from web.latest_invoice_rates()).
+_DEFAULT_PEAK_GROSS = 1.23
+_DEFAULT_OFFPEAK_GROSS = 0.63
+
 _MONTHS_PL = ['', 'Sty', 'Lut', 'Mar', 'Kwi', 'Maj', 'Cze',
                'Lip', 'Sie', 'Wrz', 'Paź', 'Lis', 'Gru']
 
@@ -108,6 +114,9 @@ def compute_tariff_tab(
     current_roi,
     current_month_live: dict,
     tariff_history_7d: dict,
+    fixed_gross_pln: Optional[float] = None,
+    peak_gross: Optional[float] = None,
+    offpeak_gross: Optional[float] = None,
 ) -> dict:
     """
     Build the full tariff comparison payload for the frontend tab.
@@ -122,7 +131,16 @@ def compute_tariff_tab(
         current_roi: RoiResult from roi.calculate()
         current_month_live: Live sensor values fetched from HA
         tariff_history_7d: {entity_id: [{t, v}]} — raw 7-day history series
+        fixed_gross_pln: effective fixed monthly cost (PLN, gross) — caller
+                         sources this from the latest parsed invoice; falls
+                         back to the FIXED_GROSS_PLN constant when None.
+        peak_gross, offpeak_gross: effective G12w PLN/kWh reference rates —
+                         same sourcing; fall back to _DEFAULT_PEAK_GROSS /
+                         _DEFAULT_OFFPEAK_GROSS when None.
     """
+    effective_fixed_gross = fixed_gross_pln if fixed_gross_pln is not None else FIXED_GROSS_PLN
+    effective_peak_gross = peak_gross if peak_gross is not None else _DEFAULT_PEAK_GROSS
+    effective_offpeak_gross = offpeak_gross if offpeak_gross is not None else _DEFAULT_OFFPEAK_GROSS
     today = date.today()
     current_ym_str = _ym(today.year, today.month)
 
@@ -271,7 +289,9 @@ def compute_tariff_tab(
             'payback_impact_months': payback_impact_months,
             'new_payback_months': new_payback_months,
             'new_payback_date': new_payback_date,
-            'fixed_gross_pln': FIXED_GROSS_PLN,
+            'fixed_gross_pln': effective_fixed_gross,
+            'effective_peak_gross': effective_peak_gross,
+            'effective_offpeak_gross': effective_offpeak_gross,
             'histogram': [{'label': b['label'], 'count': b['count']} for b in buckets],
         },
         'sensitivity_g12w': sensitivity_g12w,

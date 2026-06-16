@@ -450,15 +450,59 @@ def _build_invoices_data(records):
 _FIXED_NET_EXPECTED = 39.47  # per energy_simulation.yaml 2026 Tauron tariff
 
 
+def _latest_real_invoice(stored: dict) -> Optional[dict]:
+    """Return the invoice record for the chronologically latest billing month,
+    ignoring failed-parse stubs. Stub keys ("unparsed-<epoch>-<name>") would
+    otherwise sort after every real "YYYY-MM" key under plain max(), picking
+    a record with none of the rate/amount fields populated."""
+    real_keys = [k for k in stored if not k.startswith('unparsed-')]
+    if not real_keys:
+        return None
+    return stored[max(real_keys)]
+
+
+# Rate + fixed-charge + computed-gross fields exposed by latest_invoice_rates().
+_RATE_FIELDS = [
+    'energy_peak_net', 'energy_offpeak_net',
+    'dist_var_peak_net', 'dist_var_offpeak_net',
+    'dist_jakosciowa_net', 'dist_oze_net', 'dist_kogeneracja_net',
+    'fixed_mocowa_net', 'fixed_abonament_net', 'fixed_stalysieciowy_net',
+    'peak_gross', 'offpeak_gross', 'fixed_total_net',
+]
+
+
+def latest_invoice_rates() -> dict:
+    """Canonical rate provider (Phase 2 "single source of truth"): the
+    chronologically latest parsed invoice's net component rates, fixed
+    charges, and computed gross marginal rates.
+
+    Returns {} when no invoice has been parsed yet — every consumer (MQTT
+    sensors, energy_simulation.yaml, Analiza taryf) must treat each key as
+    optional and fall back to its own config/hardcoded constant; this
+    function never invents a value.
+    """
+    if _invoice_path is None:
+        return {}
+    try:
+        from . import invoice_store as _istore
+        stored = _istore.load(_invoice_path)
+        latest = _latest_real_invoice(stored)
+        if latest is None:
+            return {}
+        return {k: latest[k] for k in _RATE_FIELDS if latest.get(k) is not None}
+    except Exception:
+        return {}
+
+
 def _build_tariff_drift():
     if _invoice_path is None:
         return None
     try:
         from . import invoice_store as _istore
         stored = _istore.load(_invoice_path)
-        if not stored:
+        latest = _latest_real_invoice(stored)
+        if latest is None:
             return None
-        latest = stored[max(stored)]
         drift = {}
         pk = latest.get('peak_gross')
         op = latest.get('offpeak_gross')
@@ -3130,8 +3174,14 @@ function _renderDriftBanner(tariffDrift) {
     if (tariffDrift.peak)      msgs.push('szczyt: skonfig. ' + tariffDrift.peak.configured + ' → faktura ' + tariffDrift.peak.invoice + ' zł/kWh');
     if (tariffDrift.offpeak)   msgs.push('poza szczytem: skonfig. ' + tariffDrift.offpeak.configured + ' → faktura ' + tariffDrift.offpeak.invoice + ' zł/kWh');
     if (tariffDrift.fixed_net) msgs.push('opłaty stałe (net): oczekiwano ' + tariffDrift.fixed_net.expected + ' → faktura ' + tariffDrift.fixed_net.invoice + ' zł/mc');
-    banner.innerHTML = '⚠ Wykryto zmianę stawek: ' + msgs.join('; ') +
-      '. Zaktualizuj <b>tariff_peak_price / tariff_offpeak_price</b> w konfiguracji dodatku (jeśli dotyczy).';
+    // Informational, not actionable: symulacja i Analiza taryf już automatycznie
+    // korzystają ze stawek z najnowszej faktury — config.yaml jest tu tylko
+    // wartością zapasową (fallback), gdy żadna faktura nie jest jeszcze wgrana.
+    banner.innerHTML = 'ℹ Stawki z konfiguracji różnią się od najnowszej faktury: ' + msgs.join('; ') +
+      '. Symulacja i Analiza taryf używają już automatycznie stawek z faktury — ' +
+      'config.yaml służy tylko jako wartość zapasowa, aktualizacja opcjonalna.';
+    banner.style.background = '#e7f3ff';
+    banner.style.borderLeft = '4px solid #3182ce';
     banner.style.display = '';
   } else {
     banner.style.display = 'none';
@@ -3784,16 +3834,20 @@ function renderTariffTab(tc) {
   const ctxA = document.getElementById('tariffPriceChart');
   if (ctxA && c7d.labels && c7d.labels.length) {
     if (_tariffPriceChart) { _tariffPriceChart.destroy(); _tariffPriceChart = null; }
-    // Reference lines as constant datasets
-    const refPeak   = c7d.labels.map(() => 1.23);
-    const refOffpeak= c7d.labels.map(() => 0.63);
+    // Reference lines — sourced from the latest parsed invoice when available
+    // (tc.summary.effective_peak_gross/effective_offpeak_gross), else the
+    // same 1.23/0.63 fallback this chart always used.
+    const effPeak    = (tc.summary && tc.summary.effective_peak_gross    != null) ? tc.summary.effective_peak_gross    : 1.23;
+    const effOffpeak = (tc.summary && tc.summary.effective_offpeak_gross != null) ? tc.summary.effective_offpeak_gross : 0.63;
+    const refPeak   = c7d.labels.map(() => effPeak);
+    const refOffpeak= c7d.labels.map(() => effOffpeak);
     _tariffPriceChart = new Chart(ctxA, {
       type: 'line',
       data: { labels: c7d.labels, datasets: [
         { label: 'G12w PLN/kWh', data: c7d.g12w, borderColor: '#e74c3c', backgroundColor: 'rgba(231,76,60,0.05)', borderWidth: 2, stepped: true, pointRadius: 0, fill: false },
         { label: 'Dynamiczna PLN/kWh', data: c7d.dynamic, borderColor: '#2ecc71', backgroundColor: 'rgba(46,204,113,0.05)', borderWidth: 1.5, pointRadius: 0, fill: false },
-        { label: '— szczyt G12w (1.23)', data: refPeak,    borderColor: 'rgba(231,76,60,0.35)', borderWidth: 1, borderDash: [5,5], pointRadius: 0, fill: false },
-        { label: '— pozaszczyt (0.63)',  data: refOffpeak, borderColor: 'rgba(243,156,18,0.35)', borderWidth: 1, borderDash: [5,5], pointRadius: 0, fill: false },
+        { label: '— szczyt G12w (' + effPeak.toFixed(2) + ')',    data: refPeak,    borderColor: 'rgba(231,76,60,0.35)', borderWidth: 1, borderDash: [5,5], pointRadius: 0, fill: false },
+        { label: '— pozaszczyt (' + effOffpeak.toFixed(2) + ')',  data: refOffpeak, borderColor: 'rgba(243,156,18,0.35)', borderWidth: 1, borderDash: [5,5], pointRadius: 0, fill: false },
       ]},
       options: { responsive: true, maintainAspectRatio: false,
         plugins: { legend: { labels: { boxWidth: 10, font: { size: 11 } } } },
