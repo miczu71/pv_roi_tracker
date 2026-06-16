@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.20.1] — 2026-06-16
+
+### Changed
+
+- **Refactor (no behavior change)** — usunięto duplikację regexów wydobywających kwoty (`_dist_peak_amount`/`_dist_offpeak_amount` były prawie identyczną kopią `_dist_peak`/`_dist_offpeak`; połączone przez parametryzowaną transformację `_amount_pattern()`, zweryfikowaną jako bajt-identyczną przed zastosowaniem). Filtrowanie stubów `unparsed-...` przeniesione do `invoice_store.filter_real()`/`load_real()` — wcześniej rozproszone po `web.py`. `api_data()` wczytuje teraz `invoices.json` raz na żądanie (wcześniej 3 niezależne odczyty); `main.py` liczy `latest_invoice_rates()` raz na cykl (wcześniej dwa razy).
+
+### Entities / services touched
+
+> Brak zmian — czysto wewnętrzny refaktor wydajności/duplikacji kodu z `/simplify`.
+
+---
+
 ## [0.20.0] — 2026-06-16
 
 ### Added
