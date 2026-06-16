@@ -119,3 +119,55 @@ def test_backfill_rcem_missing_month_returns_false(store):
     historic_store.save([_rec(2023, 5)], store)
     ok = historic_store.backfill_rcem(2099, 1, 0.40, store)
     assert ok is False
+
+
+# ── backfill_tariff ────────────────────────────────────────────────────────────────────────────────────
+
+def test_backfill_tariff_tags_peak_only_month_as_g11(store):
+    r = _rec(2024, 5)
+    r.purchased_kwh_peak = 676.0
+    r.purchased_kwh_offpeak = None
+    historic_store.save([r], store)
+    changed = historic_store.backfill_tariff(store)
+    assert changed == 1
+    assert historic_store.load(store)[0].tariff == 'G11'
+
+
+def test_backfill_tariff_tags_peak_and_offpeak_month_as_g12w(store):
+    r = _rec(2025, 5)
+    r.purchased_kwh_peak = 505.0
+    r.purchased_kwh_offpeak = 29.0
+    historic_store.save([r], store)
+    changed = historic_store.backfill_tariff(store)
+    assert changed == 1
+    assert historic_store.load(store)[0].tariff == 'G12W'
+
+
+def test_backfill_tariff_leaves_already_tagged_month_unchanged(store):
+    r = _rec(2024, 5)
+    r.purchased_kwh_peak = 676.0
+    r.purchased_kwh_offpeak = None
+    r.tariff = 'G12W'  # already explicitly set — must not be overwritten
+    historic_store.save([r], store)
+    changed = historic_store.backfill_tariff(store)
+    assert changed == 0
+    assert historic_store.load(store)[0].tariff == 'G12W'
+
+
+def test_backfill_tariff_skips_month_without_peak(store):
+    r = _rec(2026, 1)
+    r.purchased_kwh_peak = None
+    historic_store.save([r], store)
+    changed = historic_store.backfill_tariff(store)
+    assert changed == 0
+    assert historic_store.load(store)[0].tariff is None
+
+
+def test_backfill_tariff_idempotent(store):
+    r = _rec(2024, 5)
+    r.purchased_kwh_peak = 676.0
+    r.purchased_kwh_offpeak = None
+    historic_store.save([r], store)
+    historic_store.backfill_tariff(store)
+    changed_again = historic_store.backfill_tariff(store)
+    assert changed_again == 0

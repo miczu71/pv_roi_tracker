@@ -505,6 +505,11 @@ def main() -> None:
     # Startup: apply any invoices uploaded before their month was closed
     historic_store.reconcile_pending_invoices(INVOICE_PATH, HISTORIC_PATH)
 
+    # Startup: tag legacy reconciled months that predate the `tariff` field
+    _tagged = historic_store.backfill_tariff(HISTORIC_PATH)
+    if _tagged:
+        logger.info('Startup backfilled tariff for %d legacy month(s)', _tagged)
+
     # Startup: re-try stubs — learned patterns from a previous session may now
     # resolve invoices that failed when they were first uploaded.
     _promoted = _retry_stubs()

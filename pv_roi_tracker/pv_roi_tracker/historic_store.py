@@ -216,6 +216,30 @@ def reconcile_pending_invoices(
     return count
 
 
+def backfill_tariff(path: Path = DEFAULT_PATH) -> int:
+    """Tag legacy reconciled months that predate the `tariff` field.
+
+    purchased_kwh_peak / purchased_kwh_offpeak are written only by invoice
+    reconciliation, so a month with purchased_kwh_peak set was definitely
+    reconciled: offpeak None => single-zone G11 (całodobowa), otherwise
+    two-zone G12W. Idempotent — only writes when something actually changes.
+    Returns the number of months tagged.
+    """
+    doc = _load_document(path)
+    changed = 0
+    for m in doc.get('months', []):
+        if m.get('tariff') is not None:
+            continue
+        if m.get('purchased_kwh_peak') is None:
+            continue
+        m['tariff'] = 'G11' if m.get('purchased_kwh_offpeak') is None else 'G12W'
+        changed += 1
+    if changed:
+        _save_document(doc, path)
+        logger.info('Backfilled tariff for %d legacy month(s)', changed)
+    return changed
+
+
 def backfill_rcem(
     year: int,
     month: int,
