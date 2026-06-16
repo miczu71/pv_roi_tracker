@@ -92,6 +92,6 @@ def test_tariff_drift_unaffected_by_stub_key(store_path):
     invoice_store.upsert_stub('bad.pdf', 'raw', 'boom', path=store_path)
 
     web.set_tariff_config(peak=0.10, offpeak=0.05)  # force a drift vs the invoice
-    drift = web._build_tariff_drift()
+    drift = web._build_tariff_drift(invoice_store.load_real(store_path))
     assert drift is not None
     assert 'peak' in drift

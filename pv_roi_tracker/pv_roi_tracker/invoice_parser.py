@@ -657,62 +657,45 @@ def _parse_text(text: str) -> InvoiceData:
     dist_section_m = re.search(r'Dystrybucja energii elektrycznej.*?Razem za dystrybucj', text, re.DOTALL)
     dist_text = dist_section_m.group(0) if dist_section_m else text
 
-    def _dist_peak(section_patterns: list) -> Optional[float]:
-        # Match both two-zone (szczyt) and single-zone (całodobowa / G11) tariffs
+    def _amount_pattern(rate_pattern: str) -> str:
+        """Derive a 'wartość netto' amount pattern from a rate pattern by
+        shifting its final capture group one numeric column to the right
+        (every _dist_peak/_dist_offpeak candidate pattern ends in the literal
+        rate-capturing group '([\\d,]+)', immediately followed on the actual
+        invoice line by the amount column)."""
+        suffix = r'([\d,]+)'
+        assert rate_pattern.endswith(suffix)
+        return rate_pattern[:-len(suffix)] + r'[\d,]+\s+' + suffix
+
+    def _dist_peak(section_patterns: list, pattern_fn=lambda p: p) -> Optional[float]:
+        # Match both two-zone (szczyt) and single-zone (całodobowa / G11) tariffs.
+        # pattern_fn=_amount_pattern captures the 'wartość netto' column instead
+        # of the rate — same row layouts, shifted one numeric column right.
         for sp in section_patterns:
             for _zone in (r'szczyt\w*', r'ca.odobowa'):
                 # New format: label zone qty kWh price_net
-                m = re.search(sp + r'\s+' + _zone + r'\s+\d+\s+kWh\s+([\d,]+)', dist_text, re.IGNORECASE)
+                m = re.search(pattern_fn(sp + r'\s+' + _zone + r'\s+\d+\s+kWh\s+([\d,]+)'), dist_text, re.IGNORECASE)
                 if m:
                     return _n(m.group(1))
                 # Old/oldest format: label\nzone kWh qty [optional-coeff] price_net
                 # Use (?:\d+\s+)+ to handle both "676 0,xxx" and "1 226 0,xxx" and
                 # "676 1 0,xxx" (coeff) and "1 226 1 0,xxx" (thousands + coeff)
-                m = re.search(sp + r'\s+' + _zone + r'\s+kWh\s+(?:\d+\s+)+([\d,]+)', dist_text, re.IGNORECASE)
+                m = re.search(pattern_fn(sp + r'\s+' + _zone + r'\s+kWh\s+(?:\d+\s+)+([\d,]+)'), dist_text, re.IGNORECASE)
                 if m:
                     return _n(m.group(1))
         return None
 
-    def _dist_offpeak(section_patterns: list) -> Optional[float]:
+    def _dist_offpeak(section_patterns: list, pattern_fn=lambda p: p) -> Optional[float]:
         for sp in section_patterns:
             # New format: label zone qty kWh value ... \n zone qty kWh value
             m2 = re.search(
-                sp + r'\s+\S+\s+\d+\s+kWh\s+[\d,]+[^\n]+\n\s*\S+\s+\d+\s+kWh\s+([\d,]+)',
+                pattern_fn(sp + r'\s+\S+\s+\d+\s+kWh\s+[\d,]+[^\n]+\n\s*\S+\s+\d+\s+kWh\s+([\d,]+)'),
                 dist_text, re.IGNORECASE)
             if m2:
                 return _n(m2.group(1))
             # Old format: label\nzone kWh qty [coeff] price ... \n zone kWh qty [coeff] price
             m2 = re.search(
-                sp + r'\s+\S+\s+kWh\s+\d+(?:\s+\d+)?\s+[\d,]+[^\n]+\n\s*\S+\s+kWh\s+\d+(?:\s+\d+)?\s+([\d,]+)',
-                dist_text, re.IGNORECASE)
-            if m2:
-                return _n(m2.group(1))
-        return None
-
-    def _dist_peak_amount(section_patterns: list) -> Optional[float]:
-        """Same row layouts as _dist_peak, capturing the 'wartość netto' column
-        immediately after the rate instead of the rate itself."""
-        for sp in section_patterns:
-            for _zone in (r'szczyt\w*', r'ca.odobowa'):
-                m = re.search(sp + r'\s+' + _zone + r'\s+\d+\s+kWh\s+[\d,]+\s+([\d,]+)', dist_text, re.IGNORECASE)
-                if m:
-                    return _n(m.group(1))
-                m = re.search(sp + r'\s+' + _zone + r'\s+kWh\s+(?:\d+\s+)+[\d,]+\s+([\d,]+)', dist_text, re.IGNORECASE)
-                if m:
-                    return _n(m.group(1))
-        return None
-
-    def _dist_offpeak_amount(section_patterns: list) -> Optional[float]:
-        """Same row layouts as _dist_offpeak, capturing the offpeak row's
-        'wartość netto' column instead of its rate."""
-        for sp in section_patterns:
-            m2 = re.search(
-                sp + r'\s+\S+\s+\d+\s+kWh\s+[\d,]+[^\n]+\n\s*\S+\s+\d+\s+kWh\s+[\d,]+\s+([\d,]+)',
-                dist_text, re.IGNORECASE)
-            if m2:
-                return _n(m2.group(1))
-            m2 = re.search(
-                sp + r'\s+\S+\s+kWh\s+\d+(?:\s+\d+)?\s+[\d,]+[^\n]+\n\s*\S+\s+kWh\s+\d+(?:\s+\d+)?\s+[\d,]+\s+([\d,]+)',
+                pattern_fn(sp + r'\s+\S+\s+kWh\s+\d+(?:\s+\d+)?\s+[\d,]+[^\n]+\n\s*\S+\s+kWh\s+\d+(?:\s+\d+)?\s+([\d,]+)'),
                 dist_text, re.IGNORECASE)
             if m2:
                 return _n(m2.group(1))
@@ -754,13 +737,13 @@ def _parse_text(text: str) -> InvoiceData:
         _first_float_multi(_patterns_for('energy_offpeak_amount'), text),
     )
     dist_var_amount_net = _sum_optional(
-        _dist_peak_amount(_sksn_patterns), _dist_offpeak_amount(_sksn_patterns))
+        _dist_peak(_sksn_patterns, _amount_pattern), _dist_offpeak(_sksn_patterns, _amount_pattern))
     dist_jakosciowa_amount_net = _sum_optional(
-        _dist_peak_amount([r'Stawka jako.ciow\w*', r'Jako.ciow\w*']),
-        _dist_offpeak_amount([r'Stawka jako.ciow\w*', r'Jako.ciow\w*']))
+        _dist_peak([r'Stawka jako.ciow\w*', r'Jako.ciow\w*'], _amount_pattern),
+        _dist_offpeak([r'Stawka jako.ciow\w*', r'Jako.ciow\w*'], _amount_pattern))
     dist_oze_amount_net = _sum_optional(
-        _dist_peak_amount([r'Op.ata OZE', r'Stawka OZE']),
-        _dist_offpeak_amount([r'Op.ata OZE', r'Stawka OZE']))
+        _dist_peak([r'Op.ata OZE', r'Stawka OZE'], _amount_pattern),
+        _dist_offpeak([r'Op.ata OZE', r'Stawka OZE'], _amount_pattern))
     # G11 OZE fallback (mirrors the dist_oze_net DOTALL fallback above): page-break
     # content can separate the label from its całodobowa data row.
     if dist_oze_amount_net is None and _is_single_zone:
@@ -770,8 +753,8 @@ def _parse_text(text: str) -> InvoiceData:
         if _oze_amt_m:
             dist_oze_amount_net = _n(_oze_amt_m.group(1))
     dist_kogeneracja_amount_net = _sum_optional(
-        _dist_peak_amount([r'Op.ata kogeneracyjna', r'Kogeneracyjna']),
-        _dist_offpeak_amount([r'Op.ata kogeneracyjna', r'Kogeneracyjna']))
+        _dist_peak([r'Op.ata kogeneracyjna', r'Kogeneracyjna'], _amount_pattern),
+        _dist_offpeak([r'Op.ata kogeneracyjna', r'Kogeneracyjna'], _amount_pattern))
 
     # ── Optional fees — rarely present; absence is not a warning ─────────────
     oplata_przejsciowa_net = _first_float_multi(_patterns_for('oplata_przejsciowa'), text)

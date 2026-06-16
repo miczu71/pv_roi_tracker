@@ -203,6 +203,23 @@ def load(path: Path = DEFAULT_PATH) -> dict[str, dict]:
     return _load_document(path).get('invoices', {})
 
 
+def filter_real(stored: dict) -> dict:
+    """Exclude failed-parse stubs from an already-loaded invoices dict.
+
+    Stub keys ("unparsed-<epoch>-<name>") sort lexicographically *after*
+    every real "YYYY-MM" key, so any caller taking max() over keys to find
+    the latest invoice must filter stubs first — otherwise a stub (with none
+    of the rate/amount fields populated) silently wins.
+    """
+    return {k: v for k, v in stored.items() if not k.startswith('unparsed-')}
+
+
+def load_real(path: Path = DEFAULT_PATH) -> dict[str, dict]:
+    """load() + filter_real() in one call, for callers that only care about
+    successfully parsed invoices (e.g. picking the latest by billing month)."""
+    return filter_real(load(path))
+
+
 def get(key: str, path: Path = DEFAULT_PATH) -> Optional[dict]:
     """Return the stored invoice dict for a given key, or None."""
     return _load_document(path).get('invoices', {}).get(key)

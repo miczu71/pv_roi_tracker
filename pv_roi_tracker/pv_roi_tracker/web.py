@@ -296,6 +296,19 @@ def api_data():
         'pace_vs_avg_pct': pace_vs_avg,
     }
 
+    # Loaded once and shared by _build_invoices_data / _build_tariff_drift /
+    # _build_cost_breakdown below — each previously re-read invoices.json
+    # independently within this same request.
+    _stored_invoices: dict = {}
+    _real_invoices: dict = {}
+    if _invoice_path is not None:
+        try:
+            from . import invoice_store as _istore
+            _stored_invoices = _istore.load(_invoice_path)
+            _real_invoices = _istore.filter_real(_stored_invoices)
+        except Exception:
+            pass
+
     return jsonify({
         'status': 'ok',
         'updated_at': updated_at,
@@ -352,9 +365,9 @@ def api_data():
         },
         'records': records_out,
         'predictions': _build_predictions(result),
-        'invoices': _build_invoices_data(records),
-        'tariff_drift': _build_tariff_drift(),
-        'cost_breakdown': _build_cost_breakdown(),
+        'invoices': _build_invoices_data(records, _stored_invoices),
+        'tariff_drift': _build_tariff_drift(_real_invoices),
+        'cost_breakdown': _build_cost_breakdown(_real_invoices),
         'layouts_summary': _build_layouts_summary(),
         'tariff_comparison': _state.get('tariff_comparison'),
         'rce_comparison': _state.get('rce_comparison'),
@@ -375,14 +388,7 @@ def _build_degradation(records, today):
         return None
 
 
-def _build_invoices_data(records):
-    if _invoice_path is None:
-        return []
-    try:
-        from . import invoice_store as _istore
-        stored = _istore.load(_invoice_path)
-    except Exception:
-        return []
+def _build_invoices_data(records, stored: dict):
     out = []
     for key, inv in sorted(stored.items(), key=lambda kv: kv[0]):
         try:
@@ -450,15 +456,12 @@ def _build_invoices_data(records):
 _FIXED_NET_EXPECTED = 39.47  # per energy_simulation.yaml 2026 Tauron tariff
 
 
-def _latest_real_invoice(stored: dict) -> Optional[dict]:
-    """Return the invoice record for the chronologically latest billing month,
-    ignoring failed-parse stubs. Stub keys ("unparsed-<epoch>-<name>") would
-    otherwise sort after every real "YYYY-MM" key under plain max(), picking
-    a record with none of the rate/amount fields populated."""
-    real_keys = [k for k in stored if not k.startswith('unparsed-')]
-    if not real_keys:
-        return None
-    return stored[max(real_keys)]
+def _latest_real_invoice(real: dict) -> Optional[dict]:
+    """Return the record for the chronologically latest billing month in an
+    already stub-filtered dict (see invoice_store.filter_real/load_real —
+    stub keys sort after every real "YYYY-MM" key under plain max(), so
+    filtering must happen before this is called, not here)."""
+    return real[max(real)] if real else None
 
 
 # Rate + fixed-charge + computed-gross fields exposed by latest_invoice_rates().
@@ -471,10 +474,14 @@ _RATE_FIELDS = [
 ]
 
 
-def latest_invoice_rates() -> dict:
+def latest_invoice_rates(real: Optional[dict] = None) -> dict:
     """Canonical rate provider (Phase 2 "single source of truth"): the
     chronologically latest parsed invoice's net component rates, fixed
     charges, and computed gross marginal rates.
+
+    Pass `real` (an already stub-filtered dict, e.g. from a `stored` dict
+    already loaded this request/cycle) to avoid a redundant disk read;
+    omit it to have this function load via invoice_store.load_real().
 
     Returns {} when no invoice has been parsed yet — every consumer (MQTT
     sensors, energy_simulation.yaml, Analiza taryf) must treat each key as
@@ -484,9 +491,10 @@ def latest_invoice_rates() -> dict:
     if _invoice_path is None:
         return {}
     try:
-        from . import invoice_store as _istore
-        stored = _istore.load(_invoice_path)
-        latest = _latest_real_invoice(stored)
+        if real is None:
+            from . import invoice_store as _istore
+            real = _istore.load_real(_invoice_path)
+        latest = _latest_real_invoice(real)
         if latest is None:
             return {}
         return {k: latest[k] for k in _RATE_FIELDS if latest.get(k) is not None}
@@ -494,13 +502,11 @@ def latest_invoice_rates() -> dict:
         return {}
 
 
-def _build_tariff_drift():
-    if _invoice_path is None:
-        return None
+def _build_tariff_drift(real: dict):
+    """`real` is an already stub-filtered invoices dict (see
+    invoice_store.filter_real/load_real)."""
     try:
-        from . import invoice_store as _istore
-        stored = _istore.load(_invoice_path)
-        latest = _latest_real_invoice(stored)
+        latest = _latest_real_invoice(real)
         if latest is None:
             return None
         drift = {}
@@ -518,9 +524,6 @@ def _build_tariff_drift():
         return None
 
 
-# Ordered energia → dystrybucja zmienna → opłaty stałe → opłaty dodatkowe, so the
-# breakdown table/chart reads as a natural cost narrative top-to-bottom.
-# (key, polish label, amount field on the stored invoice record, fallback fn or None)
 def _recon_zoned(inv: dict, peak_field: str, offpeak_field: str) -> Optional[float]:
     """Reconstruct a variable component's monthly amount from rate × kWh when
     the parser didn't capture the 'wartość netto' column directly."""
@@ -542,6 +545,9 @@ def _recon_flat(inv: dict, rate_field: str) -> Optional[float]:
     return round(rate * kwh, 2)
 
 
+# Ordered energia → dystrybucja zmienna → opłaty stałe → opłaty dodatkowe, so the
+# breakdown table/chart reads as a natural cost narrative top-to-bottom.
+# (key, polish label, amount field on the stored invoice record, fallback fn or None)
 _COST_COMPONENTS = [
     ('energia', 'Energia', 'energy_amount_net',
      lambda inv: _recon_zoned(inv, 'energy_peak_net', 'energy_offpeak_net')),
@@ -562,25 +568,22 @@ _COST_COMPONENTS = [
 ]
 
 
-def _build_cost_breakdown() -> Optional[dict]:
+def _build_cost_breakdown(real: dict) -> Optional[dict]:
     """Aggregate per-component grid-purchase costs across all parsed invoices,
     for the Faktury tab's "gdzie idą pieniądze" table + stacked chart.
     Falls back to rate × kWh reconstruction for invoices parsed before the
-    monetary-amount fields existed (or where the value column wasn't found)."""
-    if _invoice_path is None:
-        return None
-    try:
-        from . import invoice_store as _istore
-        stored = _istore.load(_invoice_path)
-    except Exception:
-        return None
-    months = {k: v for k, v in stored.items() if not k.startswith('unparsed-')}
+    monetary-amount fields existed (or where the value column wasn't found).
+
+    `real` is an already stub-filtered invoices dict (see
+    invoice_store.filter_real/load_real)."""
+    months = real
     if not months:
         return None
 
     labels = sorted(months.keys())
     series: dict = {key: [] for key, *_rest in _COST_COMPONENTS}
     totals: dict = {key: 0.0 for key, *_rest in _COST_COMPONENTS}
+    ever_observed: dict = {key: False for key, *_rest in _COST_COMPONENTS}
     any_reconstructed = False
 
     for month_key in labels:
@@ -594,11 +597,12 @@ def _build_cost_breakdown() -> Optional[dict]:
             series[key].append(val)
             if val is not None:
                 totals[key] += val
+                ever_observed[key] = True
 
     grand_total = round(sum(totals.values()), 2)
     components = []
     for key, label, *_rest in _COST_COMPONENTS:
-        if all(v is None for v in series[key]):
+        if not ever_observed[key]:
             continue  # never observed on any invoice (e.g. an absent optional fee)
         total = round(totals[key], 2)
         components.append({
@@ -1132,6 +1136,12 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
 .badge-live    { background: #fef3c7; color: var(--yellow); }
 .badge-snap    { background: #dcfce7; color: var(--green); }
 .badge-g11     { background: #ede9fe; color: #6d28d9; }
+
+/* -- Cost breakdown netto/brutto toggle -- */
+.cost-toggle-btn { padding: 3px 10px; border: 1px solid var(--border); cursor: pointer; font-size: 11px; background: var(--card); color: var(--fg); }
+.cost-toggle-btn:first-child { border-radius: 4px 0 0 4px; }
+.cost-toggle-btn:last-child  { border-radius: 0 4px 4px 0; border-left: none; }
+.cost-toggle-btn.active { background: #3182ce; color: #fff; font-weight: 600; }
 
 /* -- Projected hint -- */
 .proj-hint { font-size: 10px; color: var(--muted); font-weight: 400; }
@@ -3044,13 +3054,6 @@ function _setCostBreakdownMode(mode) {
   _renderCostBreakdown(_costBreakdownData);
 }
 
-function _costToggleBtnStyle(mode) {
-  const active = _costBreakdownMode === mode;
-  return 'padding:3px 10px;border:1px solid var(--border);cursor:pointer;font-size:11px;' +
-    (mode === 'netto' ? 'border-radius:4px 0 0 4px;' : 'border-radius:0 4px 4px 0;border-left:none;') +
-    (active ? 'background:#3182ce;color:#fff;font-weight:600' : 'background:var(--card);color:var(--fg)');
-}
-
 function _renderCostBreakdown(breakdown) {
   _costBreakdownData = breakdown;
   const toggleWrap = document.getElementById('costBreakdownToggle');
@@ -3059,9 +3062,10 @@ function _renderCostBreakdown(breakdown) {
   if (!tableWrap) return;
 
   if (toggleWrap) {
+    const btnClass = mode => 'cost-toggle-btn' + (_costBreakdownMode === mode ? ' active' : '');
     toggleWrap.innerHTML =
-      '<button onclick="_setCostBreakdownMode(\'netto\')" style="' + _costToggleBtnStyle('netto') + '">Netto</button>' +
-      '<button onclick="_setCostBreakdownMode(\'brutto\')" style="' + _costToggleBtnStyle('brutto') + '">Brutto</button>';
+      '<button class="' + btnClass('netto') + '" onclick="_setCostBreakdownMode(\'netto\')">Netto</button>' +
+      '<button class="' + btnClass('brutto') + '" onclick="_setCostBreakdownMode(\'brutto\')">Brutto</button>';
   }
 
   if (!breakdown || !breakdown.components || breakdown.components.length === 0) {
