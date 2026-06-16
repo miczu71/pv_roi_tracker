@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.19.0] — 2026-06-16
+
+### Added
+
+- **Składniki kosztów faktur** (zakładka Faktury) — nowa sekcja "Składniki kosztów — na co idą pieniądze": tabela sum per składnik (energia, składnik zmienny sieciowy, jakościowa, OZE, kogeneracja, mocowa, abonament, składnik stały sieciowy, + opłata przejściowa/handlowa/akcyza gdy występują) z udziałem % i sumą, oraz wykres słupkowy skumulowany per miesiąc. Przełącznik **Netto / Brutto** (×1,23 VAT); widok netto dodaje informacyjny wiersz VAT, tak by netto+VAT odtwarzało sumę brutto.
+- **Parser faktur: realne kwoty złotówkowe** — `invoice_parser.py` wyciąga teraz kolumnę "wartość netto" (nie tylko stawkę jednostkową) dla energii, składnika zmiennego, jakościowej, OZE i kogeneracji, plus opłatę przejściową/handlową i akcyzę (rzadkie, brak ostrzeżenia gdy nieobecne). Gdy faktura była przetworzona przed tą zmianą lub kolumna wartości nie została odnaleziona, rozbicie kosztów dolicza się ze stawki × kWh (banner "część wartości oszacowana…" sygnalizuje to w UI).
+- **Trwałe przechowywanie oryginalnych PDF-ów faktur** — wgrane pliki są teraz zapisywane w `/data/pdfs/<YYYY-MM>.pdf` (obok dotychczasowego `/data/invoices.json`). Nowe przyciski w tabeli faktur: **PDF** (otwiera oryginał) i **↻ PDF** (przelicza fakturę ponownie z zapisanego PDF-a — przydatne po poprawce parsera, bez konieczności ponownego wgrywania pliku). Usunięcie faktury usuwa też jej zapisany PDF. `invoices.json` `schema_version` 1→2 (zgodność wsteczna zachowana — starsze wpisy bez nowych pól nadal się wczytują).
+
+### Entities / services touched
+
+> Brak zmian w sensorach MQTT — ta wersja dotyczy tylko UI/parsera/przechowywania w add-onie.
+
+---
+
 ## [0.18.1] — 2026-06-12
 
 ### Fixed

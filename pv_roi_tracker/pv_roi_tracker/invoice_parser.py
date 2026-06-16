@@ -104,6 +104,35 @@ _BUILTIN_PATTERNS: dict[str, list] = {
         r'Energia czynna\s+szczytowa\s+kWh\s+[\d,]+\s+[\d,]+[^\n]+\npozaszczytowa\s+kWh\s+[\d,]+\s+([\d,]+)',
         # G11: no offpeak — intentionally no pattern
     ],
+    # Monetary "wartość netto" column — same row layouts as energy_peak_net /
+    # energy_offpeak_net above, but capturing the value one column further
+    # right (the rate is matched-but-not-captured immediately before it).
+    'energy_peak_amount': [
+        r'(?:Energia czynna\s+)?szczytowa\s+[\d,]+\s+kWh\s+[\d,]+\s+([\d,]+)',
+        r'(?:Energia czynna\s+)?szczyt\s+[\d,]+\s+kWh\s+[\d,]+\s+([\d,]+)',
+        r'Energia czynna\s+szczytowa\s+kWh\s+[\d,]+\s+[\d,]+\s+([\d,]+)',
+        r'Energia czynna\s+ca.odobowa\s+kWh\s+(?:\d+\s+)+[\d,]+\s+([\d,]+)',
+    ],
+    'energy_offpeak_amount': [
+        r'(?:Energia czynna\s+)?pozaszczytowa\s+[\d,]+\s+kWh\s+[\d,]+\s+([\d,]+)',
+        r'(?:Energia czynna\s+)?poza szczytem\s+[\d,]+\s+kWh\s+[\d,]+\s+([\d,]+)',
+        r'Energia czynna\s+szczytowa\s+kWh\s+[\d,]+\s+[\d,]+[^\n]+\npozaszczytowa\s+kWh\s+[\d,]+\s+[\d,]+\s+([\d,]+)',
+    ],
+    # Optional fees — not present on every prosument invoice; absence is normal.
+    'oplata_przejsciowa': [
+        r'Op.ata przej.ciowa\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
+        r'Op.ata przej.ciowa\s+(?!\d)\S+\s+\d+\s+[\d,]+\s+([\d,]+)',
+        r'Op.ata przej.ciowa\s+[\d,]+\s+kWh\s+[\d,]+\s+([\d,]+)',
+    ],
+    'oplata_handlowa': [
+        r'Op.ata handlowa\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
+        r'Op.ata handlowa\s+(?!\d)\S+\s+\d+\s+[\d,]+\s+([\d,]+)',
+        r'Op.ata handlowa\s+[\d,]+\s+kWh\s+[\d,]+\s+([\d,]+)',
+    ],
+    'akcyza': [
+        r'Akcyza\s+[\d,]+\s+kWh\s+[\d,]+\s+([\d,]+)',
+        r'Akcyza\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
+    ],
     'invoice_number': [
         # Old format: "FAKTURA VAT NR T/K1/…" header in ZAŁĄCZNIK
         r'FAKTURA VAT NR\s+([\w/]+)',
@@ -285,6 +314,27 @@ class InvoiceData:
     # Fixed monthly net sum (for comparison with energy_simulation.yaml)
     fixed_total_net: Optional[float] = field(default=None)
 
+    # Monetary net amounts (zł) for the billing month — the actual invoice
+    # "wartość netto" column, not the per-unit rate fields above. Peak+offpeak
+    # summed where applicable. None when the value column wasn't captured.
+    energy_amount_net: Optional[float] = field(default=None)            # Energia czynna (sprzedaż)
+    dist_var_amount_net: Optional[float] = field(default=None)          # Składnik zmienny sieciowy
+    dist_jakosciowa_amount_net: Optional[float] = field(default=None)   # Stawka jakościowa
+    dist_oze_amount_net: Optional[float] = field(default=None)          # Opłata OZE
+    dist_kogeneracja_amount_net: Optional[float] = field(default=None)  # Opłata kogeneracyjna
+
+    # Additional fees — rarely present on prosument invoices; absence is not
+    # warned about (these are genuinely optional, unlike the components above).
+    oplata_przejsciowa_net: Optional[float] = field(default=None)
+    oplata_handlowa_net: Optional[float] = field(default=None)
+    akcyza_net: Optional[float] = field(default=None)
+
+    # Reconstructed total VAT (zł) across all captured net components, used by
+    # the UI to reconcile a netto view to the brutto total. Real per-line VAT
+    # columns are not parsed individually (all observed rows use 23%), so this
+    # is simply 23% of the sum of known net components.
+    vat_total_pln: Optional[float] = field(default=None)
+
     # Tariff zone: 'G11' for single-zone (całodobowa), 'G12W' for two-zone (szczyt/pozaszczyt)
     tariff: Optional[str] = field(default=None)
 
@@ -333,6 +383,14 @@ def _first_float_multi(patterns: list, text: str, group: int = 1) -> Optional[fl
         if v is not None:
             return v
     return None
+
+
+def _sum_optional(*vals: Optional[float]) -> Optional[float]:
+    """Sum the non-None values; None if every value is None (nothing captured)."""
+    present = [v for v in vals if v is not None]
+    if not present:
+        return None
+    return round(sum(present), 2)
 
 
 # ── Validation sanity-checks ──────────────────────────────────────────────────
@@ -631,6 +689,35 @@ def _parse_text(text: str) -> InvoiceData:
                 return _n(m2.group(1))
         return None
 
+    def _dist_peak_amount(section_patterns: list) -> Optional[float]:
+        """Same row layouts as _dist_peak, capturing the 'wartość netto' column
+        immediately after the rate instead of the rate itself."""
+        for sp in section_patterns:
+            for _zone in (r'szczyt\w*', r'ca.odobowa'):
+                m = re.search(sp + r'\s+' + _zone + r'\s+\d+\s+kWh\s+[\d,]+\s+([\d,]+)', dist_text, re.IGNORECASE)
+                if m:
+                    return _n(m.group(1))
+                m = re.search(sp + r'\s+' + _zone + r'\s+kWh\s+(?:\d+\s+)+[\d,]+\s+([\d,]+)', dist_text, re.IGNORECASE)
+                if m:
+                    return _n(m.group(1))
+        return None
+
+    def _dist_offpeak_amount(section_patterns: list) -> Optional[float]:
+        """Same row layouts as _dist_offpeak, capturing the offpeak row's
+        'wartość netto' column instead of its rate."""
+        for sp in section_patterns:
+            m2 = re.search(
+                sp + r'\s+\S+\s+\d+\s+kWh\s+[\d,]+[^\n]+\n\s*\S+\s+\d+\s+kWh\s+[\d,]+\s+([\d,]+)',
+                dist_text, re.IGNORECASE)
+            if m2:
+                return _n(m2.group(1))
+            m2 = re.search(
+                sp + r'\s+\S+\s+kWh\s+\d+(?:\s+\d+)?\s+[\d,]+[^\n]+\n\s*\S+\s+kWh\s+\d+(?:\s+\d+)?\s+[\d,]+\s+([\d,]+)',
+                dist_text, re.IGNORECASE)
+            if m2:
+                return _n(m2.group(1))
+        return None
+
     # Use \s+ between "stawki" and "sieciowej": pypdf sometimes splits across lines
     _sksn_patterns = [r'Sk.adnik zmienny stawki\s+sieciowej', r'Sk.adnik zmienny sieciow\w*']
     dist_var_peak_net    = _dist_peak(_sksn_patterns)
@@ -658,6 +745,39 @@ def _parse_text(text: str) -> InvoiceData:
     if dist_kogeneracja_net is None:
         warnings.append('opłata kogeneracyjna nie znaleziona (użyto 0)')
 
+    # ── Monetary amounts (wartość netto) for the variable components ─────────
+    # Best-effort: same row layouts as the rates above, one column further
+    # right. Missing values fall back to None (no warning — the cost-breakdown
+    # consumer reconstructs from rate × kWh when this is absent).
+    energy_amount_net = _sum_optional(
+        _first_float_multi(_patterns_for('energy_peak_amount'), text),
+        _first_float_multi(_patterns_for('energy_offpeak_amount'), text),
+    )
+    dist_var_amount_net = _sum_optional(
+        _dist_peak_amount(_sksn_patterns), _dist_offpeak_amount(_sksn_patterns))
+    dist_jakosciowa_amount_net = _sum_optional(
+        _dist_peak_amount([r'Stawka jako.ciow\w*', r'Jako.ciow\w*']),
+        _dist_offpeak_amount([r'Stawka jako.ciow\w*', r'Jako.ciow\w*']))
+    dist_oze_amount_net = _sum_optional(
+        _dist_peak_amount([r'Op.ata OZE', r'Stawka OZE']),
+        _dist_offpeak_amount([r'Op.ata OZE', r'Stawka OZE']))
+    # G11 OZE fallback (mirrors the dist_oze_net DOTALL fallback above): page-break
+    # content can separate the label from its całodobowa data row.
+    if dist_oze_amount_net is None and _is_single_zone:
+        _oze_amt_m = re.search(
+            r'Op.ata OZE.*?ca.odobowa\s+kWh\s+(?:\d+\s+)+[\d,]+\s+([\d,]+)',
+            text, re.IGNORECASE | re.DOTALL)
+        if _oze_amt_m:
+            dist_oze_amount_net = _n(_oze_amt_m.group(1))
+    dist_kogeneracja_amount_net = _sum_optional(
+        _dist_peak_amount([r'Op.ata kogeneracyjna', r'Kogeneracyjna']),
+        _dist_offpeak_amount([r'Op.ata kogeneracyjna', r'Kogeneracyjna']))
+
+    # ── Optional fees — rarely present; absence is not a warning ─────────────
+    oplata_przejsciowa_net = _first_float_multi(_patterns_for('oplata_przejsciowa'), text)
+    oplata_handlowa_net    = _first_float_multi(_patterns_for('oplata_handlowa'), text)
+    akcyza_net             = _first_float_multi(_patterns_for('akcyza'), text)
+
     # ── Fixed monthly charges ─────────────────────────────────────────────────
     fixed_mocowa_net        = _first_float_multi(_patterns_for('fixed_mocowa'), dist_text)
     fixed_abonament_net     = _first_float_multi(_patterns_for('fixed_abonament'), dist_text)
@@ -675,6 +795,16 @@ def _parse_text(text: str) -> InvoiceData:
         fixed_total_net = round(fixed_mocowa_net + fixed_abonament_net + fixed_stalysieciowy_net, 4)  # type: ignore[operator]
     else:
         warnings.append('fixed_total_net nieobliczony — brakuje co najmniej jednej opłaty stałej')
+
+    # ── VAT total (reconstructed, 23% of all captured net components) ────────
+    vat_total_pln = _sum_optional(
+        energy_amount_net, dist_var_amount_net, dist_jakosciowa_amount_net,
+        dist_oze_amount_net, dist_kogeneracja_amount_net,
+        oplata_przejsciowa_net, oplata_handlowa_net, akcyza_net,
+        fixed_mocowa_net, fixed_abonament_net, fixed_stalysieciowy_net,
+    )
+    if vat_total_pln is not None:
+        vat_total_pln = round(vat_total_pln * 0.23, 2)
 
     # ── Prosument deposit ─────────────────────────────────────────────────────
     deposit_current_pln  = _first_float_multi(_patterns_for('deposit_current'), text)
@@ -771,6 +901,15 @@ def _parse_text(text: str) -> InvoiceData:
         amount_due_pln=amount_due_pln,
         avg_price_pln_kwh=avg_price_pln_kwh,
         fixed_total_net=fixed_total_net,
+        energy_amount_net=energy_amount_net,
+        dist_var_amount_net=dist_var_amount_net,
+        dist_jakosciowa_amount_net=dist_jakosciowa_amount_net,
+        dist_oze_amount_net=dist_oze_amount_net,
+        dist_kogeneracja_amount_net=dist_kogeneracja_amount_net,
+        oplata_przejsciowa_net=oplata_przejsciowa_net,
+        oplata_handlowa_net=oplata_handlowa_net,
+        akcyza_net=akcyza_net,
+        vat_total_pln=vat_total_pln,
         tariff='G11' if _is_single_zone else 'G12W',
         invoice_number=invoice_number,
         billing_period_raw=billing_period_raw,

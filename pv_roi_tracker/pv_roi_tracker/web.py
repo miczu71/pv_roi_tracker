@@ -21,6 +21,7 @@ from . import live_reader as _live_reader
 from .tariff_analysis import _month_label
 
 app = Flask(__name__)
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50 MB per request — bounds batch PDF uploads
 log = logging.getLogger(__name__)
 
 _lock = threading.Lock()
@@ -353,6 +354,7 @@ def api_data():
         'predictions': _build_predictions(result),
         'invoices': _build_invoices_data(records),
         'tariff_drift': _build_tariff_drift(),
+        'cost_breakdown': _build_cost_breakdown(),
         'layouts_summary': _build_layouts_summary(),
         'tariff_comparison': _state.get('tariff_comparison'),
         'rce_comparison': _state.get('rce_comparison'),
@@ -406,6 +408,7 @@ def _build_invoices_data(records):
                 'needs_training': inv.get('needs_training', False),
                 'parse_error': inv.get('parse_error'),
                 'has_raw_text': bool(inv.get('raw_text')),
+                'has_pdf': bool(inv.get('pdf_path')),
                 'amount_due': inv.get('amount_due_pln'),
                 'deposit_current': inv.get('deposit_current_pln'),
                 'deposit_previous': inv.get('deposit_previous_pln'),
@@ -471,6 +474,105 @@ def _build_tariff_drift():
         return None
 
 
+# Ordered energia → dystrybucja zmienna → opłaty stałe → opłaty dodatkowe, so the
+# breakdown table/chart reads as a natural cost narrative top-to-bottom.
+# (key, polish label, amount field on the stored invoice record, fallback fn or None)
+def _recon_zoned(inv: dict, peak_field: str, offpeak_field: str) -> Optional[float]:
+    """Reconstruct a variable component's monthly amount from rate × kWh when
+    the parser didn't capture the 'wartość netto' column directly."""
+    rp, ro = inv.get(peak_field), inv.get(offpeak_field)
+    if rp is None and ro is None:
+        return None
+    ip = inv.get('imported_kwh_peak') or 0.0
+    io = inv.get('imported_kwh_offpeak') or 0.0
+    return round((rp or 0.0) * ip + (ro or 0.0) * io, 2)
+
+
+def _recon_flat(inv: dict, rate_field: str) -> Optional[float]:
+    """Reconstruct a component whose rate is identical across zones (OZE,
+    jakościowa, kogeneracja) — rate × total imported kWh."""
+    rate = inv.get(rate_field)
+    kwh = inv.get('imported_kwh')
+    if rate is None or kwh is None:
+        return None
+    return round(rate * kwh, 2)
+
+
+_COST_COMPONENTS = [
+    ('energia', 'Energia', 'energy_amount_net',
+     lambda inv: _recon_zoned(inv, 'energy_peak_net', 'energy_offpeak_net')),
+    ('dist_var', 'Składnik zmienny sieciowy', 'dist_var_amount_net',
+     lambda inv: _recon_zoned(inv, 'dist_var_peak_net', 'dist_var_offpeak_net')),
+    ('jakosciowa', 'Stawka jakościowa', 'dist_jakosciowa_amount_net',
+     lambda inv: _recon_flat(inv, 'dist_jakosciowa_net')),
+    ('oze', 'Opłata OZE', 'dist_oze_amount_net',
+     lambda inv: _recon_flat(inv, 'dist_oze_net')),
+    ('kogeneracja', 'Opłata kogeneracyjna', 'dist_kogeneracja_amount_net',
+     lambda inv: _recon_flat(inv, 'dist_kogeneracja_net')),
+    ('mocowa', 'Opłata mocowa', 'fixed_mocowa_net', None),
+    ('abonament', 'Abonament', 'fixed_abonament_net', None),
+    ('staly_sieciowy', 'Składnik stały sieciowy', 'fixed_stalysieciowy_net', None),
+    ('przejsciowa', 'Opłata przejściowa', 'oplata_przejsciowa_net', None),
+    ('handlowa', 'Opłata handlowa', 'oplata_handlowa_net', None),
+    ('akcyza', 'Akcyza', 'akcyza_net', None),
+]
+
+
+def _build_cost_breakdown() -> Optional[dict]:
+    """Aggregate per-component grid-purchase costs across all parsed invoices,
+    for the Faktury tab's "gdzie idą pieniądze" table + stacked chart.
+    Falls back to rate × kWh reconstruction for invoices parsed before the
+    monetary-amount fields existed (or where the value column wasn't found)."""
+    if _invoice_path is None:
+        return None
+    try:
+        from . import invoice_store as _istore
+        stored = _istore.load(_invoice_path)
+    except Exception:
+        return None
+    months = {k: v for k, v in stored.items() if not k.startswith('unparsed-')}
+    if not months:
+        return None
+
+    labels = sorted(months.keys())
+    series: dict = {key: [] for key, *_rest in _COST_COMPONENTS}
+    totals: dict = {key: 0.0 for key, *_rest in _COST_COMPONENTS}
+    any_reconstructed = False
+
+    for month_key in labels:
+        inv = months[month_key]
+        for key, _label, amount_field, fallback in _COST_COMPONENTS:
+            val = inv.get(amount_field)
+            if val is None and fallback is not None:
+                val = fallback(inv)
+                if val is not None:
+                    any_reconstructed = True
+            series[key].append(val)
+            if val is not None:
+                totals[key] += val
+
+    grand_total = round(sum(totals.values()), 2)
+    components = []
+    for key, label, *_rest in _COST_COMPONENTS:
+        if all(v is None for v in series[key]):
+            continue  # never observed on any invoice (e.g. an absent optional fee)
+        total = round(totals[key], 2)
+        components.append({
+            'key': key,
+            'label': label,
+            'total_net': total,
+            'share_pct': round(total / grand_total * 100, 1) if grand_total > 0 else 0.0,
+        })
+    components.sort(key=lambda c: c['total_net'], reverse=True)
+
+    return {
+        'components': components,
+        'per_month': {'labels': labels, 'series': series},
+        'grand_total_net': grand_total,
+        'any_reconstructed': any_reconstructed,
+    }
+
+
 @app.route('/api/invoice/upload', methods=['POST'])
 def invoice_upload():
     if _invoice_reconcile_callback is None:
@@ -481,10 +583,12 @@ def invoice_upload():
     from .invoice_parser import parse_invoice, parse_invoice_debug, InvoiceParseError
     results = []
     parsed_list = []
-    raw_texts: dict = {}  # fname → raw text (for warnings-aware storage)
+    raw_texts: dict = {}    # fname → raw text (for warnings-aware storage)
+    pdf_bytes_map: dict = {}  # fname → original PDF bytes (persisted so we can return to it)
     for f in files:
         fname = f.filename or 'upload'
         pdf_bytes = f.read()
+        pdf_bytes_map[fname] = pdf_bytes
         try:
             data = parse_invoice(pdf_bytes)
             data._filename = fname  # type: ignore[attr-defined]
@@ -508,7 +612,8 @@ def invoice_upload():
                     debug = parse_invoice_debug(pdf_bytes)
                     raw_text = debug.get('text', '')
                     from . import invoice_store as _is
-                    stub_key = _is.upsert_stub(fname, raw_text, error_msg, _invoice_path)
+                    stub_key = _is.upsert_stub(fname, raw_text, error_msg, _invoice_path,
+                                               pdf_bytes=pdf_bytes)
                 except Exception:
                     log.exception('Failed to store stub for %s', fname)
             results.append({'filename': fname, 'ok': False, 'needs_training': True,
@@ -518,7 +623,7 @@ def invoice_upload():
             results.append({'filename': fname, 'ok': False, 'error': str(exc)})
     if parsed_list:
         try:
-            _invoice_reconcile_callback(parsed_list, raw_texts)
+            _invoice_reconcile_callback(parsed_list, raw_texts, pdf_bytes_map)
         except Exception as exc:
             log.exception('Invoice reconcile callback failed')
             return jsonify({'ok': False, 'error': str(exc), 'results': results}), 500
@@ -551,6 +656,57 @@ def invoice_remove():
         return jsonify({'ok': True, 'removed_key': key, 'had_snapshot': bool((record or {}).get('pre_reconcile'))})
     except Exception as exc:
         log.exception('Invoice remove failed')
+        return jsonify({'ok': False, 'error': str(exc)}), 500
+
+
+@app.route('/api/invoice/pdf')
+def invoice_pdf():
+    """Serve the originally uploaded PDF for an invoice, if it was persisted."""
+    key = request.args.get('key', '')
+    if not key or _invoice_path is None:
+        return jsonify({'ok': False, 'error': 'key required'}), 400
+    from . import invoice_store as _istore
+    pdf_bytes = _istore.load_pdf(key, _invoice_path)
+    if pdf_bytes is None:
+        return jsonify({'ok': False, 'error': 'no stored PDF for this invoice'}), 404
+    rec = _istore.get(key, _invoice_path) or {}
+    download_name = (rec.get('filename') or f'{key}.pdf').replace('"', '')
+    return Response(pdf_bytes, mimetype='application/pdf', headers={
+        'Content-Disposition': f'inline; filename="{download_name}"',
+    })
+
+
+@app.route('/api/invoice/reparse', methods=['POST'])
+def invoice_reparse():
+    """Re-run the parser over a stored PDF — e.g. after a parser/layout
+    improvement — without asking the user to find and re-upload the file."""
+    if _invoice_reconcile_callback is None or _invoice_path is None:
+        return jsonify({'ok': False, 'error': 'not initialized'}), 503
+    data = request.get_json(silent=True) or {}
+    key = str(data.get('key', ''))
+    if not key:
+        return jsonify({'ok': False, 'error': 'key required'}), 400
+    try:
+        from . import invoice_store as _istore
+        pdf_bytes = _istore.load_pdf(key, _invoice_path)
+        if pdf_bytes is None:
+            return jsonify({'ok': False, 'error': 'no stored PDF for this invoice'}), 404
+        rec = _istore.get(key, _invoice_path) or {}
+        fname = rec.get('filename') or key
+        from .invoice_parser import parse_invoice, parse_invoice_debug, InvoiceParseError
+        try:
+            parsed = parse_invoice(pdf_bytes)
+        except InvoiceParseError as exc:
+            return jsonify({'ok': False, 'error': str(exc)}), 400
+        parsed._filename = fname  # type: ignore[attr-defined]
+        raw_texts = {}
+        if parsed.warnings:
+            raw_texts[fname] = parse_invoice_debug(pdf_bytes).get('text', '')
+        _invoice_reconcile_callback([parsed], raw_texts, {fname: pdf_bytes})
+        return jsonify({'ok': True, 'key': f'{parsed.year}-{parsed.month:02d}',
+                        'warnings': parsed.warnings})
+    except Exception as exc:
+        log.exception('Invoice reparse failed')
         return jsonify({'ok': False, 'error': str(exc)}), 500
 
 
@@ -1264,6 +1420,20 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
           <h4 style="margin:0 0 8px;font-size:13px;font-weight:600">Pokrycie fakturami</h4>
           <div id="invCoverageGrid"></div>
         </div>
+        <!-- Cost breakdown: where the grid-purchase money goes, per component -->
+        <div style="margin-bottom:16px">
+          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:8px">
+            <h4 style="margin:0;font-size:13px;font-weight:600">Składniki kosztów — na co idą pieniądze</h4>
+            <div id="costBreakdownToggle" style="display:flex;gap:0;font-size:11px"></div>
+          </div>
+          <div id="costBreakdownNote" style="font-size:11px;color:var(--muted);margin-bottom:8px"></div>
+          <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
+            <div id="costBreakdownTableWrap" class="tbl-wrap" style="flex:1;min-width:280px"></div>
+            <div class="chart-wrap" style="flex:2;min-width:320px;height:280px">
+              <canvas id="costBreakdownChart"></canvas>
+            </div>
+          </div>
+        </div>
         <!-- Deposit: expiry/refund KPIs + trend chart -->
         <div style="margin-bottom:16px">
           <h4 style="margin:0 0 8px;font-size:13px;font-weight:600">Depozyt prosumencki — saldo, przedawnienie 12 mies. i zwrot</h4>
@@ -1323,7 +1493,7 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
 </main>
 <script>
 'use strict';
-let _lineChart = null, _barChart = null, _rcemChart = null, _autarkiaChart = null, _prodChart = null, _arbitrageChart = null, _netCostChart = null, _priceSpreadChart = null, _yieldChart = null, _energyBalChart = null, _yearCompChart = null, _prodRankChart = null, _depositChart = null;
+let _lineChart = null, _barChart = null, _rcemChart = null, _autarkiaChart = null, _prodChart = null, _arbitrageChart = null, _netCostChart = null, _priceSpreadChart = null, _yieldChart = null, _energyBalChart = null, _yearCompChart = null, _prodRankChart = null, _depositChart = null, _costBreakdownChart = null;
 let _tariffPriceChart = null, _tariffCompChart = null, _tariffCumChart = null, _tariffSeasonChart = null, _tariffHistChart = null;
 let _rceCmpChart = null;
 let _fanChart = null, _waterfallChart = null, _sankeyChart = null, _cpiRealChart = null, _degradChart = null;
@@ -1379,6 +1549,7 @@ function showTab(name) {
      _cpiRealChart, _degradChart, _waterfallChart, _sankeyChart].forEach(c => c && c.resize());
   }
   if (name === 'invoices' && _depositChart) _depositChart.resize();
+  if (name === 'invoices' && _costBreakdownChart) _costBreakdownChart.resize();
   if (name === 'tariff') {
     [_tariffPriceChart, _tariffCompChart, _tariffCumChart,
      _tariffSeasonChart, _tariffHistChart].forEach(c => c && c.resize());
@@ -2754,7 +2925,7 @@ async function loadData() {
     renderHistTable([...d.records].reverse(), d.summary.month_closed, d.invoices || []);
     renderPredTable(d.predictions, d.summary, d.summary.avg_window);
     renderYearsTable(d.records, systemKwp);
-    renderInvoicesTab(d.invoices || [], d.tariff_drift, d.records, d.layouts_summary);
+    renderInvoicesTab(d.invoices || [], d.tariff_drift, d.records, d.layouts_summary, d.cost_breakdown);
     if (d.tariff_comparison) renderTariffTab(d.tariff_comparison);
     if (d.rce_comparison) renderRceTab(d.rce_comparison);
     // v0.17.0
@@ -2811,13 +2982,102 @@ async function uploadInvoices() {
 /* ─────────────────────────────────────────────────────────────
    Faktury tab renderer
    ───────────────────────────────────────────────────────────── */
-function renderInvoicesTab(invoices, tariffDrift, records, layoutsSummary) {
+function renderInvoicesTab(invoices, tariffDrift, records, layoutsSummary, costBreakdown) {
   _renderInvKpiCards(invoices, tariffDrift, records);
   _renderDriftBanner(tariffDrift);
   _renderCoverageGrid(invoices, records);
+  _renderCostBreakdown(costBreakdown);
   // wykres depozytu rysuje renderDepositSection (fallback: renderDepositChart)
   _renderInvoiceTable(invoices);
   _renderLayoutsPanel(layoutsSummary);
+}
+
+/* Cost breakdown: totals table + per-month stacked chart, with netto/brutto toggle */
+let _costBreakdownData = null, _costBreakdownMode = 'brutto';
+
+function _setCostBreakdownMode(mode) {
+  _costBreakdownMode = mode;
+  _renderCostBreakdown(_costBreakdownData);
+}
+
+function _costToggleBtnStyle(mode) {
+  const active = _costBreakdownMode === mode;
+  return 'padding:3px 10px;border:1px solid var(--border);cursor:pointer;font-size:11px;' +
+    (mode === 'netto' ? 'border-radius:4px 0 0 4px;' : 'border-radius:0 4px 4px 0;border-left:none;') +
+    (active ? 'background:#3182ce;color:#fff;font-weight:600' : 'background:var(--card);color:var(--fg)');
+}
+
+function _renderCostBreakdown(breakdown) {
+  _costBreakdownData = breakdown;
+  const toggleWrap = document.getElementById('costBreakdownToggle');
+  const tableWrap = document.getElementById('costBreakdownTableWrap');
+  const note = document.getElementById('costBreakdownNote');
+  if (!tableWrap) return;
+
+  if (toggleWrap) {
+    toggleWrap.innerHTML =
+      '<button onclick="_setCostBreakdownMode(\'netto\')" style="' + _costToggleBtnStyle('netto') + '">Netto</button>' +
+      '<button onclick="_setCostBreakdownMode(\'brutto\')" style="' + _costToggleBtnStyle('brutto') + '">Brutto</button>';
+  }
+
+  if (!breakdown || !breakdown.components || breakdown.components.length === 0) {
+    tableWrap.innerHTML = '<p style="color:var(--muted);font-size:13px">Brak danych — wgraj faktury, aby zobaczyć rozbicie kosztów.</p>';
+    if (note) note.textContent = '';
+    if (_costBreakdownChart) { _costBreakdownChart.destroy(); _costBreakdownChart = null; }
+    return;
+  }
+
+  const mult = _costBreakdownMode === 'brutto' ? 1.23 : 1.0;
+  const grand = breakdown.grand_total_net * mult;
+
+  let rows = '';
+  breakdown.components.forEach(c => {
+    rows += '<tr><td>' + c.label + '</td>' +
+      '<td style="text-align:right">' + pln(c.total_net * mult, 2) + '</td>' +
+      '<td style="text-align:right;color:var(--muted)">' + pct(c.share_pct) + '</td></tr>';
+  });
+  if (_costBreakdownMode === 'netto') {
+    // Informational row so netto + VAT reconciles to the brutto total below
+    rows += '<tr style="color:var(--muted)"><td>VAT (23%)</td>' +
+      '<td style="text-align:right">' + pln(breakdown.grand_total_net * 0.23, 2) + '</td><td></td></tr>';
+  }
+
+  tableWrap.innerHTML =
+    '<table style="width:100%;border-collapse:collapse;font-size:12px">' +
+    '<thead><tr style="border-bottom:2px solid var(--border);font-size:11px">' +
+      '<th style="text-align:left">Składnik</th><th style="text-align:right">Kwota</th><th style="text-align:right">% udziału</th>' +
+    '</tr></thead><tbody>' + rows + '</tbody>' +
+    '<tfoot><tr style="border-top:2px solid var(--border);font-weight:700">' +
+      '<td>Razem</td><td style="text-align:right">' + pln(grand, 2) + '</td><td></td>' +
+    '</tr></tfoot></table>';
+
+  if (note) {
+    note.textContent = breakdown.any_reconstructed
+      ? 'Część wartości oszacowana ze stawek × kWh — przelicz z PDF (przycisk „↻ PDF” w tabeli faktur) dla kwot z faktury.'
+      : '';
+  }
+
+  const ctx = document.getElementById('costBreakdownChart');
+  if (!ctx) return;
+  if (_costBreakdownChart) _costBreakdownChart.destroy();
+  const palette = ['#3182ce','#38a169','#d69e2e','#805ad5','#dd6b20','#319795','#718096','#e53e3e','#0bc5ea','#d53f8c','#a0aec0'];
+  const datasets = breakdown.components.map((c, i) => ({
+    label: c.label,
+    data: breakdown.per_month.series[c.key].map(v => v != null ? v * mult : null),
+    backgroundColor: palette[i % palette.length],
+  }));
+  _costBreakdownChart = new Chart(ctx, {
+    type: 'bar',
+    data: { labels: breakdown.per_month.labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { position: 'top', labels: { boxWidth: 10, font: { size: 10 } } } },
+      scales: {
+        x: { stacked: true, ticks: { font: { size: 9 }, maxRotation: 45 } },
+        y: { stacked: true, ticks: { callback: v => v + ' zł', font: { size: 10 } } },
+      },
+    },
+  });
 }
 
 /* KPI summary cards */
@@ -3012,7 +3272,15 @@ function _renderInvoiceTable(invoices) {
     }
 
     const keyAttr = JSON.stringify(inv.key).replace(/"/g, '&quot;');
-    const actionBtns =
+    const pdfBtns = inv.has_pdf
+      ? '<button onclick="event.stopPropagation();viewInvoicePdf(' + keyAttr + ')" ' +
+          'style="font-size:11px;padding:2px 7px;margin-right:3px;background:#718096;color:#fff;border:none;border-radius:3px;cursor:pointer" ' +
+          'title="Otwórz oryginalny PDF">PDF</button>' +
+        '<button onclick="event.stopPropagation();reparseInvoice(' + keyAttr + ')" ' +
+          'style="font-size:11px;padding:2px 7px;margin-right:3px;background:#805ad5;color:#fff;border:none;border-radius:3px;cursor:pointer" ' +
+          'title="Przelicz ponownie z zapisanego PDF (np. po poprawce parsera)">↻ PDF</button>'
+      : '';
+    const actionBtns = pdfBtns +
       '<button onclick="event.stopPropagation();openTrainModal(' + keyAttr + ')" ' +
         'style="font-size:11px;padding:2px 7px;margin-right:3px;background:#3182ce;color:#fff;border:none;border-radius:3px;cursor:pointer" ' +
         'title="Trenuj parser na tym układzie faktury">Trenuj</button>' +
@@ -3116,6 +3384,29 @@ async function removeInvoice(key) {
       setTimeout(loadData, 800);
     } else {
       alert('Błąd usuwania: ' + (d.error || 'nieznany'));
+    }
+  } catch(e) {
+    alert('Błąd połączenia: ' + e.message);
+  }
+}
+
+/* ── Stored PDF: view / reparse ────────────────────────────────────────────── */
+function viewInvoicePdf(key) {
+  window.open('api/invoice/pdf?key=' + encodeURIComponent(key), '_blank');
+}
+
+async function reparseInvoice(key) {
+  try {
+    const r = await fetch('api/invoice/reparse', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({key})
+    });
+    const d = await r.json();
+    if (d.ok) {
+      setTimeout(loadData, 800);
+    } else {
+      alert('Błąd przeliczania: ' + (d.error || 'nieznany'));
     }
   } catch(e) {
     alert('Błąd połączenia: ' + e.message);

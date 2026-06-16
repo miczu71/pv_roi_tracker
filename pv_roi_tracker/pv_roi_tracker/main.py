@@ -161,14 +161,17 @@ def main() -> None:
         lambda fk: invoice_layouts.learned_for(fk, INVOICE_LAYOUTS_PATH)
     )
 
-    def _invoice_reconcile(parsed_list: list, raw_texts: dict = None) -> None:
+    def _invoice_reconcile(parsed_list: list, raw_texts: dict = None,
+                           pdf_bytes_map: dict = None) -> None:
         for data in parsed_list:
             filename = getattr(data, '_filename', '')
             snap = historic_store.snapshot_month(data.year, data.month, HISTORIC_PATH)
             reconciled = historic_store.reconcile_invoice(data, HISTORIC_PATH)
             raw_text = (raw_texts or {}).get(filename, '') if data.warnings else None
+            pdf_bytes = (pdf_bytes_map or {}).get(filename)
             invoice_store.upsert(data, filename=filename, reconciled=reconciled,
-                                 pre_reconcile=snap, raw_text=raw_text, path=INVOICE_PATH)
+                                 pre_reconcile=snap, raw_text=raw_text, pdf_bytes=pdf_bytes,
+                                 path=INVOICE_PATH)
             logger.info('Invoice %d-%02d ingested (reconciled=%s)', data.year, data.month, reconciled)
         poll_and_publish()
 

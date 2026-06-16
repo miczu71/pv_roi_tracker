@@ -349,6 +349,35 @@ class TestOldFormat:
     def test_fixed_total_net(self, parsed):
         assert parsed.fixed_total_net == pytest.approx(30.91, abs=0.01)
 
+    def test_energy_amount_net(self, parsed):
+        # szczytowa 47,18 + pozaszczytowa 103,53 (wartość netto column)
+        assert parsed.energy_amount_net == pytest.approx(47.18 + 103.53, abs=0.01)
+
+    def test_dist_var_amount_net(self, parsed):
+        assert parsed.dist_var_amount_net == pytest.approx(20.28 + 12.33, abs=0.01)
+
+    def test_dist_jakosciowa_amount_net(self, parsed):
+        assert parsed.dist_jakosciowa_amount_net == pytest.approx(1.99 + 7.64, abs=0.01)
+
+    def test_dist_oze_amount_net(self, parsed):
+        assert parsed.dist_oze_amount_net == pytest.approx(0.22 + 0.83, abs=0.01)
+
+    def test_dist_kogeneracja_amount_net(self, parsed):
+        assert parsed.dist_kogeneracja_amount_net == pytest.approx(0.19 + 0.71, abs=0.01)
+
+    def test_optional_fees_absent(self, parsed):
+        """opłata przejściowa/handlowa and akcyza don't appear on this invoice —
+        must be None, not a false-positive match or a warning."""
+        assert parsed.oplata_przejsciowa_net is None
+        assert parsed.oplata_handlowa_net is None
+        assert parsed.akcyza_net is None
+
+    def test_vat_total_reconstructed(self, parsed):
+        # 23% of the sum of all known net components (energy + distribution + fixed)
+        known_net = (47.18 + 103.53) + (20.28 + 12.33) + (1.99 + 7.64) + (0.22 + 0.83) \
+            + (0.19 + 0.71) + 16.01 + 4.56 + 10.34
+        assert parsed.vat_total_pln == pytest.approx(known_net * 0.23, abs=0.05)
+
     def test_deposit_current(self, parsed):
         assert parsed.deposit_current_pln == pytest.approx(0.0, abs=0.01)
 
@@ -488,6 +517,17 @@ class TestOldestFormat:
     def test_fixed_stalysieciowy(self, parsed):
         assert parsed.fixed_stalysieciowy_net == pytest.approx(10.34, abs=0.01)
 
+    def test_energy_amount_net(self, parsed):
+        assert parsed.energy_amount_net == pytest.approx(22.16 + 38.25, abs=0.01)
+
+    def test_dist_oze_amount_net(self, parsed):
+        assert parsed.dist_oze_amount_net == pytest.approx(0.10 + 0.32, abs=0.01)
+
+    def test_optional_fees_absent(self, parsed):
+        assert parsed.oplata_przejsciowa_net is None
+        assert parsed.oplata_handlowa_net is None
+        assert parsed.akcyza_net is None
+
     def test_deposit_current(self, parsed):
         assert parsed.deposit_current_pln == pytest.approx(0.0, abs=0.01)
 
@@ -626,6 +666,28 @@ class TestG11Format:
 
     def test_fixed_stalysieciowy(self, parsed):
         assert parsed.fixed_stalysieciowy_net == pytest.approx(10.34, abs=0.01)
+
+    def test_energy_amount_net(self, parsed):
+        # Single zone: amount = the całodobowa row's wartość netto (824.73)
+        assert parsed.energy_amount_net == pytest.approx(824.73, abs=0.01)
+
+    def test_dist_var_amount_net(self, parsed):
+        assert parsed.dist_var_amount_net == pytest.approx(315.45, abs=0.01)
+
+    def test_dist_jakosciowa_amount_net(self, parsed):
+        assert parsed.dist_jakosciowa_amount_net == pytest.approx(38.50, abs=0.01)
+
+    def test_dist_oze_amount_via_dotall(self, parsed):
+        # Zero-rate OZE this period, found via the same DOTALL fallback as the rate
+        assert parsed.dist_oze_amount_net == pytest.approx(0.0, abs=0.01)
+
+    def test_dist_kogeneracja_amount_net(self, parsed):
+        assert parsed.dist_kogeneracja_amount_net == pytest.approx(7.58, abs=0.01)
+
+    def test_optional_fees_absent(self, parsed):
+        assert parsed.oplata_przejsciowa_net is None
+        assert parsed.oplata_handlowa_net is None
+        assert parsed.akcyza_net is None
 
     def test_peak_gross_computed(self, parsed):
         expected = (0.67270 + 0.25730 + 0.03140 + 0.00000 + 0.00618) * 1.23

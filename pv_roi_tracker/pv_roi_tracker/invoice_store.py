@@ -21,6 +21,7 @@ from .invoice_parser import InvoiceData
 logger = logging.getLogger(__name__)
 
 DEFAULT_PATH = Path('/data/invoices.json')
+PDF_DIR_NAME = 'pdfs'
 
 # Fields captured in the pre-reconcile snapshot (used for revert on Remove)
 _SNAPSHOT_FIELDS = (
@@ -40,7 +41,7 @@ def _atomic_write(path: Path, doc: dict) -> None:
 
 def _load_document(path: Path) -> dict:
     if not path.exists():
-        return {'schema_version': 1, 'invoices': {}}
+        return {'schema_version': 2, 'invoices': {}}
     try:
         return json.loads(path.read_text(encoding='utf-8'))
     except (json.JSONDecodeError, OSError) as exc:
@@ -57,6 +58,45 @@ def _save_document(doc: dict, path: Path) -> None:
     _atomic_write(path, doc)
 
 
+# ── Original PDF persistence ───────────────────────────────────────────────
+# Stored alongside invoices.json under a sibling "pdfs/" directory so the
+# original upload can always be re-served or re-parsed (e.g. after a parser
+# improvement), without asking the user to find and re-upload the file.
+
+def pdf_dir(path: Path = DEFAULT_PATH) -> Path:
+    return path.parent / PDF_DIR_NAME
+
+
+def pdf_path_for(key: str, path: Path = DEFAULT_PATH) -> Path:
+    safe_key = re.sub(r'[^a-zA-Z0-9_\-]', '_', key)
+    return pdf_dir(path) / f'{safe_key}.pdf'
+
+
+def save_pdf(key: str, pdf_bytes: bytes, path: Path = DEFAULT_PATH) -> str:
+    """Persist the original uploaded PDF for `key`. Returns the path string
+    (stored on the invoice record so the UI can offer download/reparse)."""
+    target = pdf_path_for(key, path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(pdf_bytes)
+    return str(target)
+
+
+def load_pdf(key: str, path: Path = DEFAULT_PATH) -> Optional[bytes]:
+    target = pdf_path_for(key, path)
+    if target.exists():
+        return target.read_bytes()
+    return None
+
+
+def delete_pdf(key: str, path: Path = DEFAULT_PATH) -> None:
+    target = pdf_path_for(key, path)
+    if target.exists():
+        try:
+            target.unlink()
+        except OSError:
+            logger.warning('Could not delete stored PDF for %s', key)
+
+
 # ── Stored invoice record ─────────────────────────────────────────────────────
 
 def _to_record(
@@ -65,6 +105,7 @@ def _to_record(
     reconciled: bool,
     pre_reconcile: Optional[dict] = None,
     raw_text: Optional[str] = None,
+    pdf_path: Optional[str] = None,
 ) -> dict:
     d = asdict(data)
     d['parsed_at'] = datetime.now(timezone.utc).isoformat()
@@ -76,6 +117,8 @@ def _to_record(
     # Only store raw_text when the parse had warnings (saves space for clean parses)
     if raw_text and data.warnings:
         d['raw_text'] = raw_text
+    if pdf_path:
+        d['pdf_path'] = pdf_path
     return d
 
 
@@ -87,13 +130,15 @@ def upsert(
     reconciled: bool = False,
     pre_reconcile: Optional[dict] = None,
     raw_text: Optional[str] = None,
+    pdf_bytes: Optional[bytes] = None,
     path: Path = DEFAULT_PATH,
 ) -> str:
     """Store or overwrite the invoice for data.year / data.month. Returns the key."""
     key = f'{data.year}-{data.month:02d}'
+    pdf_path = save_pdf(key, pdf_bytes, path) if pdf_bytes else None
     doc = _load_document(path)
     invoices: dict = doc.setdefault('invoices', {})
-    invoices[key] = _to_record(data, filename, reconciled, pre_reconcile, raw_text)
+    invoices[key] = _to_record(data, filename, reconciled, pre_reconcile, raw_text, pdf_path)
     _save_document(doc, path)
     logger.info('Invoice stored: %s (reconciled=%s)', key, reconciled)
     return key
@@ -104,6 +149,7 @@ def upsert_stub(
     raw_text: str,
     error: str,
     path: Path = DEFAULT_PATH,
+    pdf_bytes: Optional[bytes] = None,
 ) -> str:
     """
     Store a failed-parse PDF as a stub under a synthetic key.
@@ -111,8 +157,7 @@ def upsert_stub(
     """
     safe_name = re.sub(r'[^a-zA-Z0-9_\-]', '_', filename)[:40]
     key = f'unparsed-{int(time.time())}-{safe_name}'
-    doc = _load_document(path)
-    doc.setdefault('invoices', {})[key] = {
+    rec = {
         'filename': filename,
         'parse_error': error,
         'raw_text': raw_text,
@@ -120,6 +165,10 @@ def upsert_stub(
         'reconciled': False,
         'parsed_at': datetime.now(timezone.utc).isoformat(),
     }
+    if pdf_bytes:
+        rec['pdf_path'] = save_pdf(key, pdf_bytes, path)
+    doc = _load_document(path)
+    doc.setdefault('invoices', {})[key] = rec
     _save_document(doc, path)
     logger.info('Invoice stub stored: %s (parse failed: %s)', key, error[:80])
     return key
@@ -128,12 +177,13 @@ def upsert_stub(
 def remove(key: str, path: Path = DEFAULT_PATH) -> Optional[dict]:
     """
     Delete an invoice record by key. Returns the removed record (for snapshot revert),
-    or None if the key was not found.
+    or None if the key was not found. Also deletes the stored PDF, if any.
     """
     doc = _load_document(path)
     record = doc.get('invoices', {}).pop(key, None)
     if record is not None:
         _save_document(doc, path)
+        delete_pdf(key, path)
         logger.info('Invoice removed: %s', key)
     return record
 

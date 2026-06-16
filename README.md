@@ -16,7 +16,13 @@ Tracks the return-on-investment of a residential photovoltaic system (Polish net
 
 ## Web UI (ingress)
 
-Tabs: **Historia miesięczna** · **Prognoza spłaty** (wachlarz spłaty P10–P90) · **Podsumowanie roczne** (z kolumnami r/r) · **Wykresy** (m.in. waterfall miesięczny, Sankey przepływu energii, oszczędności nominalne vs realne CPI, trend degradacji kWh/kWp, ranking produkcji miesięcznej z kolorem per rok i medalami top 3) · **Faktury** (upload PDF Tauron, trening parsera, depozyt prosumencki z prognozą przedawnienia, rekonsyliacja faktury vs falownik) · **Analiza taryf** (G12w vs dynamiczna) · **RCE vs RCEm** (symulacja rozliczenia godzinowego + heatmapa eksport × cena). Nagłówek pokazuje wersję add-onu. The layout is responsive — tabs scroll horizontally and tables keep a sticky first column on phones.
+Tabs: **Historia miesięczna** · **Prognoza spłaty** (wachlarz spłaty P10–P90) · **Podsumowanie roczne** (z kolumnami r/r) · **Wykresy** (m.in. waterfall miesięczny, Sankey przepływu energii, oszczędności nominalne vs realne CPI, trend degradacji kWh/kWp, ranking produkcji miesięcznej z kolorem per rok i medalami top 3) · **Faktury** (upload PDF Tauron z trwałym przechowywaniem oryginałów, trening parsera, składniki kosztów faktur, depozyt prosumencki z prognozą przedawnienia, rekonsyliacja faktury vs falownik) · **Analiza taryf** (G12w vs dynamiczna) · **RCE vs RCEm** (symulacja rozliczenia godzinowego + heatmapa eksport × cena). Nagłówek pokazuje wersję add-onu. The layout is responsive — tabs scroll horizontally and tables keep a sticky first column on phones.
+
+### Faktury — składniki kosztów i trwałe PDF-y
+
+Parser wyciąga z faktury Tauron nie tylko stawki jednostkowe, ale też realne kwoty złotówkowe ("wartość netto") dla energii, składnika zmiennego sieciowego, jakościowej, OZE i kogeneracji, oraz opłatę przejściową/handlową i akcyzę, jeśli występują. Zakładka Faktury pokazuje **rozbicie kosztów** — tabelę sum per składnik (z % udziału) i wykres słupkowy skumulowany per miesiąc, z przełącznikiem **Netto / Brutto**. Faktury przetworzone przed wprowadzeniem realnych kwot (lub bez odnalezionej kolumny wartości) dolicza się ze stawki × kWh — UI sygnalizuje to notatką.
+
+Oryginalne wgrane pliki PDF są **trwale przechowywane** w `/data/pdfs/`, obok `invoices.json`. Każdy wiersz faktury ma przyciski **PDF** (podgląd oryginału) i **↻ PDF** (przeliczenie faktury ponownie z zapisanego pliku — przydatne po poprawce parsera, bez ponownego wgrywania).
 
 ### RCE vs RCEm
 
