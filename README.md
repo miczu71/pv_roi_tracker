@@ -16,7 +16,7 @@ Tracks the return-on-investment of a residential photovoltaic system (Polish net
 
 ## Web UI (ingress)
 
-Tabs: **Historia miesięczna** · **Prognoza spłaty** (wachlarz spłaty P10–P90) · **Podsumowanie roczne** (z kolumnami r/r) · **Wykresy** (m.in. waterfall miesięczny, Sankey przepływu energii, oszczędności nominalne vs realne CPI, trend degradacji kWh/kWp, ranking produkcji miesięcznej z kolorem per rok i medalami top 3) · **Faktury** (upload PDF Tauron z trwałym przechowywaniem oryginałów, trening parsera, składniki kosztów faktur, depozyt prosumencki z prognozą przedawnienia, rekonsyliacja faktury vs falownik) · **Analiza taryf** (G12w vs dynamiczna) · **RCE vs RCEm** (symulacja rozliczenia godzinowego + heatmapa eksport × cena). Nagłówek pokazuje wersję add-onu. The layout is responsive — tabs scroll horizontally and tables keep a sticky first column on phones.
+Tabs: **Historia miesięczna** · **Prognoza spłaty** (wachlarz spłaty P10–P90) · **Podsumowanie roczne** (z kolumnami r/r) · **Wykresy** (m.in. waterfall miesięczny, Sankey przepływu energii, oszczędności nominalne vs realne CPI, trend degradacji kWh/kWp, ranking produkcji miesięcznej z kolorem per rok i medalami top 3) · **Faktury** (upload PDF Tauron z trwałym przechowywaniem oryginałów, trening parsera, składniki kosztów faktur, depozyt prosumencki z prognozą przedawnienia, rekonsyliacja faktury vs falownik) · **Analiza taryf** (G12w vs dynamiczna) · **RCE vs RCEm** (symulacja rozliczenia godzinowego + heatmapa eksport × cena) · **Taryfa** (ręczne wpisy stawek z datą obowiązywania — zarządzanie luką ogłoszenia taryfy). Nagłówek pokazuje wersję add-onu. The layout is responsive — tabs scroll horizontally and tables keep a sticky first column on phones.
 
 ### Faktury — składniki kosztów, korekty i trwałe PDF-y
 
@@ -34,13 +34,15 @@ Korekty są wyświetlane jako **zagnieżdżone pod-wiersze** (badge KOREKTA/NOTA
 
 Oryginalne wgrane pliki PDF są **trwale przechowywane** w `/data/pdfs/`, obok `invoices.json`. Każdy wiersz faktury ma przyciski **PDF** (podgląd oryginału) i **↻ PDF** (przeliczenie faktury ponownie z zapisanego pliku — przydatne po poprawce parsera, bez ponownego wgrywania).
 
-### Najnowsza faktura jako jedno źródło prawdy
+### Najnowsza faktura jako jedno źródło prawdy (+ zakładka Taryfa)
 
 Stawki z **chronologicznie najnowszej** przetworzonej faktury (wybór po miesiącu rozliczeniowym, nie po kolejności wgrywania — wgranie starszej faktury po nowszej nigdy nie nadpisuje aktualnie używanych stawek) są publikowane jako 13 sensorów MQTT (`sensor.pv_roi_rate_*` / `sensor.pv_roi_fixed_*`, patrz tabela sensorów) i czytane:
-- przez **pakiet `energy_simulation.yaml`** w głównej konfiguracji HA — opłaty OZE/jakościowa/kogeneracyjna i suma opłat stałych w symulacji taryfy dynamicznej oraz G12w/G12 są odczytywane z tych sensorów, z fallbackiem identycznym jak poprzednie stałe wartości, gdy żadna faktura nie jest jeszcze wgrana;
+- przez **pakiet `energy_simulation.yaml`** w głównej konfiguracji HA — opłaty OZE/jakościowa/kogeneracyjna, suma opłat stałych **oraz ceny brutto G12w/G12** w symulacji taryfy dynamicznej są odczytywane z tych sensorów, z fallbackiem identycznym jak poprzednie stałe wartości, gdy żadna faktura nie jest jeszcze wgrana;
 - przez zakładkę **Analiza taryf** — referencyjne stawki G12w na wykresie 7-dniowym i w podsumowaniu pochodzą z faktury, nie z konfiguracji dodatku.
 
-Sensory mają stan `unknown`, dopóki żadna faktura nie zostanie wgrana — wszystkie powyższe miejsca działają wtedy identycznie jak przed tą funkcją (na stałych domyślnych).
+**Zakładka Taryfa** (od v0.22.0) uzupełnia jedno źródło prawdy o **wypełnienie luki ogłoszenia**: nowe stawki Tauron wchodzą 1 stycznia, ale faktura potwierdzająca je nadchodzi dopiero w lutym. W tym oknie add-on korzysta z ręcznego wpisu (`effective_from=2027-01`) jako override — automatycznie ustępuje, gdy pierwsza faktura za ten miesiąc zostanie wgrana. Priorytet: **ręczny baseline < faktura < override** (override aktywny tylko gdy wpisana data jest nowsza niż najnowsza faktura).
+
+Sensory mają stan `unknown`, dopóki żadna faktura nie zostanie wgrana i brak wpisów w zakładce Taryfa — wszystkie powyższe miejsca działają wtedy identycznie jak przed tą funkcją (na stałych fallbackach w YAML).
 
 ### RCE vs RCEm
 
@@ -155,8 +157,6 @@ Add `https://github.com/miczu71/pv_roi_tracker` in **Settings → Add-ons → Ad
 | `discount_rate_real` | `0.04` | Real discount rate for NPV |
 | `inflation_rate_assumption` | `0.05` | Fallback inflation when GUS CPI unavailable |
 | `comparison_yield_rate` | `0.055` | Alternative-investment yield (bond comparison) |
-| `tariff_peak_price` | `1.23` | G12w peak rate (PLN/kWh, gross) |
-| `tariff_offpeak_price` | `0.63` | G12w off-peak rate (PLN/kWh, gross) |
 | `battery_roundtrip_efficiency` | `0.92` | Battery round-trip efficiency for arbitrage savings |
 | `monthly_notify` | `true` | Push a Polish month-close summary via `notify.family` |
 | `co2_factor_kg_kwh` | `0.597` | Grid CO₂ emission factor for the avoided-emissions sensor (KOBiZE, end-user electricity) |
@@ -171,6 +171,7 @@ Add `https://github.com/miczu71/pv_roi_tracker` in **Settings → Add-ons → Ad
 | `/data/rcem_corrections.json` | History of PSE price corrections |
 | `/data/rce_hourly.json` | Hourly RCE price cache + frozen monthly RCE-vs-RCEm results |
 | `/data/invoices.json` | Parsed Tauron invoices |
+| `/data/tariff_config.json` | Ręczne wpisy stawek taryfy (lista datowanych wpisów; seed tworzony przy 1. starcie) |
 | `/data/invoice_layouts.json` | Learned invoice parser patterns |
 | `/data/cpi_history.json` | GUS CPI chain index |
 

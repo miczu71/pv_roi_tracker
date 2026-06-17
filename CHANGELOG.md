@@ -2,6 +2,54 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.22.0] — 2026-06-17
+
+### Added
+
+- **Nowa zakładka UI «Taryfa»** — lista datowanych wpisów taryfy ręcznej, formularz dodawania/edycji/usuwania wpisów, badge statusu (override aktywny / baseline / bez faktur), adnotacja „publikacja MQTT przy najbliższym pollu (≤30 min)".
+- **Nowy moduł `tariff_config.py`** — persystencja stawek w `/data/tariff_config.json` jako posortowana lista datowanych wpisów `effective_from` (format `YYYY-MM`). Obsługuje kolejne zmiany taryfy (2027→2028→…) bez nadpisywania historii. Funkcje: `load`/`save` (atomic write), `upsert_entry` (dedup po `effective_from`), `remove_entry`, `seed_if_missing`, `current_entry`, `override_rates`.
+- **Mechanizm override — wypełnienie luki ogłoszenia taryfy**: gdy nowe stawki Tauron są znane z wyprzedzeniem (np. od 1.01.2027), ale faktura potwierdzająca je nadejdzie dopiero w lutym, można z góry wpisać wpis `effective_from=2027-01` → add-on użyje go jako override. Override **wygasa automatycznie** gdy pierwsza faktura za ten miesiąc zostanie wgrana — bez żadnej ręcznej akcji.
+- **Nowe endpointy REST**: `GET /api/tariff_config`, `POST /api/tariff_config` (upsert), `POST /api/tariff_config/delete`.
+- **Seed przy 1. starcie**: jeśli `/data/tariff_config.json` nie istnieje, tworzony jest z jednym wpisem `2026-02` zawierającym dotychczasowe litery (1.23/0.63 + stałe fixed). Nic nie ginie, nie wymagana żadna migracja ręczna.
+- **21 nowych testów jednostkowych** (`tests/test_tariff_config.py`): pokrycie `current_entry`, `override_rates`, `upsert`/`remove`, `seed`, priorytetów w `latest_invoice_rates()`.
+
+### Changed
+
+- **Priorytet stawek w `latest_invoice_rates()`**: baseline z `tariff_config.current_entry()` < faktura (nadpisuje pola gdzie `not None`) < override z `tariff_config.override_rates()` (aktywny tylko w oknie luki). Schemat priorytetu dotyczy wyłącznie wartości stawek — logika wyboru najnowszej faktury (`_latest_real_invoice()`) bez zmian.
+- **`_build_tariff_drift()`** porównuje stawki z faktury do **baseline z `tariff_config`** (pola `peak_gross`, `offpeak_gross`, `fixed_total_net`) zamiast dotychczasowych stałych globalnych `_tariff_peak/_offpeak/_FIXED_NET_EXPECTED`.
+- **`test_web_invoice_rates.py`** zaktualizowany: fixture `_reset_paths` tworzy pustą `tariff_config.json` per test (brak baseline = izolacja testu); `test_tariff_drift_unaffected_by_stub_key` używa jawnego zapisu `tariff_config` zamiast usuniętego `set_tariff_config(peak, offpeak)`.
+
+### Removed
+
+- **Opcje konfiguracyjne `tariff_peak_price` i `tariff_offpeak_price`** usunięte z `config.yaml` i `schema:`. Wartości żyją teraz w zakładce Taryfa / `/data/tariff_config.json` (seed tworzy plik przy 1. starcie z wartościami z epoki add-onu).
+- **Globalne `_tariff_peak`, `_tariff_offpeak`, `_FIXED_NET_EXPECTED`** usunięte z `web.py`.
+- **`set_tariff_config(peak, offpeak)`** usunięte z `web.py`; zastąpione przez `set_tariff_config_path(path)`.
+
+### Entities / services touched
+
+| Encja / endpoint | Zmiana |
+|---|---|
+| `GET /api/tariff_config` | NOWY — lista wpisów taryfy + status override |
+| `POST /api/tariff_config` | NOWY — upsert wpisu (walidacja: klucze ⊆ `_RATE_FIELDS`, wartości ≥ 0, format `YYYY-MM`) |
+| `POST /api/tariff_config/delete` | NOWY — usuń wpis po `effective_from` |
+
+> Sensory MQTT bez zmian (te same 42+13 encje). Wartości stawek mogą się zmienić gdy override jest aktywny i różni się od poprzednich stałych.
+
+---
+
+## [0.21.0] — 2026-06-17
+
+### Added
+
+- **Obsługa faktur korekt i not obciążeniowych** — parser rozpoznaje typ dokumentu (`FAKTURA VAT KOREKTA NR …`, `NOTA OBCI…`) i nadaje im unikalne klucze (`YYYY-MM~kor~<nr>`, `YYYY-MM~nota~<nr>`). Korekty zasilają `deposit.calculate()` przez `effective_by_month()`. Noty są tylko archiwalne.
+- **Zagnieżdżone pod-wiersze korekt w UI** — badge KOREKTA/NOTA, „było → jest" dla depozytu, delta PLN, powód.
+
+### Entities / services touched
+
+> Sensory MQTT bez zmian — korekty i noty są pomijane przy wyborze najnowszej faktury rozliczeniowej.
+
+---
+
 ## [0.20.1] — 2026-06-16
 
 ### Changed
