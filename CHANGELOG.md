@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.23.0] — 2026-06-17
+
+### Added
+
+- **Oś zmian taryfy wykryta z faktur** — nowa sekcja w zakładce Taryfa „Zmiany taryfy wykryte z faktur": lista punktów zmiany stawek odtworzona z historii wgranych faktur (delta na każdym polu z `_RATE_FIELDS` z epsilonem 1e-4 dla stawek, 0.01 dla opłat stałych). Pierwsza faktura z danymi = punkt bazowy (bez zmiany). Wpisy mające już odpowiadający ręczny wpis taryfowy oznaczone badge „✓ jest wpis". Przycisk **„Utwórz wpis"** pre-wypełnia formularz pełnym snapshotem stawek z danej faktury — użytkownik weryfikuje i zapisuje.
+- **`GET /api/tariff_config/derived`** — read-only endpoint zwracający `{changes:[...], existing_effective_from:[...]}`. Nic nie zapisuje.
+- **`tariff_config.effective_baseline(cfg, today)`** — kumulatywny baseline: scala `rates` wszystkich wpisów z `effective_from <= today` rosnąco. Wpis 2027-01 z samym `peak_gross/offpeak_gross` dziedziczy `fixed_*/dist_*` z wpisu 2026-02 — wystarczy podać tylko zmienione stawki.
+- **15 nowych testów**: `test_tariff_config.py` (×5 dla `effective_baseline`), nowy plik `tests/test_derive_tariff_changes.py` (×9), `test_web_invoice_rates.py` (×1 dla dziedziczenia baseline).
+
+### Changed
+
+- **`latest_invoice_rates()` krok 1** zmieniony z `current_entry(cfg).rates` (jeden wpis) → `effective_baseline(cfg, today)` (wszystkie wpisy scalone). Priorytet i kolejność kroków bez zmian: baseline < faktura < override.
+- **`_build_tariff_drift()`** używa `effective_baseline` zamiast `current_entry().rates` — baseline jest teraz kompletny nawet gdy najnowszy wpis zmienił tylko część pól.
+- Opis w zakładce Taryfa → dodana notatka: „Puste pola dziedziczą wartości z wcześniejszych wpisów — wystarczy podać tylko zmienione stawki."
+
+### Entities / services touched
+
+| Endpoint | Zmiana |
+|---|---|
+| `GET /api/tariff_config/derived` | NOWY — read-only oś zmian taryfy z faktur |
+
+> Sensory MQTT bez zmian. Wartości stawek mogą delikatnie różnić się od v0.22.0, jeśli wcześniejszy wpis taryfowy miał inne pola niż nowszy — teraz effective_baseline scala je wszystkie.
+
+---
+
 ## [0.22.0] — 2026-06-17
 
 ### Added
