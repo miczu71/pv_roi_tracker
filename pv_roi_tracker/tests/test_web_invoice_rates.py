@@ -1,17 +1,27 @@
 """Tests for web.latest_invoice_rates() and the _latest_real_invoice() helper
-it shares with _build_tariff_drift() — the Phase 2 "single source of truth"
-rate provider for MQTT sensors / energy_simulation.yaml / Analiza taryf."""
+it shares with _build_tariff_drift() — the "single source of truth" rate
+provider for MQTT sensors / energy_simulation.yaml / Analiza taryf.
+
+Since v0.22.0, latest_invoice_rates() incorporates tariff_config baseline + override,
+so tests must provide a tariff_config_path pointing to an empty / minimal config to
+isolate invoice-only behaviour."""
 import pytest
 
-from pv_roi_tracker import web, invoice_store
+from pv_roi_tracker import web, invoice_store, tariff_config
 from pv_roi_tracker.invoice_parser import _parse_text
 from tests.test_invoice_parser import _make_old_format_text, _make_g11_format_text
 
 
 @pytest.fixture(autouse=True)
-def _reset_invoice_path():
+def _reset_paths(tmp_path):
+    """Reset both invoice_path and tariff_config_path after each test."""
+    tc_path = tmp_path / 'tariff_config.json'
+    # empty config — no tariffs, so baseline = {} and override = {}
+    tariff_config.save({'tariffs': []}, tc_path)
+    web.set_tariff_config_path(tc_path)
     yield
     web.set_invoice_path(None)
+    web.set_tariff_config_path(None)
 
 
 @pytest.fixture
@@ -21,12 +31,14 @@ def store_path(tmp_path):
     return path
 
 
-def test_no_invoice_path_returns_empty_dict():
+def test_no_invoice_path_returns_empty_dict(tmp_path):
     web.set_invoice_path(None)
+    # Empty tariff_config → no baseline → should return {}
     assert web.latest_invoice_rates() == {}
 
 
 def test_no_invoices_returns_empty_dict(store_path):
+    # Empty tariff_config (from autouse fixture) → no baseline → {}
     assert web.latest_invoice_rates() == {}
 
 
@@ -84,14 +96,20 @@ def test_only_non_none_fields_included(store_path):
     assert 'energy_offpeak_net' not in rates  # None on a single-zone invoice
 
 
-def test_tariff_drift_unaffected_by_stub_key(store_path):
+def test_tariff_drift_unaffected_by_stub_key(store_path, tmp_path):
     """_build_tariff_drift() shares the same _latest_real_invoice() selection
     — a stub must not suppress a real drift detection."""
     data = _parse_text(_make_old_format_text())
     invoice_store.upsert(data, filename='a.pdf', path=store_path)
     invoice_store.upsert_stub('bad.pdf', 'raw', 'boom', path=store_path)
 
-    web.set_tariff_config(peak=0.10, offpeak=0.05)  # force a drift vs the invoice
+    # Set tariff_config baseline to extreme values to force a drift vs the invoice
+    tc_path = tmp_path / 'tariff_config_drift.json'
+    tariff_config.save({'tariffs': [{'effective_from': '2020-01', 'note': 'test',
+                                     'rates': {'peak_gross': 0.10, 'offpeak_gross': 0.05,
+                                               'fixed_total_net': 0.01}}]}, tc_path)
+    web.set_tariff_config_path(tc_path)
+
     drift = web._build_tariff_drift(invoice_store.load_real(store_path))
     assert drift is not None
     assert 'peak' in drift

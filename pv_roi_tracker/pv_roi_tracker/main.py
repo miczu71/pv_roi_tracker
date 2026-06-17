@@ -31,8 +31,7 @@ INVOICE_LAYOUTS_PATH   = Path(os.environ.get('INVOICE_LAYOUTS_PATH', '/data/invo
 BACKUP_SHARE           = Path(os.environ.get('BACKUP_SHARE', '/share/pv_roi_tracker'))
 RCE_HOURLY_CACHE_PATH  = Path(os.environ.get('RCE_HOURLY_CACHE_PATH', '/data/rce_hourly.json'))
 MONTHLY_NOTIFY         = os.environ.get('MONTHLY_NOTIFY', 'true').lower() in ('1', 'true', 'yes')
-TARIFF_PEAK_PRICE      = float(os.environ.get('TARIFF_PEAK_PRICE', '1.23'))
-TARIFF_OFFPEAK_PRICE   = float(os.environ.get('TARIFF_OFFPEAK_PRICE', '0.63'))
+TARIFF_CONFIG_PATH     = Path(os.environ.get('TARIFF_CONFIG_PATH', '/data/tariff_config.json'))
 GROSS_INVESTMENT   = float(os.environ.get('GROSS_INVESTMENT', '51900.0'))
 SUBSIDY            = float(os.environ.get('SUBSIDY', '28714.0'))
 SYSTEM_KWP         = float(os.environ.get('SYSTEM_KWP', '6.72'))
@@ -276,7 +275,10 @@ def main() -> None:
     _web.set_invoice_train_callback(_invoice_train)
     _web.set_invoice_path(INVOICE_PATH)
     _web.set_layouts_path(INVOICE_LAYOUTS_PATH)
-    _web.set_tariff_config(TARIFF_PEAK_PRICE, TARIFF_OFFPEAK_PRICE)
+
+    from . import tariff_config as _tc
+    _tc.seed_if_missing(TARIFF_CONFIG_PATH)
+    _web.set_tariff_config_path(TARIFF_CONFIG_PATH)
 
     from datetime import date
 

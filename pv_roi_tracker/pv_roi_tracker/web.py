@@ -32,8 +32,7 @@ _invoice_remove_callback = None
 _invoice_train_callback = None
 _invoice_path = None
 _layouts_path = None
-_tariff_peak    = 1.23
-_tariff_offpeak = 0.63
+_tariff_config_path = None
 
 
 def set_rcem_override_callback(fn) -> None:
@@ -71,9 +70,9 @@ def set_layouts_path(path) -> None:
     _layouts_path = path
 
 
-def set_tariff_config(peak: float, offpeak: float) -> None:
-    global _tariff_peak, _tariff_offpeak
-    _tariff_peak, _tariff_offpeak = peak, offpeak
+def set_tariff_config_path(path) -> None:
+    global _tariff_config_path
+    _tariff_config_path = path
 
 
 _state: dict = {
@@ -492,9 +491,6 @@ def _build_invoices_data(records, stored: dict):
     return out
 
 
-_FIXED_NET_EXPECTED = 39.47  # per energy_simulation.yaml 2026 Tauron tariff
-
-
 def _latest_real_invoice(real: dict) -> Optional[dict]:
     """Return the record for the chronologically latest billing month in an
     already stub-filtered dict (see invoice_store.filter_real/load_real —
@@ -513,51 +509,82 @@ _RATE_FIELDS = [
 ]
 
 
-def latest_invoice_rates(real: Optional[dict] = None) -> dict:
-    """Canonical rate provider (Phase 2 "single source of truth"): the
-    chronologically latest parsed invoice's net component rates, fixed
-    charges, and computed gross marginal rates.
+def latest_invoice_rates(real: Optional[dict] = None, _today=None) -> dict:
+    """Canonical rate provider — jedno źródło prawdy dla stawek taryfy.
 
-    Pass `real` (an already stub-filtered dict, e.g. from a `stored` dict
-    already loaded this request/cycle) to avoid a redundant disk read;
-    omit it to have this function load via invoice_store.load_real().
+    Priorytet (rosnący, każdy poziom nadpisuje poprzedni):
+      1. Baseline z tariff_config (current_entry.rates) — ręcznie utrzymywana taryfa
+      2. Najnowsza faktura rozliczeniowa — automatycznie nadpisuje baseline
+      3. Override z tariff_config — gdy ogłoszona taryfa jest nowsza niż faktura
+         (wypełnia lukę styczeń→luty przy zmianie roku taryfowego); wygasa, gdy
+         faktura za dany okres dotrze i max(billing_key) >= effective_from.
 
-    Returns {} when no invoice has been parsed yet — every consumer (MQTT
-    sensors, energy_simulation.yaml, Analiza taryf) must treat each key as
-    optional and fall back to its own config/hardcoded constant; this
-    function never invents a value.
+    `real` może być przekazane z zewnątrz (załadowane raz w tym samym cyklu) —
+    pomija wtedy zbędny odczyt dysku. Gdy None, ładuje samodzielnie.
+    `_today` jest wyłącznie dla testów; normalnie None → date.today().
+    Zwraca {} tylko gdy brak zarówno tariff_config jak i faktur.
     """
-    if _invoice_path is None:
-        return {}
+    from . import tariff_config as _tc
+    from datetime import date as _date
+    today = _today or _date.today()
+
     try:
-        if real is None:
+        cfg = _tc.load(_tariff_config_path) if _tariff_config_path else _tc._empty()
+    except Exception:
+        cfg = _tc._empty()
+
+    try:
+        if real is None and _invoice_path is not None:
             from . import invoice_store as _istore
             real = _istore.filter_billing(_istore.load_real(_invoice_path))
-        latest = _latest_real_invoice(real)
-        if latest is None:
-            return {}
-        return {k: latest[k] for k in _RATE_FIELDS if latest.get(k) is not None}
     except Exception:
-        return {}
+        real = {}
+    if real is None:
+        real = {}
+
+    # 1. Baseline z tariff_config (current_entry.rates)
+    cur = _tc.current_entry(cfg, today)
+    rates: dict = dict(cur.get('rates', {})) if cur else {}
+
+    # 2. Faktura nadpisuje baseline (dla pól, które faktycznie sparsowała)
+    latest = _latest_real_invoice(real)
+    if latest is not None:
+        rates.update({k: latest[k] for k in _RATE_FIELDS if latest.get(k) is not None})
+
+    # 3. Override wygrywa w oknie luki (ogłoszona taryfa nowsza niż faktura)
+    ov = _tc.override_rates(cfg, real, today)
+    if ov:
+        rates.update(ov)
+
+    return rates
 
 
 def _build_tariff_drift(real: dict):
-    """`real` is an already stub-filtered invoices dict (see
-    invoice_store.filter_real/load_real)."""
+    """`real` is an already stub-filtered billing invoices dict.
+    Porównuje najnowszą fakturę do baseline z tariff_config.
+    Zwraca None gdy brak dryftu lub brak faktury."""
     try:
         latest = _latest_real_invoice(real)
         if latest is None:
             return None
+        from . import tariff_config as _tc
+        from datetime import date as _date
+        cfg = _tc.load(_tariff_config_path) if _tariff_config_path else _tc._empty()
+        cur = _tc.current_entry(cfg, _date.today())
+        baseline_rates = cur.get('rates', {}) if cur else {}
+        baseline_peak = baseline_rates.get('peak_gross', 1.23)
+        baseline_offpeak = baseline_rates.get('offpeak_gross', 0.63)
+        baseline_fixed = baseline_rates.get('fixed_total_net', 39.47)
         drift = {}
         pk = latest.get('peak_gross')
         op = latest.get('offpeak_gross')
-        if pk is not None and abs(pk - _tariff_peak) > 0.02:
-            drift['peak'] = {'configured': _tariff_peak, 'invoice': round(pk, 4)}
-        if op is not None and abs(op - _tariff_offpeak) > 0.02:
-            drift['offpeak'] = {'configured': _tariff_offpeak, 'invoice': round(op, 4)}
+        if pk is not None and abs(pk - baseline_peak) > 0.02:
+            drift['peak'] = {'configured': round(baseline_peak, 4), 'invoice': round(pk, 4)}
+        if op is not None and abs(op - baseline_offpeak) > 0.02:
+            drift['offpeak'] = {'configured': round(baseline_offpeak, 4), 'invoice': round(op, 4)}
         ft = latest.get('fixed_total_net')
-        if ft is not None and abs(ft - _FIXED_NET_EXPECTED) > 0.50:
-            drift['fixed_net'] = {'expected': _FIXED_NET_EXPECTED, 'invoice': round(ft, 2)}
+        if ft is not None and abs(ft - baseline_fixed) > 0.50:
+            drift['fixed_net'] = {'expected': round(baseline_fixed, 2), 'invoice': round(ft, 2)}
         return drift or None
     except Exception:
         return None
@@ -994,6 +1021,79 @@ def export_csv():
     )
 
 
+@app.route('/api/tariff_config')
+def api_tariff_config_get():
+    """GET — zwraca listę wpisów taryfowych + status aktywnego override."""
+    from . import tariff_config as _tc
+    from datetime import date as _date
+    cfg = _tc.load(_tariff_config_path) if _tariff_config_path else _tc._empty()
+    today = _date.today()
+    cur = _tc.current_entry(cfg, today)
+    cur_ef = cur.get('effective_from') if cur else None
+    try:
+        from . import invoice_store as _is
+        real = _is.filter_billing(_is.load_real(_invoice_path)) if _invoice_path else {}
+    except Exception:
+        real = {}
+    ov = _tc.override_rates(cfg, real, today)
+    is_override = bool(ov)
+    if is_override:
+        max_inv = max(real) if real else None
+        reason = (f'Faktura nie nadeszła (ostatnia: {max_inv or "brak"}, '
+                  f'ogłoszona taryfa od: {cur_ef})')
+    elif cur_ef:
+        max_inv = max(real) if real else None
+        reason = (f'Faktura pokrywa okres (ostatnia: {max_inv}, baseline: {cur_ef})'
+                  if max_inv else f'Baseline (brak faktur, current: {cur_ef})')
+    else:
+        reason = 'Brak wpisów taryfowych — używane litery fallback w kodzie'
+    return jsonify({
+        'tariffs': cfg.get('tariffs', []),
+        'current_effective_from': cur_ef,
+        'is_override_active': is_override,
+        'active_reason': reason,
+    })
+
+
+@app.route('/api/tariff_config', methods=['POST'])
+def api_tariff_config_upsert():
+    """POST — upsert wpisu taryfowego. Body JSON: {effective_from, note?, rates{}}."""
+    from . import tariff_config as _tc
+    if not _tariff_config_path:
+        return jsonify({'ok': False, 'error': 'tariff_config_path not configured'}), 500
+    data = request.get_json(silent=True) or {}
+    try:
+        cfg = _tc.load(_tariff_config_path)
+        cfg = _tc.upsert_entry(cfg, data)
+        _tc.save(cfg, _tariff_config_path)
+    except ValueError as e:
+        return jsonify({'ok': False, 'error': str(e)}), 400
+    except Exception as e:
+        log.exception('tariff_config upsert failed')
+        return jsonify({'ok': False, 'error': str(e)}), 500
+    return jsonify({'ok': True})
+
+
+@app.route('/api/tariff_config/delete', methods=['POST'])
+def api_tariff_config_delete():
+    """POST — usuń wpis. Body JSON: {effective_from: 'YYYY-MM'}."""
+    from . import tariff_config as _tc
+    if not _tariff_config_path:
+        return jsonify({'ok': False, 'error': 'tariff_config_path not configured'}), 500
+    data = request.get_json(silent=True) or {}
+    ef = data.get('effective_from', '')
+    if not ef:
+        return jsonify({'ok': False, 'error': 'effective_from wymagane'}), 400
+    try:
+        cfg = _tc.load(_tariff_config_path)
+        cfg = _tc.remove_entry(cfg, ef)
+        _tc.save(cfg, _tariff_config_path)
+    except Exception as e:
+        log.exception('tariff_config delete failed')
+        return jsonify({'ok': False, 'error': str(e)}), 500
+    return jsonify({'ok': True})
+
+
 @app.route('/api/tariff_stats')
 def api_tariff_stats():
     """
@@ -1295,6 +1395,7 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
       <button class="tab-btn"        onclick="showTab('charts')">Wykresy</button>
       <button class="tab-btn"        onclick="showTab('invoices')">&#128196; Faktury</button>
       <button class="tab-btn"        onclick="showTab('tariff')">&#128200; Analiza taryf</button>
+      <button class="tab-btn"        onclick="showTab('taryfa')">&#128209; Taryfa</button>
       <button class="tab-btn"        onclick="showTab('rce')">&#9889; RCE vs RCEm</button>
     </div>
     <div class="tab-panel">
@@ -1483,6 +1584,99 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
           <label><input type="checkbox" id="chkRangeCum" onchange="redrawRangeChart()"> Skumulowana PLN</label>
         </div>
       </div>
+      <!-- Taryfa configuration tab -->
+      <div id="tab-taryfa" style="display:none;padding:12px">
+        <div id="taryfaBadge" style="margin-bottom:14px;padding:10px 14px;border-radius:4px;font-size:13px;background:#e8f4fd;border-left:4px solid #2196F3">
+          Ładowanie stanu taryfy...
+        </div>
+        <h3 style="margin:0 0 10px">Historia wpisów taryfowych</h3>
+        <p style="font-size:12px;color:#666;margin:0 0 12px">
+          Każda zmiana stawek Tauron to nowy wpis z datą obowiązywania. Wpis jest
+          <strong>override</strong> (wypełnia lukę), gdy ogłoszone stawki są nowsze niż
+          najnowsza wgrana faktura; automatycznie wygasa, gdy faktura za ten okres dotrze.
+          Wpisy z przyszłą datą czekają bezczynnie.
+        </p>
+        <div id="taryfaList" style="margin-bottom:18px"></div>
+        <h3 style="margin:0 0 10px" id="taryfaFormTitle">Dodaj / edytuj wpis</h3>
+        <form id="taryfaForm" style="max-width:640px">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+            <label style="font-size:13px">Obowiązuje od (YYYY-MM)<br>
+              <input type="month" id="tfEffectiveFrom" style="width:100%;padding:5px;margin-top:3px" required>
+            </label>
+            <label style="font-size:13px">Notatka<br>
+              <input type="text" id="tfNote" placeholder="np. Taryfa TD 2027" style="width:100%;padding:5px;margin-top:3px">
+            </label>
+          </div>
+          <details open style="margin-bottom:10px">
+            <summary style="cursor:pointer;font-weight:600;font-size:13px;margin-bottom:8px">Cena brutto wszystko-w-jednym (PLN/kWh)</summary>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:6px 0">
+              <label style="font-size:12px">Szczyt (peak_gross)<br>
+                <input type="number" id="tf_peak_gross" step="0.0001" min="0" style="width:100%;padding:4px;margin-top:2px" placeholder="1.23">
+              </label>
+              <label style="font-size:12px">Pozaszczyt (offpeak_gross)<br>
+                <input type="number" id="tf_offpeak_gross" step="0.0001" min="0" style="width:100%;padding:4px;margin-top:2px" placeholder="0.63">
+              </label>
+            </div>
+          </details>
+          <details style="margin-bottom:10px">
+            <summary style="cursor:pointer;font-weight:600;font-size:13px;margin-bottom:8px">Energia netto (PLN/kWh)</summary>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:6px 0">
+              <label style="font-size:12px">Energia szczyt (energy_peak_net)<br>
+                <input type="number" id="tf_energy_peak_net" step="0.0001" min="0" style="width:100%;padding:4px;margin-top:2px">
+              </label>
+              <label style="font-size:12px">Energia pozaszczyt (energy_offpeak_net)<br>
+                <input type="number" id="tf_energy_offpeak_net" step="0.0001" min="0" style="width:100%;padding:4px;margin-top:2px">
+              </label>
+            </div>
+          </details>
+          <details style="margin-bottom:10px">
+            <summary style="cursor:pointer;font-weight:600;font-size:13px;margin-bottom:8px">Dystrybucja zmienna netto (PLN/kWh)</summary>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:6px 0">
+              <label style="font-size:12px">Składnik sieciowy szczyt (dist_var_peak_net)<br>
+                <input type="number" id="tf_dist_var_peak_net" step="0.0001" min="0" style="width:100%;padding:4px;margin-top:2px">
+              </label>
+              <label style="font-size:12px">Składnik sieciowy poza (dist_var_offpeak_net)<br>
+                <input type="number" id="tf_dist_var_offpeak_net" step="0.0001" min="0" style="width:100%;padding:4px;margin-top:2px">
+              </label>
+            </div>
+          </details>
+          <details style="margin-bottom:10px">
+            <summary style="cursor:pointer;font-weight:600;font-size:13px;margin-bottom:8px">Opłaty jakościowe netto (PLN/kWh)</summary>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;padding:6px 0">
+              <label style="font-size:12px">Jakościowa (dist_jakosciowa_net)<br>
+                <input type="number" id="tf_dist_jakosciowa_net" step="0.0001" min="0" style="width:100%;padding:4px;margin-top:2px">
+              </label>
+              <label style="font-size:12px">OZE (dist_oze_net)<br>
+                <input type="number" id="tf_dist_oze_net" step="0.0001" min="0" style="width:100%;padding:4px;margin-top:2px">
+              </label>
+              <label style="font-size:12px">Kogeneracja (dist_kogeneracja_net)<br>
+                <input type="number" id="tf_dist_kogeneracja_net" step="0.0001" min="0" style="width:100%;padding:4px;margin-top:2px">
+              </label>
+            </div>
+          </details>
+          <details style="margin-bottom:10px">
+            <summary style="cursor:pointer;font-weight:600;font-size:13px;margin-bottom:8px">Opłaty stałe netto (PLN/miesiąc)</summary>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;padding:6px 0">
+              <label style="font-size:12px">Abonament (fixed_abonament_net)<br>
+                <input type="number" id="tf_fixed_abonament_net" step="0.01" min="0" style="width:100%;padding:4px;margin-top:2px">
+              </label>
+              <label style="font-size:12px">Stały sieciowy (fixed_stalysieciowy_net)<br>
+                <input type="number" id="tf_fixed_stalysieciowy_net" step="0.01" min="0" style="width:100%;padding:4px;margin-top:2px">
+              </label>
+              <label style="font-size:12px">Mocowa (fixed_mocowa_net)<br>
+                <input type="number" id="tf_fixed_mocowa_net" step="0.01" min="0" style="width:100%;padding:4px;margin-top:2px">
+              </label>
+            </div>
+          </details>
+          <p style="font-size:11px;color:#888;margin:0 0 10px">
+            Pola puste = wartości nie zostaną nadpisane przez ten wpis. Publikacja do MQTT
+            nastąpi przy najbliższym pollu (do 30 min).
+          </p>
+          <button type="submit" class="btn" style="margin-right:8px">Zapisz wpis</button>
+          <button type="button" class="btn" onclick="clearTaryfaForm()" style="background:#6c757d">Wyczyść formularz</button>
+        </form>
+        <div id="taryfaMsg" style="margin-top:10px;font-size:13px"></div>
+      </div>
       <!-- RCE vs RCEm tab -->
       <div id="tab-rce" style="display:none;padding:12px">
         <div id="rceWarning" style="display:none;margin-bottom:12px;padding:10px 14px;background:#fff3cd;border-left:4px solid #f0ad4e;border-radius:4px;font-size:13px">
@@ -1630,11 +1824,11 @@ document.addEventListener('click', function(e) {
 
 /* -- Tab switching -- */
 function showTab(name) {
-  ['hist','pred','years','charts','invoices','tariff','rce'].forEach(t => {
+  ['hist','pred','years','charts','invoices','tariff','taryfa','rce'].forEach(t => {
     document.getElementById('tab-' + t).style.display = (t === name) ? '' : 'none';
   });
   document.querySelectorAll('.tab-btn').forEach((b, i) =>
-    b.classList.toggle('active', ['hist','pred','years','charts','invoices','tariff','rce'][i] === name)
+    b.classList.toggle('active', ['hist','pred','years','charts','invoices','tariff','taryfa','rce'][i] === name)
   );
   if (name === 'rce' && _rceCmpChart) _rceCmpChart.resize();
   if (name === 'pred' && _fanChart) _fanChart.resize();
@@ -1650,6 +1844,7 @@ function showTab(name) {
      _tariffSeasonChart, _tariffHistChart].forEach(c => c && c.resize());
     if (!_rangeData) fetchTariffRange();
   }
+  if (name === 'taryfa') loadTaryfaTab();
 }
 
 /* -- Summary cards -- */
@@ -4229,6 +4424,129 @@ function renderRangeChart(s) {
       },
     },
   });
+}
+
+/* ===================================================================== */
+/* -- Taryfa tab -------------------------------------------------------- */
+
+const _RATE_FIELD_IDS = [
+  'peak_gross','offpeak_gross',
+  'energy_peak_net','energy_offpeak_net',
+  'dist_var_peak_net','dist_var_offpeak_net',
+  'dist_jakosciowa_net','dist_oze_net','dist_kogeneracja_net',
+  'fixed_abonament_net','fixed_stalysieciowy_net','fixed_mocowa_net',
+];
+
+async function loadTaryfaTab() {
+  try {
+    const r = await fetch('api/tariff_config');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    _renderTaryfaBadge(d);
+    _renderTaryfaList(d.tariffs || []);
+  } catch(e) {
+    document.getElementById('taryfaBadge').textContent = 'Błąd ładowania: ' + e.message;
+  }
+}
+
+function _renderTaryfaBadge(d) {
+  const el = document.getElementById('taryfaBadge');
+  if (d.is_override_active) {
+    el.style.background = '#fff3cd'; el.style.borderLeftColor = '#f0ad4e';
+    el.innerHTML = '&#9889; <strong>Override AKTYWNY</strong> — ' + _esc(d.active_reason);
+  } else if (d.current_effective_from) {
+    el.style.background = '#e8f4fd'; el.style.borderLeftColor = '#2196F3';
+    el.innerHTML = '&#128209; <strong>Baseline</strong> — ' + _esc(d.active_reason);
+  } else {
+    el.style.background = '#f8f9fa'; el.style.borderLeftColor = '#6c757d';
+    el.innerHTML = '&#128204; <strong>Brak wpisów</strong> — ' + _esc(d.active_reason);
+  }
+}
+
+function _renderTaryfaList(tariffs) {
+  const el = document.getElementById('taryfaList');
+  if (!tariffs.length) { el.innerHTML = '<p style="color:#888;font-size:13px">Brak wpisów taryfowych.</p>'; return; }
+  const rows = [...tariffs].reverse().map(t => {
+    const rateStr = Object.entries(t.rates || {})
+      .filter(([,v]) => v != null)
+      .map(([k,v]) => `<span style="font-size:11px;color:#555">${k}: <b>${v}</b></span>`)
+      .join(' &nbsp; ');
+    return `<div style="border:1px solid #ddd;border-radius:6px;padding:10px 14px;margin-bottom:8px;background:#fafafa">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+        <span style="font-weight:700;font-size:14px">${_esc(t.effective_from)}</span>
+        ${t.note ? `<span style="font-size:12px;color:#555">${_esc(t.note)}</span>` : ''}
+        <button class="btn" onclick="editTaryfaEntry(${_esc(JSON.stringify(t))})"
+          style="font-size:11px;padding:2px 10px;margin-left:auto">Edytuj</button>
+        <button class="btn" onclick="deleteTaryfaEntry('${_esc(t.effective_from)}')"
+          style="font-size:11px;padding:2px 10px;background:#dc3545">Usuń</button>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">${rateStr}</div>
+    </div>`;
+  }).join('');
+  el.innerHTML = rows;
+}
+
+function _esc(s) {
+  if (typeof s !== 'string') return String(s ?? '');
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function editTaryfaEntry(t) {
+  document.getElementById('tfEffectiveFrom').value = t.effective_from || '';
+  document.getElementById('tfNote').value = t.note || '';
+  _RATE_FIELD_IDS.forEach(k => {
+    const el = document.getElementById('tf_' + k);
+    if (el) el.value = (t.rates && t.rates[k] != null) ? t.rates[k] : '';
+  });
+  document.getElementById('taryfaFormTitle').textContent = 'Edytuj wpis: ' + (t.effective_from || '');
+  document.getElementById('taryfaForm').scrollIntoView({behavior:'smooth'});
+}
+
+function clearTaryfaForm() {
+  document.getElementById('tfEffectiveFrom').value = '';
+  document.getElementById('tfNote').value = '';
+  _RATE_FIELD_IDS.forEach(k => {
+    const el = document.getElementById('tf_' + k);
+    if (el) el.value = '';
+  });
+  document.getElementById('taryfaFormTitle').textContent = 'Dodaj / edytuj wpis';
+  document.getElementById('taryfaMsg').textContent = '';
+}
+
+document.getElementById('taryfaForm').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  const ef = document.getElementById('tfEffectiveFrom').value.trim();
+  if (!ef) { document.getElementById('taryfaMsg').textContent = '⚠ Podaj datę obowiązywania.'; return; }
+  const rates = {};
+  _RATE_FIELD_IDS.forEach(k => {
+    const el = document.getElementById('tf_' + k);
+    if (el && el.value !== '') rates[k] = parseFloat(el.value);
+  });
+  const payload = { effective_from: ef, note: document.getElementById('tfNote').value.trim(), rates };
+  const msg = document.getElementById('taryfaMsg');
+  msg.textContent = 'Zapisywanie...';
+  try {
+    const r = await fetch('api/tariff_config', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+    const d = await r.json();
+    if (!d.ok) { msg.textContent = '⚠ Błąd: ' + (d.error || r.status); return; }
+    msg.style.color = '#28a745';
+    msg.textContent = '✓ Zapisano. Publikacja MQTT przy najbliższym pollu (≤30 min).';
+    clearTaryfaForm();
+    await loadTaryfaTab();
+  } catch(ex) {
+    msg.style.color = '#dc3545';
+    msg.textContent = '⚠ Błąd: ' + ex.message;
+  }
+});
+
+async function deleteTaryfaEntry(ef) {
+  if (!confirm('Usunąć wpis ' + ef + '?')) return;
+  try {
+    const r = await fetch('api/tariff_config/delete', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({effective_from: ef}) });
+    const d = await r.json();
+    if (!d.ok) { alert('Błąd: ' + (d.error || r.status)); return; }
+    await loadTaryfaTab();
+  } catch(ex) { alert('Błąd: ' + ex.message); }
 }
 
 /* ===================================================================== */
