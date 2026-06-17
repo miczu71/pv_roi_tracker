@@ -96,6 +96,29 @@ def test_only_non_none_fields_included(store_path):
     assert 'energy_offpeak_net' not in rates  # None on a single-zone invoice
 
 
+def test_cumulative_baseline_inherits_fields_between_entries(tmp_path):
+    """Wpis 2027-01 z samym gross_peak/offpeak dziedziczy fixed_* z wpisu 2026-02.
+    Wynik latest_invoice_rates() (brak faktur) = merged baseline ze wszystkich wpisów."""
+    tc_path = tmp_path / 'tariff_config_inh.json'
+    tariff_config.save({'tariffs': [
+        {'effective_from': '2026-02', 'note': 'base', 'rates': {
+            'peak_gross': 1.23, 'offpeak_gross': 0.63,
+            'fixed_abonament_net': 4.56, 'fixed_stalysieciowy_net': 10.86,
+        }},
+        {'effective_from': '2027-01', 'note': 'nowe gross', 'rates': {
+            'peak_gross': 1.31, 'offpeak_gross': 0.67,
+        }},
+    ]}, tc_path)
+    web.set_tariff_config_path(tc_path)
+    # Brak faktur — baseline kumulatywny
+
+    rates = web.latest_invoice_rates(_today=__import__('datetime').date(2027, 6, 1))
+    assert rates.get('peak_gross') == pytest.approx(1.31, abs=1e-4)       # z 2027-01
+    assert rates.get('offpeak_gross') == pytest.approx(0.67, abs=1e-4)    # z 2027-01
+    assert rates.get('fixed_abonament_net') == pytest.approx(4.56, abs=1e-3)  # z 2026-02
+    assert rates.get('fixed_stalysieciowy_net') == pytest.approx(10.86, abs=1e-3)  # z 2026-02
+
+
 def test_tariff_drift_unaffected_by_stub_key(store_path, tmp_path):
     """_build_tariff_drift() shares the same _latest_real_invoice() selection
     — a stub must not suppress a real drift detection."""

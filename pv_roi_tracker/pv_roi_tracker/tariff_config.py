@@ -154,6 +154,28 @@ def current_entry(cfg: dict, today: date) -> Optional[dict]:
     return max(past, key=lambda t: t.get('effective_from', ''))
 
 
+def effective_baseline(cfg: dict, today: date) -> dict:
+    """Kumulatywny baseline — scalenie rates wszystkich wpisów ≤ dziś rosnąco.
+
+    Późniejszy wpis nadpisuje wcześniejszy tylko dla kluczy, które sam zawiera.
+    Skutek: wpis 2027-01 z samym peak_gross/offpeak_gross dziedziczy fixed_*/dist_*
+    z wpisu 2026-02 — wystarczy wpisać tylko zmienione pola.
+
+    Zwraca {} gdy brak wpisów (lub wszystkie przyszłe).
+    """
+    today_ym = today.strftime('%Y-%m')
+    past = sorted(
+        [t for t in cfg.get('tariffs', [])
+         if isinstance(t.get('effective_from'), str)
+         and t['effective_from'] <= today_ym],
+        key=lambda t: t.get('effective_from', ''),
+    )
+    merged: dict = {}
+    for entry in past:
+        merged.update(entry.get('rates', {}))
+    return merged
+
+
 def override_rates(cfg: dict, real: dict, today: date) -> dict:
     """Zwróć stawki z current_entry GDY jest NOWSZY niż najnowsza faktura
     (= ogłoszona taryfa wypełnia lukę, zanim faktura nadejdzie).

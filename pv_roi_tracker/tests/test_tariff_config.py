@@ -166,6 +166,57 @@ def test_override_merges_only_provided_fields():
     assert set(ov.keys()) == {'peak_gross', 'offpeak_gross'}
 
 
+# ── effective_baseline ──────────────────────────────────────────────────────
+
+def test_effective_baseline_empty():
+    assert tc.effective_baseline(tc._empty(), date(2027, 1, 1)) == {}
+
+
+def test_effective_baseline_single_entry():
+    cfg = tc._empty()
+    cfg = tc.upsert_entry(cfg, _entry('2026-02', peak=1.23, offpeak=0.63))
+    b = tc.effective_baseline(cfg, date(2026, 6, 1))
+    assert b['peak_gross'] == pytest.approx(1.23, abs=1e-4)
+    assert b['offpeak_gross'] == pytest.approx(0.63, abs=1e-4)
+
+
+def test_effective_baseline_ignores_future():
+    cfg = tc._empty()
+    cfg = tc.upsert_entry(cfg, _entry('2026-02', peak=1.23))
+    cfg = tc.upsert_entry(cfg, _entry('2028-01', peak=9.99))
+    b = tc.effective_baseline(cfg, date(2027, 6, 1))
+    assert b['peak_gross'] == pytest.approx(1.23, abs=1e-4)
+
+
+def test_effective_baseline_inherits_fields_from_earlier_entry():
+    """Wpis 2027-01 z samym gross → dziedziczy fixed_* z wpisu 2026-02."""
+    cfg = tc._empty()
+    # Pełny wpis 2026
+    cfg = tc.upsert_entry(cfg, {'effective_from': '2026-02', 'note': '', 'rates': {
+        'peak_gross': 1.23, 'offpeak_gross': 0.63,
+        'fixed_abonament_net': 4.56, 'fixed_stalysieciowy_net': 10.86,
+    }})
+    # Wpis 2027 — tylko gross (zmiana ceny brutto)
+    cfg = tc.upsert_entry(cfg, {'effective_from': '2027-01', 'note': '', 'rates': {
+        'peak_gross': 1.31, 'offpeak_gross': 0.67,
+    }})
+    b = tc.effective_baseline(cfg, date(2027, 6, 1))
+    # Nowe gross
+    assert b['peak_gross'] == pytest.approx(1.31, abs=1e-4)
+    assert b['offpeak_gross'] == pytest.approx(0.67, abs=1e-4)
+    # Odziedziczone z 2026-02
+    assert b['fixed_abonament_net'] == pytest.approx(4.56, abs=1e-3)
+    assert b['fixed_stalysieciowy_net'] == pytest.approx(10.86, abs=1e-3)
+
+
+def test_effective_baseline_later_entry_overrides_shared_field():
+    cfg = tc._empty()
+    cfg = tc.upsert_entry(cfg, _entry('2026-02', peak=1.23, offpeak=0.63))
+    cfg = tc.upsert_entry(cfg, _entry('2027-01', peak=1.31, offpeak=0.67))
+    b = tc.effective_baseline(cfg, date(2027, 6, 1))
+    assert b['peak_gross'] == pytest.approx(1.31, abs=1e-4)
+
+
 # ── latest_invoice_rates priority chain ─────────────────────────────────────
 
 def test_latest_invoice_rates_priority(tmp_path):

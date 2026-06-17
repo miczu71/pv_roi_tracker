@@ -542,9 +542,8 @@ def latest_invoice_rates(real: Optional[dict] = None, _today=None) -> dict:
     if real is None:
         real = {}
 
-    # 1. Baseline z tariff_config (current_entry.rates)
-    cur = _tc.current_entry(cfg, today)
-    rates: dict = dict(cur.get('rates', {})) if cur else {}
+    # 1. Kumulatywny baseline z tariff_config (wszystkie wpisy ≤ dziś scalone rosnąco)
+    rates: dict = _tc.effective_baseline(cfg, today)
 
     # 2. Faktura nadpisuje baseline (dla pól, które faktycznie sparsowała)
     latest = _latest_real_invoice(real)
@@ -570,8 +569,7 @@ def _build_tariff_drift(real: dict):
         from . import tariff_config as _tc
         from datetime import date as _date
         cfg = _tc.load(_tariff_config_path) if _tariff_config_path else _tc._empty()
-        cur = _tc.current_entry(cfg, _date.today())
-        baseline_rates = cur.get('rates', {}) if cur else {}
+        baseline_rates = _tc.effective_baseline(cfg, _date.today())
         baseline_peak = baseline_rates.get('peak_gross', 1.23)
         baseline_offpeak = baseline_rates.get('offpeak_gross', 0.63)
         baseline_fixed = baseline_rates.get('fixed_total_net', 39.47)
@@ -588,6 +586,57 @@ def _build_tariff_drift(real: dict):
         return drift or None
     except Exception:
         return None
+
+
+_FIXED_RATE_FIELDS = {'fixed_mocowa_net', 'fixed_abonament_net', 'fixed_stalysieciowy_net', 'fixed_total_net'}
+
+
+def _derive_tariff_changes(real: dict) -> list:
+    """Odtwórz oś zmian stawek taryfy na podstawie historii faktur billing.
+
+    Iteruje faktury YYYY-MM rosnąco; emituje wiersz gdy którekolwiek pole z
+    _RATE_FIELDS zmienia się vs poprzednia faktura (lub jako wiersz bazowy dla
+    pierwszej faktury).  Epsilon: 1e-4 dla stawek PLN/kWh, 0.01 dla fixed PLN/mc.
+
+    Zwraca listę dicts (najstarszy → najnowszy):
+      { effective_from, changed: [{field, from, to}], rates, source_invoice }
+    """
+    if not real:
+        return []
+    prev: dict = {}
+    changes = []
+    for key in sorted(real):
+        inv = real[key]
+        snapshot = {k: inv.get(k) for k in _RATE_FIELDS if inv.get(k) is not None}
+        if not snapshot:
+            continue
+        if not prev:
+            # Punkt bazowy — pierwsza faktura z danymi
+            changes.append({
+                'effective_from': key,
+                'changed': [],  # brak poprzedniego = punkt startowy, nie "zmiana"
+                'rates': snapshot,
+                'source_invoice': key,
+            })
+        else:
+            delta = []
+            for field, val in snapshot.items():
+                old = prev.get(field)
+                if old is None:
+                    continue
+                eps = 0.01 if field in _FIXED_RATE_FIELDS else 1e-4
+                if abs(val - old) > eps:
+                    delta.append({'field': field, 'from': round(old, 5), 'to': round(val, 5)})
+            if delta:
+                changes.append({
+                    'effective_from': key,
+                    'changed': delta,
+                    'rates': snapshot,
+                    'source_invoice': key,
+                })
+        # Carry forward: update only fields present in this invoice
+        prev = {**prev, **snapshot}
+    return changes
 
 
 def _recon_zoned(inv: dict, peak_field: str, offpeak_field: str) -> Optional[float]:
@@ -1094,6 +1143,39 @@ def api_tariff_config_delete():
     return jsonify({'ok': True})
 
 
+@app.route('/api/tariff_config/derived')
+def api_tariff_config_derived():
+    """GET — read-only oś zmian taryfy odtworzona z historii faktur billing.
+
+    Zwraca:
+      { changes: [{effective_from, changed:[{field,from,to}], rates, source_invoice}],
+        existing_effective_from: [YYYY-MM] }
+    changes posortowane najnowsze-pierwsze (ułatwia renderowanie).
+    existing_effective_from: lista kluczy ręcznych wpisów taryfowych —
+    pozwala UI oznaczyć, które wykryte zmiany mają już odpowiadający wpis.
+    """
+    from . import tariff_config as _tc
+    try:
+        if _invoice_path:
+            from . import invoice_store as _is
+            real = _is.filter_billing(_is.load_real(_invoice_path))
+        else:
+            real = {}
+    except Exception:
+        real = {}
+
+    changes = list(reversed(_derive_tariff_changes(real)))
+
+    try:
+        cfg = _tc.load(_tariff_config_path) if _tariff_config_path else _tc._empty()
+        existing = [t['effective_from'] for t in cfg.get('tariffs', [])
+                    if isinstance(t.get('effective_from'), str)]
+    except Exception:
+        existing = []
+
+    return jsonify({'changes': changes, 'existing_effective_from': existing})
+
+
 @app.route('/api/tariff_stats')
 def api_tariff_stats():
     """
@@ -1589,12 +1671,21 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
         <div id="taryfaBadge" style="margin-bottom:14px;padding:10px 14px;border-radius:4px;font-size:13px;background:#e8f4fd;border-left:4px solid #2196F3">
           Ładowanie stanu taryfy...
         </div>
+        <h3 style="margin:0 0 6px">Zmiany taryfy wykryte z faktur</h3>
+        <p style="font-size:12px;color:#666;margin:0 0 8px">
+          Odtworzone z historii wgranych faktur — tylko podgląd. Kliknij
+          <strong>«Utwórz wpis»</strong>, aby zmaterializować wykrytą zmianę jako wpis ręczny.
+        </p>
+        <div id="taryfaDerived" style="margin-bottom:20px">
+          <p style="font-size:12px;color:#aaa">Ładowanie…</p>
+        </div>
         <h3 style="margin:0 0 10px">Historia wpisów taryfowych</h3>
         <p style="font-size:12px;color:#666;margin:0 0 12px">
           Każda zmiana stawek Tauron to nowy wpis z datą obowiązywania. Wpis jest
           <strong>override</strong> (wypełnia lukę), gdy ogłoszone stawki są nowsze niż
           najnowsza wgrana faktura; automatycznie wygasa, gdy faktura za ten okres dotrze.
-          Wpisy z przyszłą datą czekają bezczynnie.
+          Wpisy z przyszłą datą czekają bezczynnie. Puste pola dziedziczą wartości
+          z wcześniejszych wpisów — wystarczy podać tylko zmienione stawki.
         </p>
         <div id="taryfaList" style="margin-bottom:18px"></div>
         <h3 style="margin:0 0 10px" id="taryfaFormTitle">Dodaj / edytuj wpis</h3>
@@ -4439,14 +4530,53 @@ const _RATE_FIELD_IDS = [
 
 async function loadTaryfaTab() {
   try {
-    const r = await fetch('api/tariff_config');
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const d = await r.json();
+    const [rCfg, rDer] = await Promise.all([
+      fetch('api/tariff_config'),
+      fetch('api/tariff_config/derived'),
+    ]);
+    if (!rCfg.ok) throw new Error('HTTP ' + rCfg.status);
+    const d = await rCfg.json();
     _renderTaryfaBadge(d);
     _renderTaryfaList(d.tariffs || []);
+    if (rDer.ok) {
+      const dd = await rDer.json();
+      _renderTaryfaDerived(dd.changes || [], dd.existing_effective_from || []);
+    }
   } catch(e) {
     document.getElementById('taryfaBadge').textContent = 'Błąd ładowania: ' + e.message;
   }
+}
+
+function _renderTaryfaDerived(changes, existing) {
+  const el = document.getElementById('taryfaDerived');
+  if (!changes.length) {
+    el.innerHTML = '<p style="font-size:12px;color:#aaa">Brak danych (żadna faktura nie zawiera stawek).</p>';
+    return;
+  }
+  const existSet = new Set(existing);
+  const rows = changes.map((c, idx) => {
+    const isFirst = idx === changes.length - 1;  // changes are newest-first
+    const hasEntry = existSet.has(c.effective_from);
+    const changeDesc = isFirst
+      ? '<span style="font-size:11px;color:#888">punkt startowy (pierwsza faktura z danymi)</span>'
+      : c.changed.map(ch =>
+          `<span style="font-size:11px;color:#555"><b>${_esc(ch.field)}</b>: ${ch.from}→<b>${ch.to}</b></span>`
+        ).join(' &nbsp; ');
+    const badge = hasEntry
+      ? '<span style="font-size:10px;background:#d4edda;color:#155724;border-radius:3px;padding:1px 6px;margin-left:6px">✓ jest wpis</span>'
+      : '';
+    const btn = `<button class="btn" onclick="editTaryfaEntry(${_esc(JSON.stringify({effective_from: c.effective_from, note: 'Wykryte z faktury ' + c.effective_from, rates: c.rates}))})"
+      style="font-size:11px;padding:2px 10px;margin-left:auto;background:#17a2b8">Utwórz wpis</button>`;
+    return `<div style="border:1px solid #dde;border-radius:5px;padding:8px 12px;margin-bottom:6px;background:#f9fbff">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <span style="font-weight:700;font-size:13px;min-width:56px">${_esc(c.effective_from)}</span>
+        ${badge}
+        <span style="flex:1;display:flex;flex-wrap:wrap;gap:5px">${changeDesc}</span>
+        ${btn}
+      </div>
+    </div>`;
+  }).join('');
+  el.innerHTML = rows;
 }
 
 function _renderTaryfaBadge(d) {
