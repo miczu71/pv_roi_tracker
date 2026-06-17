@@ -75,6 +75,24 @@ def set_tariff_config_path(path) -> None:
     _tariff_config_path = path
 
 
+def _load_tariff_cfg() -> dict:
+    from . import tariff_config as _tc
+    try:
+        return _tc.load(_tariff_config_path) if _tariff_config_path else _tc._empty()
+    except Exception:
+        return _tc._empty()
+
+
+def _load_real_billing() -> dict:
+    if _invoice_path is None:
+        return {}
+    try:
+        from . import invoice_store as _is
+        return _is.filter_billing(_is.load_real(_invoice_path))
+    except Exception:
+        return {}
+
+
 _state: dict = {
     'result': None,
     'records': [],
@@ -528,19 +546,10 @@ def latest_invoice_rates(real: Optional[dict] = None, _today=None) -> dict:
     from datetime import date as _date
     today = _today or _date.today()
 
-    try:
-        cfg = _tc.load(_tariff_config_path) if _tariff_config_path else _tc._empty()
-    except Exception:
-        cfg = _tc._empty()
+    cfg = _load_tariff_cfg()
 
-    try:
-        if real is None and _invoice_path is not None:
-            from . import invoice_store as _istore
-            real = _istore.filter_billing(_istore.load_real(_invoice_path))
-    except Exception:
-        real = {}
     if real is None:
-        real = {}
+        real = _load_real_billing()
 
     # 1. Kumulatywny baseline z tariff_config (wszystkie wpisy ≤ dziś scalone rosnąco)
     rates: dict = _tc.effective_baseline(cfg, today)
@@ -568,8 +577,7 @@ def _build_tariff_drift(real: dict):
             return None
         from . import tariff_config as _tc
         from datetime import date as _date
-        cfg = _tc.load(_tariff_config_path) if _tariff_config_path else _tc._empty()
-        baseline_rates = _tc.effective_baseline(cfg, _date.today())
+        baseline_rates = _tc.effective_baseline(_load_tariff_cfg(), _date.today())
         baseline_peak = baseline_rates.get('peak_gross', 1.23)
         baseline_offpeak = baseline_rates.get('offpeak_gross', 0.63)
         baseline_fixed = baseline_rates.get('fixed_total_net', 39.47)
@@ -1075,23 +1083,18 @@ def api_tariff_config_get():
     """GET — zwraca listę wpisów taryfowych + status aktywnego override."""
     from . import tariff_config as _tc
     from datetime import date as _date
-    cfg = _tc.load(_tariff_config_path) if _tariff_config_path else _tc._empty()
+    cfg = _load_tariff_cfg()
     today = _date.today()
     cur = _tc.current_entry(cfg, today)
     cur_ef = cur.get('effective_from') if cur else None
-    try:
-        from . import invoice_store as _is
-        real = _is.filter_billing(_is.load_real(_invoice_path)) if _invoice_path else {}
-    except Exception:
-        real = {}
+    real = _load_real_billing()
     ov = _tc.override_rates(cfg, real, today)
     is_override = bool(ov)
+    max_inv = max(real) if real else None
     if is_override:
-        max_inv = max(real) if real else None
         reason = (f'Faktura nie nadeszła (ostatnia: {max_inv or "brak"}, '
                   f'ogłoszona taryfa od: {cur_ef})')
     elif cur_ef:
-        max_inv = max(real) if real else None
         reason = (f'Faktura pokrywa okres (ostatnia: {max_inv}, baseline: {cur_ef})'
                   if max_inv else f'Baseline (brak faktur, current: {cur_ef})')
     else:
@@ -1155,20 +1158,11 @@ def api_tariff_config_derived():
     pozwala UI oznaczyć, które wykryte zmiany mają już odpowiadający wpis.
     """
     from . import tariff_config as _tc
-    try:
-        if _invoice_path:
-            from . import invoice_store as _is
-            real = _is.filter_billing(_is.load_real(_invoice_path))
-        else:
-            real = {}
-    except Exception:
-        real = {}
-
+    real = _load_real_billing()
     changes = list(reversed(_derive_tariff_changes(real)))
 
     try:
-        cfg = _tc.load(_tariff_config_path) if _tariff_config_path else _tc._empty()
-        existing = [t['effective_from'] for t in cfg.get('tariffs', [])
+        existing = [t['effective_from'] for t in _load_tariff_cfg().get('tariffs', [])
                     if isinstance(t.get('effective_from'), str)]
     except Exception:
         existing = []
@@ -1908,11 +1902,12 @@ document.addEventListener('click', function(e) {
 
 /* -- Tab switching -- */
 function showTab(name) {
-  ['hist','pred','years','charts','invoices','tariff','taryfa','rce'].forEach(t => {
+  const TABS = ['hist','pred','years','charts','invoices','tariff','taryfa','rce'];
+  TABS.forEach(t => {
     document.getElementById('tab-' + t).style.display = (t === name) ? '' : 'none';
   });
   document.querySelectorAll('.tab-btn').forEach((b, i) =>
-    b.classList.toggle('active', ['hist','pred','years','charts','invoices','tariff','taryfa','rce'][i] === name)
+    b.classList.toggle('active', TABS[i] === name)
   );
   if (name === 'rce' && _rceCmpChart) _rceCmpChart.resize();
   if (name === 'pred' && _fanChart) _fanChart.resize();
@@ -4568,15 +4563,15 @@ function _renderTaryfaTimeline(tariffs, derived, status) {
     const hasDerived = !!der;
 
     // Source chips
+    const manualChip = '<span style="font-size:10px;background:#cfe2ff;color:#084298;border-radius:3px;padding:1px 6px">&#9998; ręczny</span>';
     let chips = '';
     if (hasManual && hasDerived) {
-      chips = '<span style="font-size:10px;background:#cfe2ff;color:#084298;border-radius:3px;padding:1px 6px">&#9998; ręczny</span>'
-            + ' <span style="font-size:10px;background:#e9ecef;color:#495057;border-radius:3px;padding:1px 6px">&#128203; potwierdzony fakturą</span>';
+      chips = manualChip + ' <span style="font-size:10px;background:#e9ecef;color:#495057;border-radius:3px;padding:1px 6px">&#128203; potwierdzony fakturą</span>';
     } else if (hasManual) {
       const futureTag = key > nowYM
         ? ' <span style="font-size:10px;background:#fff3cd;color:#856404;border-radius:3px;padding:1px 5px">przyszły (czeka)</span>'
         : '';
-      chips = '<span style="font-size:10px;background:#cfe2ff;color:#084298;border-radius:3px;padding:1px 6px">&#9998; ręczny</span>' + futureTag;
+      chips = manualChip + futureTag;
     } else {
       chips = '<span style="font-size:10px;background:#e9ecef;color:#495057;border-radius:3px;padding:1px 6px">&#128203; z faktury</span>';
     }

@@ -48,14 +48,14 @@ def test_seed_does_not_overwrite(cfg_path):
 
 # ── upsert / remove / validate ──────────────────────────────────────────────
 
-def test_upsert_adds_entry(cfg_path):
+def test_upsert_adds_entry():
     cfg = tc._empty()
     cfg = tc.upsert_entry(cfg, _entry('2027-01', peak=1.31))
     assert len(cfg['tariffs']) == 1
     assert cfg['tariffs'][0]['effective_from'] == '2027-01'
 
 
-def test_upsert_deduplicates(cfg_path):
+def test_upsert_deduplicates():
     cfg = tc._empty()
     cfg = tc.upsert_entry(cfg, _entry('2027-01', peak=1.31))
     cfg = tc.upsert_entry(cfg, _entry('2027-01', peak=1.35))
@@ -97,7 +97,7 @@ def test_validate_negative_rate():
 
 # ── current_entry ────────────────────────────────────────────────────────────
 
-def test_current_entry_picks_latest_past(cfg_path):
+def test_current_entry_picks_latest_past():
     cfg = tc._empty()
     cfg = tc.upsert_entry(cfg, _entry('2026-02', peak=1.23))
     cfg = tc.upsert_entry(cfg, _entry('2027-01', peak=1.31))
