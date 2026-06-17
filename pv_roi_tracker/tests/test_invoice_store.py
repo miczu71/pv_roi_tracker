@@ -83,3 +83,136 @@ def test_remove_without_pdf_does_not_raise(store_path):
     key = invoice_store.upsert(_data(), path=store_path)  # no pdf_bytes
     invoice_store.remove(key, store_path)  # must not raise even though no PDF exists
     assert invoice_store.get(key, store_path) is None
+
+
+# ── Correction keying ────────────────────────────────────────────────────────
+
+def _korekta(year=2025, month=11, inv_num='T/K1/BN567872/0009/26') -> InvoiceData:
+    base = _data(year, month)
+    # Create a copy with doc_type=korekta
+    from dataclasses import replace
+    return replace(base, doc_type='korekta', invoice_number=inv_num,
+                   corrects_number='T/K1/BN567872/0005/26',
+                   correction_delta_pln=1.89,
+                   deposit_previous_pln=228.90,
+                   deposit_used_pln=228.90,
+                   amount_due_pln=232.52,
+                   prev_deposit_previous_pln=230.79)
+
+
+def _nota(year=2026, month=3, inv_num='K1NBN567872/025') -> InvoiceData:
+    base = _data(year, month, imported=0.0, exported=0.0)
+    from dataclasses import replace
+    return replace(base, doc_type='nota', invoice_number=inv_num,
+                   corrects_number='K1N0474969',
+                   correction_delta_pln=125.34,
+                   amount_due_pln=125.34,
+                   requires_payment=False)
+
+
+def test_upsert_korekta_gets_kor_key(store_path):
+    """Korekty must be stored under a ~kor~ key, not overwriting the billing record."""
+    billing_key = invoice_store.upsert(_data(2025, 11), path=store_path)
+    kor = _korekta()
+    kor_key = invoice_store.upsert(kor, path=store_path)
+    assert billing_key == '2025-11'
+    assert '~kor~' in kor_key
+    assert kor_key.startswith('2025-11~kor~')
+    # Both records must coexist
+    all_inv = invoice_store.load(store_path)
+    assert '2025-11' in all_inv
+    assert kor_key in all_inv
+
+
+def test_upsert_nota_gets_nota_key(store_path):
+    nota = _nota()
+    nota_key = invoice_store.upsert(nota, path=store_path)
+    assert '~nota~' in nota_key
+    assert nota_key.startswith('2026-03~nota~')
+
+
+def test_upsert_korekta_idempotent(store_path):
+    """Re-uploading the same korekta PDF must overwrite the same key (dedup)."""
+    kor = _korekta()
+    key1 = invoice_store.upsert(kor, path=store_path)
+    key2 = invoice_store.upsert(kor, path=store_path)
+    assert key1 == key2
+    assert len([k for k in invoice_store.load(store_path) if '~kor~' in k]) == 1
+
+
+# ── filter_billing ───────────────────────────────────────────────────────────
+
+def test_filter_billing_excludes_corrections(store_path):
+    invoice_store.upsert(_data(2025, 11), path=store_path)
+    invoice_store.upsert(_korekta(2025, 11), path=store_path)
+    invoice_store.upsert(_nota(2026, 3), path=store_path)
+    all_inv = invoice_store.load(store_path)
+    billing = invoice_store.filter_billing(all_inv)
+    assert '2025-11' in billing
+    assert all('~kor~' not in k and '~nota~' not in k for k in billing)
+    assert len(billing) == 1
+
+
+def test_filter_billing_excludes_stubs(store_path):
+    invoice_store.upsert_stub('bad.pdf', 'raw', 'error', path=store_path)
+    invoice_store.upsert(_data(), path=store_path)
+    all_inv = invoice_store.load(store_path)
+    billing = invoice_store.filter_billing(all_inv)
+    assert all(not k.startswith('unparsed-') for k in billing)
+
+
+# ── corrections_for ──────────────────────────────────────────────────────────
+
+def test_corrections_for_returns_nested_corrections(store_path):
+    invoice_store.upsert(_data(2025, 11), path=store_path)
+    invoice_store.upsert(_korekta(2025, 11, 'T/K1/BN567872/0009/26'), path=store_path)
+    invoice_store.upsert(_nota(2026, 3), path=store_path)  # different month
+    all_inv = invoice_store.load(store_path)
+    cors = invoice_store.corrections_for(all_inv, '2025-11')
+    assert len(cors) == 1
+    assert cors[0]['doc_type'] == 'korekta'
+    assert '~kor~' in cors[0]['key']
+
+
+def test_corrections_for_empty_when_none(store_path):
+    invoice_store.upsert(_data(), path=store_path)
+    all_inv = invoice_store.load(store_path)
+    cors = invoice_store.corrections_for(all_inv, '2025-10')
+    assert cors == []
+
+
+# ── effective_by_month ────────────────────────────────────────────────────────
+
+def test_effective_by_month_overlays_deposit(store_path):
+    """effective_by_month must overlay deposit from the korekta onto billing record."""
+    base = _data(2025, 11)
+    from dataclasses import replace
+    base_with_deposit = replace(base, deposit_previous_pln=230.79, deposit_used_pln=230.79,
+                                 amount_due_pln=230.63)
+    invoice_store.upsert(base_with_deposit, path=store_path)
+    invoice_store.upsert(_korekta(2025, 11), path=store_path)
+    all_inv = invoice_store.load(store_path)
+    eff = invoice_store.effective_by_month(all_inv)
+    assert '2025-11' in eff
+    assert eff['2025-11']['deposit_previous_pln'] == pytest.approx(228.90, abs=0.01)
+    assert eff['2025-11']['deposit_used_pln'] == pytest.approx(228.90, abs=0.01)
+    assert eff['2025-11']['amount_due_pln'] == pytest.approx(232.52, abs=0.01)
+
+
+def test_effective_by_month_no_correction_unchanged(store_path):
+    """When no korekta exists, the billing record is returned as-is."""
+    invoice_store.upsert(_data(), path=store_path)
+    all_inv = invoice_store.load(store_path)
+    eff = invoice_store.effective_by_month(all_inv)
+    assert '2025-10' in eff
+    # Without a korekta, deposit fields stay at their parsed values (None in _data())
+    assert eff['2025-10'].get('deposit_previous_pln') is None
+
+
+def test_effective_by_month_excludes_nota_keys(store_path):
+    """Nota records must never appear as top-level keys in effective_by_month output."""
+    invoice_store.upsert(_data(2026, 3), path=store_path)
+    invoice_store.upsert(_nota(2026, 3), path=store_path)
+    all_inv = invoice_store.load(store_path)
+    eff = invoice_store.effective_by_month(all_inv)
+    assert all('~nota~' not in k for k in eff)

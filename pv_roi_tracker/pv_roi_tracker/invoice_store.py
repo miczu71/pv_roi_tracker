@@ -124,6 +124,27 @@ def _to_record(
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+def _make_key(data: InvoiceData) -> str:
+    """Build the storage key for an InvoiceData record.
+
+    Billing invoices:  'YYYY-MM'              (unchanged, backward-compatible)
+    Korekty:           'YYYY-MM~kor~<suffix>'  (suffix = safe invoice_number tail)
+    Noty:              'YYYY-MM~nota~<suffix>'
+
+    The suffix is derived from the invoice_number so that re-uploading the
+    same document overwrites the same key (idempotent upsert / dedup).
+    """
+    base = f'{data.year}-{data.month:02d}'
+    doc_type = getattr(data, 'doc_type', 'rozliczeniowa')
+    if doc_type in ('korekta', 'nota'):
+        tag = 'kor' if doc_type == 'korekta' else 'nota'
+        inv_num = data.invoice_number or ''
+        # Keep only alphanumeric and slash; replace the rest; take last 30 chars
+        safe = re.sub(r'[^a-zA-Z0-9/]', '_', inv_num)[-30:] or str(int(time.time()))
+        return f'{base}~{tag}~{safe}'
+    return base
+
+
 def upsert(
     data: InvoiceData,
     filename: str = '',
@@ -133,8 +154,14 @@ def upsert(
     pdf_bytes: Optional[bytes] = None,
     path: Path = DEFAULT_PATH,
 ) -> str:
-    """Store or overwrite the invoice for data.year / data.month. Returns the key."""
-    key = f'{data.year}-{data.month:02d}'
+    """Store or overwrite the invoice record for data.year / data.month. Returns the key.
+
+    Key depends on doc_type:
+      - 'rozliczeniowa' (default) → 'YYYY-MM' (overwrites existing billing record)
+      - 'korekta'                 → 'YYYY-MM~kor~<inv_num_suffix>'
+      - 'nota'                    → 'YYYY-MM~nota~<inv_num_suffix>'
+    """
+    key = _make_key(data)
     pdf_path = save_pdf(key, pdf_bytes, path) if pdf_bytes else None
     doc = _load_document(path)
     invoices: dict = doc.setdefault('invoices', {})
@@ -239,3 +266,61 @@ def warnings_for(key: str, path: Path = DEFAULT_PATH) -> list:
     if rec is None:
         return []
     return rec.get('warnings', [])
+
+
+def filter_billing(stored: dict) -> dict:
+    """Return only billing invoice records — strips stubs, korekty, and noty.
+
+    Use this (instead of or after filter_real) for 'source of truth' consumers
+    such as MQTT rate sensors, tariff drift, and cost-breakdown: those must only
+    see rozliczeniowa records, never corrections (which share the same rates but
+    would corrupt key-based max() logic) or notas (which carry no rates at all).
+    """
+    return {
+        k: v for k, v in stored.items()
+        if not k.startswith('unparsed-')
+        and '~kor~' not in k
+        and '~nota~' not in k
+    }
+
+
+def corrections_for(stored: dict, month_key: str) -> list:
+    """Return all correction/nota records associated with a billing month, sorted by key.
+
+    Each returned dict is the raw stored record with its 'key' inserted.
+    """
+    result = []
+    for k in sorted(stored):
+        if k.startswith(f'{month_key}~kor~') or k.startswith(f'{month_key}~nota~'):
+            result.append({'key': k, **stored[k]})
+    return result
+
+
+def effective_by_month(stored: dict) -> dict:
+    """Return {YYYY-MM: record} with each billing month's deposit values overlaid
+    from the latest korekta for that month (if any).
+
+    This is the correct input for deposit.calculate() so the FIFO ledger sees
+    corrected deposit values without needing to know about korektas explicitly.
+    Corrections are keyed under '~kor~' so deposit.calculate() never sees them
+    directly — this function produces a clean 'YYYY-MM' → record view.
+    """
+    from . import invoice_store as _self  # avoid circular at module level
+
+    billing = filter_billing(filter_real(stored))
+    result = {}
+    for month_key, rec in billing.items():
+        merged = dict(rec)  # shallow copy — safe since we only overlay scalar fields
+        # Find all korrektas for this month; take the latest by key sort (suffix = invoice_num)
+        kor_keys = sorted(k for k in stored if k.startswith(f'{month_key}~kor~'))
+        if kor_keys:
+            latest_kor = stored[kor_keys[-1]]
+            for field_name in ('deposit_current_pln', 'deposit_previous_pln', 'deposit_used_pln'):
+                val = latest_kor.get(field_name)
+                if val is not None:
+                    merged[field_name] = val
+            # Also propagate the corrected month total so downstream callers stay consistent
+            if latest_kor.get('amount_due_pln') is not None:
+                merged['amount_due_pln'] = latest_kor['amount_due_pln']
+        result[month_key] = merged
+    return result

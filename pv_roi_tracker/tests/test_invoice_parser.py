@@ -768,3 +768,171 @@ class TestRealPdf:
         assert result['fields']['year'] == parsed.year
         assert result['fields']['imported_kwh'] == parsed.imported_kwh
         assert result['warnings'] == []
+
+
+# ── Document type: FAKTURA VAT KOREKTA ───────────────────────────────────────
+
+def _make_korekta_text() -> str:
+    """Synthetic FAKTURA VAT KOREKTA text (diacritics mangled as pypdf does)."""
+    return (
+        'FAKTURA VAT KOREKTA NR T/K1/BN567872/0009/26\n'
+        'DO FAKTURY VAT KOREKTA NR T/K1/BN567872/0005/26 z dnia 06.03.2026\n'
+        'ZA ENERGIĘ ELEKTRYCZNĄ I USŁUGI DYSTRYBUCJI\n'
+        'za okres od 01.11.2025 do 30.11.2025\n'
+        'Przyczyna korekty: zaktualizowalismy wartosc depozytu prosumenckiego\n'
+        'Pobrano z sieci 215\n'
+        'Wprowadzono do sieci 468\n'
+        '\n'
+        'POLICZONO:\n'
+        'Depozyt prosumencki w rozliczanym okresie (zl) 0,00\n'
+        'Depozyt prosumencki z okresow poprzednich (zl) 230,79\n'
+        'Rozliczenie depozytu ( 4 + 5 + 6 ) 230,79\n'
+        'Do zaplaty (zl) ( 3 - 7 ) 230,63\n'
+        '\n'
+        'NALEZALO POLICZYC:\n'
+        'Depozyt prosumencki w rozliczanym okresie (zl) 0,00\n'
+        'Depozyt prosumencki z okresow poprzednich (zl) 228,90\n'
+        'Rozliczenie depozytu ( 4 + 5 + 6 ) 228,90\n'
+        'Do zaplaty (zl) ( 3 - 7 ) 232,52\n'
+        '\n'
+        'Zwiekszenie wartosci brutto: 1,89 zl\n'
+        'Do zaplaty 1,89 zl\n'
+    )
+
+
+class TestKorekta:
+    @pytest.fixture(scope='class')
+    def parsed(self):
+        return _parse_text(_make_korekta_text())
+
+    def test_doc_type_is_korekta(self, parsed):
+        assert parsed.doc_type == 'korekta'
+
+    def test_billing_period(self, parsed):
+        assert parsed.year == 2025
+        assert parsed.month == 11
+
+    def test_invoice_number(self, parsed):
+        assert parsed.invoice_number == 'T/K1/BN567872/0009/26'
+
+    def test_corrects_number(self, parsed):
+        assert parsed.corrects_number == 'T/K1/BN567872/0005/26'
+
+    def test_correction_reason(self, parsed):
+        assert parsed.correction_reason is not None
+        assert 'depozytu' in parsed.correction_reason
+
+    def test_correction_delta(self, parsed):
+        assert parsed.correction_delta_pln == pytest.approx(1.89, abs=0.01)
+
+    def test_deposit_previous_from_nalezalo(self, parsed):
+        """deposit_previous_pln must come from NALEZALO section (corrected value)."""
+        assert parsed.deposit_previous_pln == pytest.approx(228.90, abs=0.01)
+
+    def test_deposit_used_from_nalezalo(self, parsed):
+        assert parsed.deposit_used_pln == pytest.approx(228.90, abs=0.01)
+
+    def test_amount_due_from_nalezalo(self, parsed):
+        """amount_due_pln must come from NALEZALO section (corrected total)."""
+        assert parsed.amount_due_pln == pytest.approx(232.52, abs=0.01)
+
+    def test_prev_deposit_previous_from_policzono(self, parsed):
+        """prev_deposit_previous_pln must be the POLICZONO value for 'bylo → jest' UI."""
+        assert parsed.prev_deposit_previous_pln == pytest.approx(230.79, abs=0.01)
+
+    def test_kWh_still_parsed(self, parsed):
+        assert parsed.imported_kwh == 215.0
+        assert parsed.exported_kwh == 468.0
+
+    def test_requires_payment_none(self, parsed):
+        """Korekta doesn't carry a payment flag (that's for notas)."""
+        assert parsed.requires_payment is None
+
+
+# ── Document type: NOTA OBCIAZENIOWA ─────────────────────────────────────────
+
+def _make_nota_text() -> str:
+    """Synthetic NOTA OBCIAZENIOWA KOREKTA text (diacritics mangled)."""
+    return (
+        'NOTA OBCIAZENIOWA KOREKTA NR K1NBN567872/025 do noty nr K1N0474969\n'
+        'Data sprzedazy: 01/03/2026\n'
+        '\n'
+        'POLICZONO:\n'
+        '1 Obnizka kwoty naleznosci (Rozp. MKiS) 590322415104598073 125,34\n'
+        'Razem: 125,34\n'
+        '\n'
+        'NALEZALO POLICZYC:\n'
+        '1 Obnizka kwoty naleznosci 0,00\n'
+        'Razem: 0,00\n'
+        '\n'
+        'Do zaplaty: 125,34 zl\n'
+        'Termin platnosci: 01/04/2026\n'
+        '\n'
+        'WAZNE!\n'
+        'NIE WYMAGA PLATNOSCI.\n'
+        'DOKUMENTY ROZLICZONE W CALOSCI.\n'
+    )
+
+
+class TestNota:
+    @pytest.fixture(scope='class')
+    def parsed(self):
+        return _parse_text(_make_nota_text())
+
+    def test_doc_type_is_nota(self, parsed):
+        assert parsed.doc_type == 'nota'
+
+    def test_billing_period_from_data_sprzedazy(self, parsed):
+        assert parsed.year == 2026
+        assert parsed.month == 3
+
+    def test_invoice_number(self, parsed):
+        assert parsed.invoice_number == 'K1NBN567872/025'
+
+    def test_corrects_number(self, parsed):
+        assert parsed.corrects_number == 'K1N0474969'
+
+    def test_amount_due(self, parsed):
+        assert parsed.amount_due_pln == pytest.approx(125.34, abs=0.01)
+
+    def test_correction_delta_equals_amount_due(self, parsed):
+        assert parsed.correction_delta_pln == parsed.amount_due_pln
+
+    def test_requires_payment_false(self, parsed):
+        assert parsed.requires_payment is False
+
+    def test_correction_reason_extracted(self, parsed):
+        assert parsed.correction_reason is not None
+        assert 'naleznosci' in parsed.correction_reason or 'należności' in parsed.correction_reason
+
+    def test_kwh_zero(self, parsed):
+        assert parsed.imported_kwh == 0.0
+        assert parsed.exported_kwh == 0.0
+
+    def test_no_kWh_fields(self, parsed):
+        """Nota has no tariff/kWh components."""
+        assert parsed.energy_peak_net is None
+        assert parsed.deposit_previous_pln is None
+
+
+class TestDocTypeClassification:
+    def test_regular_invoice_is_rozliczeniowa(self):
+        text = _make_minimal_text()
+        data = _parse_text(text)
+        assert data.doc_type == 'rozliczeniowa'
+        assert data.corrects_number is None
+        assert data.correction_delta_pln is None
+
+    def test_korekta_detected(self):
+        data = _parse_text(_make_korekta_text())
+        assert data.doc_type == 'korekta'
+
+    def test_nota_detected(self):
+        data = _parse_text(_make_nota_text())
+        assert data.doc_type == 'nota'
+
+    def test_nota_returns_early_skips_billing_fields(self):
+        """Nota parse must NOT raise InvoiceParseError for missing kWh/period."""
+        data = _parse_text(_make_nota_text())
+        # Must complete without raising
+        assert data is not None

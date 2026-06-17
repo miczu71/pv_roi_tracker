@@ -134,6 +134,9 @@ _BUILTIN_PATTERNS: dict[str, list] = {
         r'Akcyza\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
     ],
     'invoice_number': [
+        # Korekta: "FAKTURA VAT KOREKTA NR T/K1/…" (must precede the plain NR variant
+        # to avoid misidentifying the correction header as the corrected invoice number)
+        r'FAKTURA VAT KOREKTA NR\s+([\w/]+)',
         # Old format: "FAKTURA VAT NR T/K1/…" header in ZAŁĄCZNIK
         r'FAKTURA VAT NR\s+([\w/]+)',
         r'Podsumowanie faktury VAT\s+([\w/]+)',
@@ -145,6 +148,9 @@ _BUILTIN_PATTERNS: dict[str, list] = {
         # Use [\d ]+,[\d]+ to handle space-thousands separator (e.g. "1 529,48")
         r'Razem \(3-6\)\s+([\d ]+,[\d]+)',
         r'Razem do zap.aty\s+([\d ]+,[\d]+)',
+        # Korekta/old-format: "8. Do zapłaty (zł) ( 3 - 7 ) 232,52"
+        # \([^)]+\) skips the entire parenthesised formula before the amount.
+        r'Do zap.aty \(z.\)\s*\([^)]+\)\s*([\d ]+,[\d]+)',
         r'Do zap.aty\s+([\d ]+,[\d]+)',
         # Oldest format: "Do zapłaty: 1 529,48 zł" (colon between label and amount)
         r'Do zap.aty:\s*([\d ]+,[\d]+)',
@@ -342,6 +348,14 @@ class InvoiceData:
     invoice_number: Optional[str] = field(default=None)
     billing_period_raw: Optional[str] = field(default=None)
 
+    # Document type and correction metadata (all default to backward-compatible values)
+    doc_type: str = field(default='rozliczeniowa')  # 'rozliczeniowa' | 'korekta' | 'nota'
+    corrects_number: Optional[str] = field(default=None)          # nr dokumentu korygowanego
+    correction_reason: Optional[str] = field(default=None)        # Przyczyna korekty / usługa noty
+    correction_delta_pln: Optional[float] = field(default=None)   # Zwiększenie wartości brutto / Do zapłaty (nota)
+    requires_payment: Optional[bool] = field(default=None)        # nota: False = NIE WYMAGA PŁATNOŚCI
+    prev_deposit_previous_pln: Optional[float] = field(default=None)  # korekta: wartość z sekcji POLICZONO
+
     # Parse quality: empty list = clean parse; non-empty = missing fields or
     # failed sanity checks — not fatal but worth surfacing in the UI.
     warnings: list = field(default_factory=list)
@@ -514,9 +528,110 @@ def parse_invoice_debug(pdf_bytes: bytes) -> dict:
         }
 
 
+def _parse_nota(text: str) -> InvoiceData:
+    """Parse a NOTA OBCIĄŻENIOWA (debit note) document.
+
+    Nota documents carry no kWh data, billing period range, or tariff rates.
+    They have a 'Data sprzedaży' date, a 'Do zapłaty' delta, and optionally
+    the 'NIE WYMAGA PŁATNOŚCI' flag.
+    """
+    nota_warnings: list = []
+
+    # Invoice number: "NOTA OBCIĄŻENIOWA[ KOREKTA] NR K1NBN567872/025"
+    invoice_number = (
+        _first(r'NOTA OBCI\S*\s+KOREKTA\s+NR\s+([\w/]+)', text)
+        or _first(r'NOTA OBCI\S*\s+NR\s+([\w/]+)', text)
+    )
+
+    # Corrected document: "do noty nr K1N0474969"
+    corrects_number = _first(r'do noty nr\s+([\w/]+)', text)
+
+    # Month/year from "Data sprzedaży: DD/MM/YYYY" or "DD.MM.YYYY"
+    _date_m = re.search(
+        r'Data sprzeda.y[:\s]+(\d{2})[/.](\d{2})[/.](\d{4})', text, re.IGNORECASE
+    )
+    if not _date_m:
+        # Last resort: first 01/MM/YYYY date (Tauron billing always starts on 1st)
+        _date_m2 = re.search(r'\b01[/.](\d{2})[/.](\d{4})\b', text)
+        if _date_m2:
+            month: int = int(_date_m2.group(1))
+            year: int  = int(_date_m2.group(2))
+            nota_warnings.append('nota: data sprzedaży nieznaleziona — wydedukowano z daty 01/MM/YYYY')
+        else:
+            raise InvoiceParseError('Nota: Data sprzedaży (rok/miesiąc) nieznaleziona')
+    else:
+        month = int(_date_m.group(2))
+        year  = int(_date_m.group(3))
+
+    # Amount: "Do zapłaty: 125,34 zł" — colon variant distinguishes from korekta
+    amount_due_pln = _first_float(r'Do zap.aty[:\s]+([\d ]+,[\d]+)', text)
+    correction_delta_pln = amount_due_pln
+
+    # Reason: "Obniżka kwoty należności (Rozp. MKiŚ …)" first occurrence
+    _reason_m = re.search(r'[Oo]bni.ka kwoty nale.no.ci[^\n]*', text)
+    if _reason_m:
+        # Strip trailing long digit code that appears on the POLICZONO item line
+        correction_reason = re.sub(r'\s+\d{10,}.*$', '', _reason_m.group(0)).strip()
+    else:
+        correction_reason = 'Obniżka kwoty należności'
+
+    # Payment flag: False when "NIE WYMAGA PŁATNOŚCI" present
+    requires_payment = not bool(re.search(r'NIE WYMAGA P.ATNO', text, re.IGNORECASE))
+
+    return InvoiceData(
+        year=year,
+        month=month,
+        imported_kwh=0.0,
+        exported_kwh=0.0,
+        imported_kwh_peak=None,
+        imported_kwh_offpeak=None,
+        exported_kwh_peak=None,
+        exported_kwh_offpeak=None,
+        energy_peak_net=None,
+        energy_offpeak_net=None,
+        dist_var_peak_net=None,
+        dist_var_offpeak_net=None,
+        dist_jakosciowa_net=None,
+        dist_oze_net=None,
+        dist_kogeneracja_net=None,
+        fixed_mocowa_net=None,
+        fixed_abonament_net=None,
+        fixed_stalysieciowy_net=None,
+        amount_due_pln=amount_due_pln,
+        doc_type='nota',
+        invoice_number=invoice_number,
+        corrects_number=corrects_number,
+        correction_reason=correction_reason,
+        correction_delta_pln=correction_delta_pln,
+        requires_payment=requires_payment,
+        billing_period_raw=None,
+        warnings=nota_warnings,
+    )
+
+
 def _parse_text(text: str) -> InvoiceData:
     """Core parser: operates on already-extracted, whitespace-normalised text."""
     warnings: list = []
+
+    # ── Document type classification ──────────────────────────────────────────
+    # Nota has no kWh/period — handled by its own parser; return early.
+    # Korekta shares the regular billing layout but has two sections:
+    #   POLICZONO (old values) and NALEŻAŁO POLICZYĆ (corrected values).
+    #   Deposit and amount_due must come from the corrected section.
+    if re.search(r'NOTA OBCI', text, re.IGNORECASE):
+        return _parse_nota(text)
+    _is_korekta = bool(re.search(r'FAKTURA VAT KOREKTA', text, re.IGNORECASE))
+
+    # For korekta: scope deposit / amount_due extraction to the NALEŻAŁO POLICZYĆ
+    # section so we capture corrected values, not the stale POLICZONO ones.
+    # For regular invoices both variables equal the full text (no-op).
+    _deposit_text = text
+    _amount_text = text
+    if _is_korekta:
+        _split = re.search(r'NALE.{0,3}O POLICZY', text, re.IGNORECASE)
+        if _split:
+            _deposit_text = text[_split.start():]
+            _amount_text = _deposit_text
 
     # ── Billing period ────────────────────────────────────────────────────────
     # "Okres rozliczeniowy 01.04.2026 - 30.04.2026"
@@ -554,12 +669,16 @@ def _parse_text(text: str) -> InvoiceData:
         r'rozliczeniow\w*[^./\d]*(\d{2})/(\d{2})/(\d{4})',
         # Old format (stary wzór): "Za okres\nOd 01/10/2025 do 31/10/2025"
         r'Za okres\s+Od\s+(\d{2})/(\d{2})/(\d{4})',
+        r'Za okres\s+Od\s+(\d{2})\.(\d{2})\.(\d{4})',
         # Old format body (both "Za okres od" and "za okres od" — IGNORECASE in loop)
         r'za okres od\s+(\d{2})/(\d{2})/(\d{4})',
+        r'za okres od\s+(\d{2})\.(\d{2})\.(\d{4})',
         # Old format annex with colon: "Rozliczenie za okres: 01/10/2025"
         r'Rozliczenie za okres:\s*(\d{2})/(\d{2})/(\d{4})',
+        r'Rozliczenie za okres:\s*(\d{2})\.(\d{2})\.(\d{4})',
         # Oldest format annex without colon: "Rozliczenie za okres 01/04/2025"
         r'Rozliczenie za okres\s+(\d{2})/(\d{2})/(\d{4})',
+        r'Rozliczenie za okres\s+(\d{2})\.(\d{2})\.(\d{4})',
     ]
     period_m = None
     for _bp in _BILLING_PERIOD_PATTERNS:
@@ -592,10 +711,14 @@ def _parse_text(text: str) -> InvoiceData:
     billing_period_raw = (
         _first(r'Okres rozliczeniowy\s+(\d{2}\.\d{2}\.\d{4} - \d{2}\.\d{2}\.\d{4})', text)
         or _first(r'Okres rozliczeniowy\s*\n?\s*(\d{2}/\d{2}/\d{4} - \d{2}/\d{2}/\d{4})', text)
-        # Old format: "Od 01/10/2025 do 31/10/2025"
+        # Old format slash: "Od 01/10/2025 do 31/10/2025"
         or _first(r'[Oo]d\s+(\d{2}/\d{2}/\d{4} do \d{2}/\d{2}/\d{4})', text)
-        # Old format annex (with or without colon): "Rozliczenie za okres[: ] DD/MM/YYYY - DD/MM/YYYY"
+        # Old format dot (korekty): "od 01.11.2025 do 30.11.2025"
+        or _first(r'[Oo]d\s+(\d{2}\.\d{2}\.\d{4} do \d{2}\.\d{2}\.\d{4})', text)
+        # Old format annex slash (with or without colon): "Rozliczenie za okres[: ] DD/MM/YYYY - DD/MM/YYYY"
         or _first(r'Rozliczenie za okres:?\s*(\d{2}/\d{2}/\d{4} - \d{2}/\d{2}/\d{4})', text)
+        # Old format annex dot (korekty): "Rozliczenie za okres: DD.MM.YYYY - DD.MM.YYYY"
+        or _first(r'Rozliczenie za okres:?\s*(\d{2}\.\d{2}\.\d{4} - \d{2}\.\d{2}\.\d{4})', text)
     )
 
     # ── Invoice number ────────────────────────────────────────────────────────
@@ -790,9 +913,11 @@ def _parse_text(text: str) -> InvoiceData:
         vat_total_pln = round(vat_total_pln * 0.23, 2)
 
     # ── Prosument deposit ─────────────────────────────────────────────────────
-    deposit_current_pln  = _first_float_multi(_patterns_for('deposit_current'), text)
-    deposit_previous_pln = _first_float_multi(_patterns_for('deposit_previous'), text)
-    deposit_used_pln     = _first_float_multi(_patterns_for('deposit_used'), text)
+    # For korekta: _deposit_text is scoped to the NALEŻAŁO POLICZYĆ section so
+    # we extract the corrected values, not the stale POLICZONO values.
+    deposit_current_pln  = _first_float_multi(_patterns_for('deposit_current'), _deposit_text)
+    deposit_previous_pln = _first_float_multi(_patterns_for('deposit_previous'), _deposit_text)
+    deposit_used_pln     = _first_float_multi(_patterns_for('deposit_used'), _deposit_text)
 
     if deposit_current_pln is None:
         warnings.append('depozyt prosumencki bieżący nie znaleziony')
@@ -802,7 +927,9 @@ def _parse_text(text: str) -> InvoiceData:
         warnings.append('rozliczenie depozytu nie znalezione')
 
     # ── Amount due ────────────────────────────────────────────────────────────
-    amount_due_pln    = _first_float_multi(_patterns_for('amount_due'), text)
+    # For korekta: _amount_text is scoped to NALEŻAŁO POLICZYĆ so we get the
+    # corrected month total, not the old value from POLICZONO.
+    amount_due_pln    = _first_float_multi(_patterns_for('amount_due'), _amount_text)
     avg_price_pln_kwh = _first_float_multi(_patterns_for('avg_price'), text)
 
     if amount_due_pln is None:
@@ -847,6 +974,38 @@ def _parse_text(text: str) -> InvoiceData:
         warnings.append('blended_gross: podział szczyt/poza-szczyt niedostępny — użyto średniej arytmetycznej')
     elif _is_single_zone and peak_gross is not None:
         blended_gross = peak_gross  # G11: single zone — blended equals the single gross rate
+
+    # ── Korekta-specific fields ────────────────────────────────────────────────
+    doc_type = 'korekta' if _is_korekta else 'rozliczeniowa'
+    corrects_number = None
+    correction_reason = None
+    correction_delta_pln = None
+    requires_payment = None
+    prev_deposit_previous_pln = None
+
+    if _is_korekta:
+        # "DO FAKTURY VAT[ KOREKTA] NR T/K1/BN567872/0005/26"
+        corrects_number = (
+            _first(r'DO FAKTURY VAT KOREKTA NR\s+([\w/]+)', text)
+            or _first(r'DO FAKTURY VAT NR\s+([\w/]+)', text)
+        )
+        # "Przyczyna korekty: zaktualizowaliśmy wartość depozytu…" (one line)
+        _r_m = re.search(r'Przyczyna korekty:\s*([^\n]+)', text, re.IGNORECASE)
+        if _r_m:
+            correction_reason = _r_m.group(1).strip()[:200]
+        # "Zwiększenie wartości brutto: 1,89 zł" — the net delta owed now
+        correction_delta_pln = _first_float(
+            r'Zwi.kszenie warto.ci brutto[:\s]+([\d ]+,[\d]+)', text
+        )
+        # Capture POLICZONO section's deposit_previous (first match in full text)
+        # for the "było → jest" UI display. _deposit_text starts at NALEŻAŁO POLICZYĆ
+        # so the first-match from full text IS the POLICZONO value.
+        prev_deposit_previous_pln = _first_float_multi(
+            _patterns_for('deposit_previous'), text
+        )
+        # Suppress when no split was found and both values came from full text
+        if prev_deposit_previous_pln == deposit_previous_pln:
+            prev_deposit_previous_pln = None
 
     # De-duplicate warnings
     seen: set = set()
@@ -896,6 +1055,12 @@ def _parse_text(text: str) -> InvoiceData:
         tariff='G11' if _is_single_zone else 'G12W',
         invoice_number=invoice_number,
         billing_period_raw=billing_period_raw,
+        doc_type=doc_type,
+        corrects_number=corrects_number,
+        correction_reason=correction_reason,
+        correction_delta_pln=correction_delta_pln,
+        requires_payment=requires_payment,
+        prev_deposit_previous_pln=prev_deposit_previous_pln,
         warnings=unique_warnings,
     )
 

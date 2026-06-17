@@ -165,14 +165,25 @@ def main() -> None:
                            pdf_bytes_map: dict = None) -> None:
         for data in parsed_list:
             filename = getattr(data, '_filename', '')
-            snap = historic_store.snapshot_month(data.year, data.month, HISTORIC_PATH)
-            reconciled = historic_store.reconcile_invoice(data, HISTORIC_PATH)
+            doc_type = getattr(data, 'doc_type', 'rozliczeniowa')
             raw_text = (raw_texts or {}).get(filename, '') if data.warnings else None
             pdf_bytes = (pdf_bytes_map or {}).get(filename)
-            invoice_store.upsert(data, filename=filename, reconciled=reconciled,
-                                 pre_reconcile=snap, raw_text=raw_text, pdf_bytes=pdf_bytes,
-                                 path=INVOICE_PATH)
-            logger.info('Invoice %d-%02d ingested (reconciled=%s)', data.year, data.month, reconciled)
+            if doc_type in ('korekta', 'nota'):
+                # Corrections/notas are stored but do NOT reconcile historic records.
+                # deposit.calculate() sees the corrected values via effective_by_month().
+                invoice_store.upsert(data, filename=filename, reconciled=False,
+                                     raw_text=raw_text, pdf_bytes=pdf_bytes,
+                                     path=INVOICE_PATH)
+                logger.info('Correction %s %d-%02d stored (doc_type=%s)',
+                            data.invoice_number or '', data.year, data.month, doc_type)
+            else:
+                snap = historic_store.snapshot_month(data.year, data.month, HISTORIC_PATH)
+                reconciled = historic_store.reconcile_invoice(data, HISTORIC_PATH)
+                invoice_store.upsert(data, filename=filename, reconciled=reconciled,
+                                     pre_reconcile=snap, raw_text=raw_text, pdf_bytes=pdf_bytes,
+                                     path=INVOICE_PATH)
+                logger.info('Invoice %d-%02d ingested (reconciled=%s)',
+                            data.year, data.month, reconciled)
         poll_and_publish()
 
     _web.set_invoice_reconcile_callback(_invoice_reconcile)
@@ -203,6 +214,7 @@ def main() -> None:
         inv_fields['month'] = month
         # Ensure required fields have defaults
         inv_fields.setdefault('warnings', [])
+        inv_fields.setdefault('doc_type', 'rozliczeniowa')
         try:
             data = InvoiceData(**inv_fields)  # type: ignore[arg-type]
         except Exception as exc:
@@ -311,7 +323,7 @@ def main() -> None:
                 from . import deposit as _deposit
                 deposit_result = _deposit.calculate(
                     all_records,
-                    invoice_store.load(INVOICE_PATH),
+                    invoice_store.effective_by_month(invoice_store.load(INVOICE_PATH)),
                     refund_cap=DEPOSIT_REFUND_PCT,
                 )
                 _record_job('deposit', True)

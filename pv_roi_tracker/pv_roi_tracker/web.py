@@ -305,7 +305,10 @@ def api_data():
         try:
             from . import invoice_store as _istore
             _stored_invoices = _istore.load(_invoice_path)
-            _real_invoices = _istore.filter_real(_stored_invoices)
+            # filter_billing (after filter_real) gives only rozliczeniowa records —
+            # korekty/noty share the same rates/kWh so they must not pollute
+            # tariff-drift, cost-breakdown, or the max()-based latest-invoice logic.
+            _real_invoices = _istore.filter_billing(_istore.filter_real(_stored_invoices))
         except Exception:
             pass
 
@@ -390,14 +393,20 @@ def _build_degradation(records, today):
 
 def _build_invoices_data(records, stored: dict):
     out = []
-    for key, inv in sorted(stored.items(), key=lambda kv: kv[0]):
+    # Only iterate billing records and stubs — corrections/notas are attached
+    # as nested sub-rows via the 'corrections' list on each billing row.
+    billing_and_stubs = {
+        k: v for k, v in stored.items()
+        if '~kor~' not in k and '~nota~' not in k
+    }
+    for key, inv in sorted(billing_and_stubs.items(), key=lambda kv: kv[0]):
         try:
             # Synthetic keys like "unparsed-<ts>-<name>" — month unknown yet
             is_stub = key.startswith('unparsed-')
             diff_imp = diff_exp = None
             if not is_stub:
                 try:
-                    iy, im = int(key[:4]), int(key[5:])
+                    iy, im = int(key[:4]), int(key[5:7])
                     hist_rec = next((r for r in records if r.year == iy and r.month == im), None)
                     if hist_rec:
                         if hist_rec.purchased_kwh is not None and inv.get('imported_kwh') is not None:
@@ -406,11 +415,40 @@ def _build_invoices_data(records, stored: dict):
                             diff_exp = round(inv['exported_kwh'] - hist_rec.exported_kwh, 2)
                 except (ValueError, TypeError):
                     pass
+
+            # Gather corrections/notas nested under this billing month
+            corrections = []
+            if not is_stub:
+                for cor_key in sorted(stored):
+                    if not (cor_key.startswith(f'{key}~kor~')
+                            or cor_key.startswith(f'{key}~nota~')):
+                        continue
+                    cor = stored[cor_key]
+                    cor_type = 'korekta' if '~kor~' in cor_key else 'nota'
+                    corrections.append({
+                        'key': cor_key,
+                        'doc_type': cor.get('doc_type', cor_type),
+                        'invoice_number': cor.get('invoice_number'),
+                        'corrects_number': cor.get('corrects_number'),
+                        'correction_reason': cor.get('correction_reason'),
+                        'correction_delta_pln': cor.get('correction_delta_pln'),
+                        'requires_payment': cor.get('requires_payment'),
+                        'prev_deposit_previous': cor.get('prev_deposit_previous_pln'),
+                        'deposit_previous': cor.get('deposit_previous_pln'),
+                        'deposit_used': cor.get('deposit_used_pln'),
+                        'amount_due': cor.get('amount_due_pln'),
+                        'billing_period_raw': cor.get('billing_period_raw'),
+                        'filename': cor.get('filename'),
+                        'has_pdf': bool(cor.get('pdf_path')),
+                        'warnings': cor.get('warnings', []),
+                    })
+
             inv_warnings = inv.get('warnings', [])
             out.append({
                 'key': key,
                 'month': key if not is_stub else None,
                 'is_stub': is_stub,
+                'doc_type': inv.get('doc_type', 'rozliczeniowa'),
                 'needs_training': inv.get('needs_training', False),
                 'parse_error': inv.get('parse_error'),
                 'has_raw_text': bool(inv.get('raw_text')),
@@ -447,6 +485,7 @@ def _build_invoices_data(records, stored: dict):
                 'fixed_mocowa_net': inv.get('fixed_mocowa_net'),
                 'fixed_abonament_net': inv.get('fixed_abonament_net'),
                 'fixed_stalysieciowy_net': inv.get('fixed_stalysieciowy_net'),
+                'corrections': corrections,
             })
         except Exception:
             pass
@@ -493,7 +532,7 @@ def latest_invoice_rates(real: Optional[dict] = None) -> dict:
     try:
         if real is None:
             from . import invoice_store as _istore
-            real = _istore.load_real(_invoice_path)
+            real = _istore.filter_billing(_istore.load_real(_invoice_path))
         latest = _latest_real_invoice(real)
         if latest is None:
             return {}
@@ -646,9 +685,11 @@ def invoice_upload():
                 debug = parse_invoice_debug(pdf_bytes)
                 raw_texts[fname] = debug.get('text', '')
             results.append({'filename': fname, 'month': f'{data.year}-{data.month:02d}',
+                             'doc_type': getattr(data, 'doc_type', 'rozliczeniowa'),
                              'imported_kwh': data.imported_kwh, 'exported_kwh': data.exported_kwh,
                              'peak_gross': data.peak_gross, 'offpeak_gross': data.offpeak_gross,
                              'amount_due': data.amount_due_pln, 'deposit_used': data.deposit_used_pln,
+                             'correction_delta_pln': getattr(data, 'correction_delta_pln', None),
                              'warnings': data.warnings,
                              'ok': True})
         except InvoiceParseError as exc:
@@ -3397,7 +3438,49 @@ function _renderInvoiceTable(invoices) {
               : '') +
           '</div>') +
       '</td>' +
-    '</tr>';
+    '</tr>' +
+    // Correction sub-rows (korekty / noty) nested under the billing month
+    ((inv.corrections && inv.corrections.length > 0)
+      ? inv.corrections.map(function(cor) {
+          const isNota = cor.doc_type === 'nota';
+          const badgeColor = isNota ? '#718096' : '#4299e1';
+          const badgeLabel = isNota ? 'NOTA' : 'KOREKTA';
+          const noPaymentFlag = (isNota && cor.requires_payment === false)
+            ? ' <span style="background:#e9d8fd;color:#553c9a;padding:1px 5px;border-radius:2px;font-size:10px">NIE WYMAGA PŁATNOŚCI</span>'
+            : '';
+          const prevDep = cor.prev_deposit_previous;
+          const newDep  = cor.deposit_previous;
+          const depChange = (prevDep != null && newDep != null && prevDep !== newDep)
+            ? ' · depozyt poprz.: <b>' + prevDep.toFixed(2) + ' → ' + newDep.toFixed(2) + ' zł</b>'
+            : '';
+          const deltaStr = cor.correction_delta_pln != null
+            ? ' · delta: <b>' + (cor.correction_delta_pln >= 0 ? '+' : '') + cor.correction_delta_pln.toFixed(2) + ' zł</b>'
+            : '';
+          const amountStr = (!isNota && cor.amount_due != null)
+            ? ' · do zapłaty (po kor.): ' + cor.amount_due.toFixed(2) + ' zł'
+            : '';
+          const reasonStr = cor.correction_reason
+            ? ' · <em style="color:var(--muted)">' + cor.correction_reason.replace(/</g,'&lt;').substring(0,120) + '</em>'
+            : '';
+          const corKey = JSON.stringify(cor.key).replace(/"/g,'&quot;');
+          const pdfBtn = cor.has_pdf
+            ? '<button onclick="event.stopPropagation();viewInvoicePdf(' + corKey + ')" ' +
+              'style="font-size:10px;padding:1px 5px;background:#718096;color:#fff;border:none;border-radius:2px;cursor:pointer;margin-left:6px">PDF</button>'
+            : '';
+          const delBtn = '<button onclick="event.stopPropagation();removeInvoice(' + corKey + ')" ' +
+            'style="font-size:10px;padding:1px 5px;background:#e53e3e;color:#fff;border:none;border-radius:2px;cursor:pointer;margin-left:3px">Usuń</button>';
+          return '<tr style="background:#f0f7ff">' +
+            '<td colspan="13" style="padding:3px 8px 3px 28px;border-left:3px solid ' + badgeColor + ';font-size:11px">' +
+              '<span style="background:' + badgeColor + ';color:#fff;padding:1px 5px;border-radius:2px;font-size:10px;font-weight:600">' + badgeLabel + '</span> ' +
+              (cor.invoice_number || '—') +
+              (cor.corrects_number ? ' <span style="color:var(--muted)">→ koryguje nr ' + cor.corrects_number + '</span>' : '') +
+              noPaymentFlag +
+              depChange + amountStr + deltaStr + reasonStr +
+              pdfBtn + delBtn +
+            '</td>' +
+          '</tr>';
+        }).join('')
+      : '');
   });
 
   wrap.innerHTML =
