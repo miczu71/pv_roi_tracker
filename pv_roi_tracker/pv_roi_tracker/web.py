@@ -1671,21 +1671,14 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
         <div id="taryfaBadge" style="margin-bottom:14px;padding:10px 14px;border-radius:4px;font-size:13px;background:#e8f4fd;border-left:4px solid #2196F3">
           Ładowanie stanu taryfy...
         </div>
-        <h3 style="margin:0 0 6px">Zmiany taryfy wykryte z faktur</h3>
-        <p style="font-size:12px;color:#666;margin:0 0 8px">
-          Odtworzone z historii wgranych faktur — tylko podgląd. Kliknij
-          <strong>«Utwórz wpis»</strong>, aby zmaterializować wykrytą zmianę jako wpis ręczny.
-        </p>
-        <div id="taryfaDerived" style="margin-bottom:20px">
-          <p style="font-size:12px;color:#aaa">Ładowanie…</p>
-        </div>
-        <h3 style="margin:0 0 10px">Historia wpisów taryfowych</h3>
+        <h3 style="margin:0 0 6px">Historia taryf</h3>
         <p style="font-size:12px;color:#666;margin:0 0 12px">
-          Każda zmiana stawek Tauron to nowy wpis z datą obowiązywania. Wpis jest
-          <strong>override</strong> (wypełnia lukę), gdy ogłoszone stawki są nowsze niż
-          najnowsza wgrana faktura; automatycznie wygasa, gdy faktura za ten okres dotrze.
-          Wpisy z przyszłą datą czekają bezczynnie. Puste pola dziedziczą wartości
-          z wcześniejszych wpisów — wystarczy podać tylko zmienione stawki.
+          Jedna oś czasu łącząca: <strong>&#128203; z faktury</strong> — zmiany stawek
+          wykryte automatycznie z wgranych faktur (tylko podgląd); <strong>&#9998; ręczny</strong> —
+          wpisy wyprzedzające fakturę (luka / override / przyszłe zmiany). Wpis ręczny jest
+          <strong>override</strong>, gdy jego data jest nowsza niż najnowsza faktura;
+          automatycznie ustępuje, gdy faktura za ten okres dotrze. Puste pola dziedziczą
+          wartości z wcześniejszych wpisów — wystarczy wpisać tylko co się zmieniło.
         </p>
         <div id="taryfaList" style="margin-bottom:18px"></div>
         <h3 style="margin:0 0 10px" id="taryfaFormTitle">Dodaj / edytuj wpis</h3>
@@ -4536,44 +4529,109 @@ async function loadTaryfaTab() {
     ]);
     if (!rCfg.ok) throw new Error('HTTP ' + rCfg.status);
     const d = await rCfg.json();
+    const dd = rDer.ok ? await rDer.json() : {changes: [], existing_effective_from: []};
     _renderTaryfaBadge(d);
-    _renderTaryfaList(d.tariffs || []);
-    if (rDer.ok) {
-      const dd = await rDer.json();
-      _renderTaryfaDerived(dd.changes || [], dd.existing_effective_from || []);
-    }
+    _renderTaryfaTimeline(d.tariffs || [], dd.changes || [], d);
   } catch(e) {
     document.getElementById('taryfaBadge').textContent = 'Błąd ładowania: ' + e.message;
   }
 }
 
-function _renderTaryfaDerived(changes, existing) {
-  const el = document.getElementById('taryfaDerived');
-  if (!changes.length) {
-    el.innerHTML = '<p style="font-size:12px;color:#aaa">Brak danych (żadna faktura nie zawiera stawek).</p>';
+function _renderTaryfaTimeline(tariffs, derived, status) {
+  const el = document.getElementById('taryfaList');
+
+  // Build lookup maps
+  const manualMap = {};
+  tariffs.forEach(t => { manualMap[t.effective_from] = t; });
+  // derived is newest-first from API; index by effective_from
+  const derivedMap = {};
+  derived.forEach(c => { derivedMap[c.effective_from] = c; });
+  // first derived entry (oldest) has changed=[] → base row
+  const firstDerivedKey = derived.length ? derived[derived.length - 1].effective_from : null;
+
+  // Union of all keys, sorted descending (newest first)
+  const allKeys = [...new Set([...Object.keys(manualMap), ...Object.keys(derivedMap)])];
+  allKeys.sort((a, b) => b.localeCompare(a));
+
+  if (!allKeys.length) {
+    el.innerHTML = '<p style="color:#888;font-size:13px">Brak danych — wgraj faktury lub dodaj wpis ręczny.</p>';
     return;
   }
-  const existSet = new Set(existing);
-  const rows = changes.map((c, idx) => {
-    const isFirst = idx === changes.length - 1;  // changes are newest-first
-    const hasEntry = existSet.has(c.effective_from);
-    const changeDesc = isFirst
-      ? '<span style="font-size:11px;color:#888">punkt startowy (pierwsza faktura z danymi)</span>'
-      : c.changed.map(ch =>
-          `<span style="font-size:11px;color:#555"><b>${_esc(ch.field)}</b>: ${ch.from}→<b>${ch.to}</b></span>`
+
+  // Current month YYYY-MM for "future" detection
+  const nowYM = new Date().toISOString().slice(0, 7);
+
+  const rows = allKeys.map(key => {
+    const manual = manualMap[key];
+    const der    = derivedMap[key];
+    const hasManual  = !!manual;
+    const hasDerived = !!der;
+
+    // Source chips
+    let chips = '';
+    if (hasManual && hasDerived) {
+      chips = '<span style="font-size:10px;background:#cfe2ff;color:#084298;border-radius:3px;padding:1px 6px">&#9998; ręczny</span>'
+            + ' <span style="font-size:10px;background:#e9ecef;color:#495057;border-radius:3px;padding:1px 6px">&#128203; potwierdzony fakturą</span>';
+    } else if (hasManual) {
+      const futureTag = key > nowYM
+        ? ' <span style="font-size:10px;background:#fff3cd;color:#856404;border-radius:3px;padding:1px 5px">przyszły (czeka)</span>'
+        : '';
+      chips = '<span style="font-size:10px;background:#cfe2ff;color:#084298;border-radius:3px;padding:1px 6px">&#9998; ręczny</span>' + futureTag;
+    } else {
+      chips = '<span style="font-size:10px;background:#e9ecef;color:#495057;border-radius:3px;padding:1px 6px">&#128203; z faktury</span>';
+    }
+
+    // Active status chip
+    let activeChip = '';
+    if (key === status.current_effective_from) {
+      activeChip = status.is_override_active
+        ? ' <span style="font-size:10px;background:#fff3cd;color:#856404;border-radius:3px;padding:1px 6px">&#9889; override aktywny</span>'
+        : ' <span style="font-size:10px;background:#d1e7dd;color:#0a3622;border-radius:3px;padding:1px 6px">&#9679; baseline aktywny</span>';
+    }
+
+    // Delta description
+    let deltaHtml = '';
+    if (hasDerived) {
+      if (der.changed.length === 0) {
+        deltaHtml = '<span style="font-size:11px;color:#888">punkt startowy (pierwsza faktura z danymi)</span>';
+      } else {
+        deltaHtml = der.changed.map(ch =>
+          `<span style="font-size:11px;color:#555"><b>${_esc(ch.field)}</b>: ${ch.from}&#8594;<b>${ch.to}</b></span>`
         ).join(' &nbsp; ');
-    const badge = hasEntry
-      ? '<span style="font-size:10px;background:#d4edda;color:#155724;border-radius:3px;padding:1px 6px;margin-left:6px">✓ jest wpis</span>'
+      }
+    } else if (hasManual) {
+      // Manual-only: show compact rates summary
+      const ratesStr = Object.entries(manual.rates || {})
+        .filter(([,v]) => v != null)
+        .map(([k,v]) => `<span style="font-size:11px;color:#555">${_esc(k)}: <b>${v}</b></span>`)
+        .join(' &nbsp; ');
+      deltaHtml = ratesStr || '<span style="font-size:11px;color:#aaa">brak stawek</span>';
+    }
+
+    // Note (manual only)
+    const noteHtml = hasManual && manual.note
+      ? `<span style="font-size:11px;color:#666;font-style:italic">${_esc(manual.note)}</span>`
       : '';
-    const btn = `<button class="btn" onclick="editTaryfaEntry(${_esc(JSON.stringify({effective_from: c.effective_from, note: 'Wykryte z faktury ' + c.effective_from, rates: c.rates}))})"
-      style="font-size:11px;padding:2px 10px;margin-left:auto;background:#17a2b8">Utwórz wpis</button>`;
-    return `<div style="border:1px solid #dde;border-radius:5px;padding:8px 12px;margin-bottom:6px;background:#f9fbff">
-      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-        <span style="font-weight:700;font-size:13px;min-width:56px">${_esc(c.effective_from)}</span>
-        ${badge}
-        <span style="flex:1;display:flex;flex-wrap:wrap;gap:5px">${changeDesc}</span>
-        ${btn}
+
+    // Action buttons (manual entries only)
+    const btns = hasManual
+      ? `<button class="btn" onclick="editTaryfaEntry(${_esc(JSON.stringify(manual))})"
+           style="font-size:11px;padding:2px 10px;margin-left:auto">Edytuj</button>
+         <button class="btn" onclick="deleteTaryfaEntry('${_esc(key)}')"
+           style="font-size:11px;padding:2px 10px;background:#dc3545">Usuń</button>`
+      : '';
+
+    const bg   = hasManual ? '#fafafa' : '#f4f6fb';
+    const border = hasManual ? '#ddd' : '#dde';
+
+    return `<div style="border:1px solid ${border};border-radius:6px;padding:9px 13px;margin-bottom:7px;background:${bg}">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px">
+        <span style="font-weight:700;font-size:13px;min-width:56px">${_esc(key)}</span>
+        ${chips}${activeChip}
+        ${noteHtml}
+        ${btns}
       </div>
+      <div style="display:flex;flex-wrap:wrap;gap:5px">${deltaHtml}</div>
     </div>`;
   }).join('');
   el.innerHTML = rows;
@@ -4591,29 +4649,6 @@ function _renderTaryfaBadge(d) {
     el.style.background = '#f8f9fa'; el.style.borderLeftColor = '#6c757d';
     el.innerHTML = '&#128204; <strong>Brak wpisów</strong> — ' + _esc(d.active_reason);
   }
-}
-
-function _renderTaryfaList(tariffs) {
-  const el = document.getElementById('taryfaList');
-  if (!tariffs.length) { el.innerHTML = '<p style="color:#888;font-size:13px">Brak wpisów taryfowych.</p>'; return; }
-  const rows = [...tariffs].reverse().map(t => {
-    const rateStr = Object.entries(t.rates || {})
-      .filter(([,v]) => v != null)
-      .map(([k,v]) => `<span style="font-size:11px;color:#555">${k}: <b>${v}</b></span>`)
-      .join(' &nbsp; ');
-    return `<div style="border:1px solid #ddd;border-radius:6px;padding:10px 14px;margin-bottom:8px;background:#fafafa">
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
-        <span style="font-weight:700;font-size:14px">${_esc(t.effective_from)}</span>
-        ${t.note ? `<span style="font-size:12px;color:#555">${_esc(t.note)}</span>` : ''}
-        <button class="btn" onclick="editTaryfaEntry(${_esc(JSON.stringify(t))})"
-          style="font-size:11px;padding:2px 10px;margin-left:auto">Edytuj</button>
-        <button class="btn" onclick="deleteTaryfaEntry('${_esc(t.effective_from)}')"
-          style="font-size:11px;padding:2px 10px;background:#dc3545">Usuń</button>
-      </div>
-      <div style="display:flex;flex-wrap:wrap;gap:6px">${rateStr}</div>
-    </div>`;
-  }).join('');
-  el.innerHTML = rows;
 }
 
 function _esc(s) {
