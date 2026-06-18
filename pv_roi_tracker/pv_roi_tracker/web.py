@@ -1456,8 +1456,8 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
                       font-weight: 600; font-size: 11px; text-transform: uppercase;
                       letter-spacing: .4px; color: var(--muted); border-bottom: 2px solid var(--border); }
 .docs-body tbody td { padding: 5px 8px; border-bottom: 1px solid var(--border);
-                      font-size: 12px; vertical-align: top;
-                      overflow-wrap: anywhere; word-break: break-word; }
+                      font-size: 12px; vertical-align: top; text-align: left;
+                      white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
 .docs-body tbody tr:hover { background: #f7fafc; }
 .docs-body code { background: var(--bg); border: 1px solid var(--border); border-radius: 3px;
                   padding: 1px 5px; font-size: 11px; font-family: monospace;
