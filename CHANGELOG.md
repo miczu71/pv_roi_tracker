@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.25.1] — 2026-06-18
+
+### Fixed
+
+- **Tabele dokumentacji wychodzące poza modal** — długie identyfikatory encji (np. `pv_roi_tracker_self_consumption_savings`) i ścieżki (`/share/pv_roi_tracker`) nie mogły się zawijać przez `white-space:nowrap`, co powodowało wylewanie treści poza białą kartę modala. Naprawione: `white-space:normal` + `overflow-wrap:anywhere; word-break:break-word` na `code` i komórkach tabeli; `overflow-x:hidden` na karcie jako zabezpieczenie.
+
+---
+
 ## [0.25.0] — 2026-06-18
 
 ### Added

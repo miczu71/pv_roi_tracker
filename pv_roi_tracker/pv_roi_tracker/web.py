@@ -1443,7 +1443,7 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
 }
 
 /* -- Docs modal -- */
-.docs-body { line-height: 1.6; color: var(--text); }
+.docs-body { line-height: 1.6; color: var(--text); overflow-wrap: anywhere; }
 .docs-body h2 { font-size: 15px; font-weight: 700; margin: 20px 0 8px; padding-bottom: 4px;
                 border-bottom: 2px solid var(--border); color: var(--accent); }
 .docs-body h2:first-child { margin-top: 0; }
@@ -1456,10 +1456,12 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
                       font-weight: 600; font-size: 11px; text-transform: uppercase;
                       letter-spacing: .4px; color: var(--muted); border-bottom: 2px solid var(--border); }
 .docs-body tbody td { padding: 5px 8px; border-bottom: 1px solid var(--border);
-                      font-size: 12px; vertical-align: top; }
+                      font-size: 12px; vertical-align: top;
+                      overflow-wrap: anywhere; word-break: break-word; }
 .docs-body tbody tr:hover { background: #f7fafc; }
 .docs-body code { background: var(--bg); border: 1px solid var(--border); border-radius: 3px;
-                  padding: 1px 5px; font-size: 11px; font-family: monospace; white-space: nowrap; }
+                  padding: 1px 5px; font-size: 11px; font-family: monospace;
+                  white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
 .docs-body .intro-box { background: #eff6ff; border-left: 3px solid var(--accent);
                         padding: 8px 12px; border-radius: 0 6px 6px 0;
                         font-size: 13px; margin-bottom: 12px; }
@@ -4218,7 +4220,7 @@ function _ensureDocsModal() {
   overlay.style.cssText = 'display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1000;overflow-y:auto;padding:16px';
   overlay.addEventListener('click', function(e) { if (e.target === overlay) closeDocsModal(); });
   const card = document.createElement('div');
-  card.style.cssText = 'background:var(--card);border-radius:8px;width:min(900px,96vw);margin:0 auto;padding:24px 28px;position:relative';
+  card.style.cssText = 'background:var(--card);border-radius:8px;width:min(900px,96vw);margin:0 auto;padding:24px 28px;position:relative;overflow-x:hidden';
   card.innerHTML =
     '<button onclick="closeDocsModal()" title="Zamknij" style="position:absolute;top:10px;right:12px;font-size:18px;background:none;border:none;cursor:pointer;color:var(--muted)">&#x2715;</button>' +
     '<h2 style="margin:0 0 16px;font-size:16px;color:var(--accent);border:none;padding:0">&#128214; Dokumentacja &mdash; PV ROI Tracker</h2>' +
