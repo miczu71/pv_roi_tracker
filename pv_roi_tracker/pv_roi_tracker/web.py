@@ -1481,8 +1481,8 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
     <div class="cards" id="cards"></div>
     <div class="charts">
       <div class="chart-wrap">
-        <h3>Laczny zwrot kumulatywny</h3>
-        <canvas id="lineChart"></canvas>
+        <h3>Wachlarz spłaty — skumulowany zwrot z pasmem niepewności (P10–P90)</h3>
+        <canvas id="fanChart"></canvas>
       </div>
       <div class="chart-wrap">
         <h3>Miesieczne oszczednosci (ostatnie 24 mies.)</h3>
@@ -1505,12 +1505,6 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
         <div class="tbl-foot" id="histFoot"></div>
       </div>
       <div id="tab-pred" style="display:none">
-        <div style="padding:12px 12px 0">
-          <div class="chart-wrap" style="height:300px;margin-bottom:12px">
-            <h3>Wachlarz spłaty — skumulowany zwrot z pasmem niepewności (P10–P90)</h3>
-            <canvas id="fanChart"></canvas>
-          </div>
-        </div>
         <div class="tbl-wrap"><table id="predTbl"></table></div>
         <div class="tbl-foot" id="predFoot"></div>
         <div class="sensi-wrap" id="sensiWrap">
@@ -1885,7 +1879,7 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
 </main>
 <script>
 'use strict';
-let _lineChart = null, _barChart = null, _rcemChart = null, _autarkiaChart = null, _prodChart = null, _arbitrageChart = null, _netCostChart = null, _priceSpreadChart = null, _yieldChart = null, _energyBalChart = null, _yearCompChart = null, _prodRankChart = null, _depositChart = null, _costBreakdownChart = null;
+let _barChart = null, _rcemChart = null, _autarkiaChart = null, _prodChart = null, _arbitrageChart = null, _netCostChart = null, _priceSpreadChart = null, _yieldChart = null, _energyBalChart = null, _yearCompChart = null, _prodRankChart = null, _depositChart = null, _costBreakdownChart = null;
 let _tariffPriceChart = null, _tariffCompChart = null, _tariffCumChart = null, _tariffSeasonChart = null, _tariffHistChart = null;
 let _rceCmpChart = null;
 let _fanChart = null, _waterfallChart = null, _sankeyChart = null, _cpiRealChart = null, _degradChart = null;
@@ -1935,7 +1929,6 @@ function showTab(name) {
     b.classList.toggle('active', TABS[i] === name)
   );
   if (name === 'rce' && _rceCmpChart) _rceCmpChart.resize();
-  if (name === 'pred' && _fanChart) _fanChart.resize();
   if (name === 'charts') {
     [_rcemChart, _autarkiaChart, _prodChart, _arbitrageChart, _netCostChart,
      _priceSpreadChart, _yieldChart, _energyBalChart, _yearCompChart, _prodRankChart,
@@ -2001,50 +1994,6 @@ function renderCards(s) {
   ).join('');
 }
 
-/* -- Line chart (cumulative) -- */
-function renderLineChart(records, predictions, gross, netInvestment) {
-  const histLbls = records.map(r => r.month_label);
-  const histVals = records.map(r => r.cumulative_return);
-  const predLbls = predictions.map(p => p.month_label);
-  const predVals = predictions.map(p => p.cumulative_return || (p.net_profit != null ? gross + p.net_profit : null));
-
-  const allLbls  = [...histLbls, ...predLbls];
-  const grossLine = allLbls.map(() => gross);
-  const netLine   = netInvestment != null ? allLbls.map(() => netInvestment) : null;
-
-  const hDs = [...histVals, ...predLbls.map(() => null)];
-  const pDs = [...histLbls.map(() => null)];
-  if (histVals.length) pDs[histVals.length - 1] = histVals[histVals.length - 1];
-  pDs.push(...predVals);
-
-  const datasets = [
-    { label: 'Zwrot (historia)', data: hDs,       borderColor: '#2563eb', backgroundColor: 'rgba(37,99,235,.07)', fill: true,  tension: 0.35, pointRadius: allLbls.length > 60 ? 0 : 3, spanGaps: false },
-    { label: 'Zwrot (prognoza)', data: pDs,       borderColor: '#2563eb', borderDash: [6,4], backgroundColor: 'transparent', fill: false, tension: 0.35, pointRadius: 0, spanGaps: false },
-    { label: 'Inwestycja brutto', data: grossLine, borderColor: '#dc2626', borderDash: [4,4], backgroundColor: 'transparent', fill: false, pointRadius: 0 },
-  ];
-  if (netLine) {
-    datasets.push({ label: 'Inwestycja netto', data: netLine, borderColor: '#16a34a', borderDash: [4,4], backgroundColor: 'transparent', fill: false, pointRadius: 0 });
-  }
-
-  const ctx = document.getElementById('lineChart').getContext('2d');
-  if (_lineChart) _lineChart.destroy();
-  _lineChart = new Chart(ctx, {
-    type: 'line',
-    data: { labels: allLbls, datasets },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false },
-      plugins: {
-        legend: { position: 'top', labels: { boxWidth: 12, font: { size: 11 } } },
-        tooltip: { callbacks: { label: c => c.raw == null ? null : c.dataset.label + ': ' + Number(c.raw).toLocaleString('pl-PL', {maximumFractionDigits: 0}) + ' zl' } }
-      },
-      scales: {
-        x: { ticks: { maxTicksLimit: 24, font: { size: 10 }, maxRotation: 45 } },
-        y: { ticks: { callback: v => (v/1000).toFixed(0) + 'k zl', font: { size: 10 } } },
-      },
-    },
-  });
-}
 
 /* -- Bar chart (monthly breakdown) -- */
 function renderBarChart(records) {
@@ -3304,7 +3253,6 @@ async function loadData() {
       : 6.72;
 
     renderCards(d.summary);
-    renderLineChart(d.records, d.predictions, d.summary.gross_investment, d.summary.net_investment);
     renderBarChart(d.records);
     renderRcemChart(d.records);
     renderAutarkiaChart(d.records);
