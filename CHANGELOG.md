@@ -2,50 +2,37 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.25.1] — 2026-06-18
-
-### Fixed
-
-- **Tabele dokumentacji wychodzące poza modal** — długie identyfikatory encji (np. `pv_roi_tracker_self_consumption_savings`) i ścieżki (`/share/pv_roi_tracker`) nie mogły się zawijać przez `white-space:nowrap`, co powodowało wylewanie treści poza białą kartę modala. Naprawione: `white-space:normal` + `overflow-wrap:anywhere; word-break:break-word` na `code` i komórkach tabeli; `overflow-x:hidden` na karcie jako zabezpieczenie.
-
----
-
-## [0.25.0] — 2026-06-18
+## [0.27.0] — 2026-06-18
 
 ### Added
 
-- **Wbudowana polska dokumentacja** — link „📖 Dokumentacja" w prawym górnym rogu nagłówka panelu otwiera modal z pełnym opisem w języku polskim: cykl pracy dodatku, opis każdej zakładki (Historia, Prognoza, Wykresy, Faktury, Analiza taryf, Taryfa, RCE vs RCEm), obsługa faktur i depozytu prosumenckiego, wzór ROI, tabela 42 sensorów MQTT, opcje konfiguracji i pliki danych. Modal zamykany przyciskiem ✕, klawiszem Escape lub kliknięciem w tło — brak przeładowania strony.
+- **Rachunek „bez PV vs z PV" (zakładka Wykresy)** — nowy wykres `billChart` porównuje miesięczny rachunek hipotetyczny (cały dom z sieci) z rzeczywistym kosztem zakupu po odjęciu przychodu z eksportu. Dwie serie słupkowe (bez PV / z PV) + linia zaoszczędzonych PLN. 2 nowe KPI: „Zaoszczędzone na rachunku łącznie" i „Rachunek z PV (suma)".
+
+- **Trend stawek jednostkowych + efektywna cena all-in 1 kWh (zakładka Faktury)** — nowa sekcja z wykresem liniowym ewolucji stawek (energia szczyt/poza szczytem, sieciowa zmienna, jakościowa, OZE, kogeneracja, efektywna brutto all-in). KPI „Efektywna all-in brutto" i delta r/r. Widoczna, gdy wgrana ≥ 1 faktura.
+
+- **Alert „miesiąc poniżej oczekiwań" — sensor MQTT + badge w UI (ficzer C)** — porównuje produkcję ostatniego zamkniętego miesiąca ze średnią tego samego miesiąca z poprzednich lat. Badge `⚠ poniżej` w tabeli Historii gdy odchylenie ≤ −10%. Dwa nowe sensory MQTT:
+
+  | Sensor | Opis |
+  |---|---|
+  | `sensor.pv_roi_tracker_underperformance_pct` | Odchylenie produkcji od oczekiwania sezonowego (%) |
+  | `sensor.pv_roi_tracker_underperformance_flag` | Tekst `ok` / `uwaga` — do automatyzacji HA |
+
+- **CO₂ — ekwiwalenty + skumulowany wykres w czasie (ficzer F)** — istniejąca karta CO₂ rozszerzona o ekwiwalenty drzew (≈21 kg CO₂/drzewo/rok) i km jazdy autem (≈0.21 kg CO₂/km). Nowy wykres `co2Chart` na zakładce Wykresy: kumulatywna emisja uniknięta (kg / t) i ekwiwalent drzew.
+
+- **37 nowych testów jednostkowych**: `bill_comparison` (4), `underperformance_analysis` (6), `_build_rate_trend` (7) + przypadki brzegowe.
 
 ### Changed
 
-- Brak zmian w logice, sensorach MQTT ani endpointach API.
-
----
-
-## [0.23.0] — 2026-06-17
-
-### Added
-
-- **Oś zmian taryfy wykryta z faktur** — nowa sekcja w zakładce Taryfa „Zmiany taryfy wykryte z faktur": lista punktów zmiany stawek odtworzona z historii wgranych faktur (delta na każdym polu z `_RATE_FIELDS` z epsilonem 1e-4 dla stawek, 0.01 dla opłat stałych). Pierwsza faktura z danymi = punkt bazowy (bez zmiany). Wpisy mające już odpowiadający ręczny wpis taryfowy oznaczone badge „✓ jest wpis". Przycisk **„Utwórz wpis"** pre-wypełnia formularz pełnym snapshotem stawek z danej faktury — użytkownik weryfikuje i zapisuje.
-- **`GET /api/tariff_config/derived`** — read-only endpoint zwracający `{changes:[...], existing_effective_from:[...]}`. Nic nie zapisuje.
-- **`tariff_config.effective_baseline(cfg, today)`** — kumulatywny baseline: scala `rates` wszystkich wpisów z `effective_from <= today` rosnąco. Wpis 2027-01 z samym `peak_gross/offpeak_gross` dziedziczy `fixed_*/dist_*` z wpisu 2026-02 — wystarczy podać tylko zmienione stawki.
-- **15 nowych testów**: `test_tariff_config.py` (×5 dla `effective_baseline`), nowy plik `tests/test_derive_tariff_changes.py` (×9), `test_web_invoice_rates.py` (×1 dla dziedziczenia baseline).
-
-### Changed
-
-- **`latest_invoice_rates()` krok 1** zmieniony z `current_entry(cfg).rates` (jeden wpis) → `effective_baseline(cfg, today)` (wszystkie wpisy scalone). Priorytet i kolejność kroków bez zmian: baseline < faktura < override.
-- **`_build_tariff_drift()`** używa `effective_baseline` zamiast `current_entry().rates` — baseline jest teraz kompletny nawet gdy najnowszy wpis zmienił tylko część pól.
-- Opis w zakładce Taryfa → dodana notatka: „Puste pola dziedziczą wartości z wcześniejszych wpisów — wystarczy podać tylko zmienione stawki."
+- Payload `/api/data` → `summary` rozszerzony o: `underperformance_pct`, `underperformance_flag`, `underperformance_last_closed_ym`, `co2_factor_kg_kwh`, `bill_comparison` (sumy + avg%).
+- Każdy rekord w `records` zawiera teraz `bill_without_pv` i `bill_with_pv` (PLN) dla miesięcy z pełnymi danymi.
+- Nowy klucz `rate_trend` w payloadzie (obok `cost_breakdown`).
 
 ### Entities / services touched
 
-| Endpoint | Zmiana |
+| Encja | Zmiana |
 |---|---|
-| `GET /api/tariff_config/derived` | NOWY — read-only oś zmian taryfy z faktur |
-
-> Sensory MQTT bez zmian. Wartości stawek mogą delikatnie różnić się od v0.22.0, jeśli wcześniejszy wpis taryfowy miał inne pola niż nowszy — teraz effective_baseline scala je wszystkie.
-
----
+| `sensor.pv_roi_tracker_underperformance_pct` | NOWY — odchylenie produkcji ostatniego mies. od oczekiwania sezonowego (%) |
+| `sensor.pv_roi_tracker_underperformance_flag` | NOWY — `ok` / `uwaga` |
 
 ## [0.22.0] — 2026-06-17
 

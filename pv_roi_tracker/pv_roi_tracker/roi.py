@@ -11,6 +11,138 @@ from dateutil.relativedelta import relativedelta
 from .models import MonthlyRecord
 from . import cpi_fetcher as _cpi
 
+
+# ── Rachunek „bez PV vs z PV" ────────────────────────────────────────────────
+
+def bill_comparison(records: list[MonthlyRecord]) -> dict:
+    """Rachunek hipotetyczny 'bez PV' vs rzeczywisty 'z PV', per miesiąc.
+
+    bill_without_pv = consumed_kwh × buy_price          (cały dom z sieci)
+    bill_with_pv    = purchased_kwh × buy_price − feedin_revenue  (rzeczywisty)
+    saved           = bill_without_pv − bill_with_pv     ≈ autokonsumpcja + przychód
+
+    Zwraca dict:
+      months:          [{ym, bill_without_pv, bill_with_pv, saved, savings_pct}]
+      total_without_pv, total_with_pv, total_saved,
+      avg_savings_pct: średni % niższego rachunku (miesiące z danymi)
+    """
+    months = []
+    for r in sorted(records, key=lambda x: (x.year, x.month)):
+        consumed = r.consumed_kwh or 0.0
+        buy_px   = r.buy_price_pln_kwh or 0.0
+        if consumed <= 0 or buy_px <= 0:
+            continue
+        bill_without = round(consumed * buy_px, 2)
+        purchased    = r.purchased_kwh or 0.0
+        feedin_rev   = r.feedin_revenue_pln or 0.0
+        bill_with    = round(purchased * buy_px - feedin_rev, 2)
+        saved        = round(bill_without - bill_with, 2)
+        savings_pct  = round(saved / bill_without * 100, 1) if bill_without > 0 else 0.0
+        months.append({
+            'ym':             f'{r.year}-{r.month:02d}',
+            'bill_without_pv': bill_without,
+            'bill_with_pv':    bill_with,
+            'saved':           saved,
+            'savings_pct':     savings_pct,
+        })
+
+    total_without = round(sum(m['bill_without_pv'] for m in months), 2)
+    total_with    = round(sum(m['bill_with_pv']    for m in months), 2)
+    total_saved   = round(total_without - total_with, 2)
+    pcts          = [m['savings_pct'] for m in months if m['bill_without_pv'] > 0]
+    avg_pct       = round(sum(pcts) / len(pcts), 1) if pcts else None
+
+    return {
+        'months':          months,
+        'total_without_pv': total_without,
+        'total_with_pv':    total_with,
+        'total_saved':      total_saved,
+        'avg_savings_pct':  avg_pct,
+    }
+
+
+# ── Alert „poniżej oczekiwań" ────────────────────────────────────────────────
+
+def _seasonal_prod_factors(complete: list[MonthlyRecord]) -> dict[int, float]:
+    """Per-calendar-month production index (kWh) relative to overall mean.
+
+    Analogous to _seasonal_factors() but computed on produced_kwh, not savings.
+    Returns {1..12: float}; returns all-1.0 when fewer than 6 distinct months have data.
+    """
+    by_month: dict[int, list[float]] = {m: [] for m in range(1, 13)}
+    for r in complete:
+        p = r.produced_kwh or 0.0
+        if p > 0:
+            by_month[r.month].append(p)
+    months_present = [m for m, vals in by_month.items() if vals]
+    if len(months_present) < 6:
+        return {m: 1.0 for m in range(1, 13)}
+    month_means = {m: mean(vals) for m, vals in by_month.items() if vals}
+    overall_mean = mean(month_means.values())
+    if overall_mean <= 0:
+        return {m: 1.0 for m in range(1, 13)}
+    return {m: (month_means[m] / overall_mean if m in month_means else 1.0)
+            for m in range(1, 13)}
+
+
+def underperformance_analysis(
+    records: list[MonthlyRecord],
+    today: Optional[date] = None,
+    alert_threshold_pct: float = -10.0,
+) -> dict:
+    """Analiza odchylenia produkcji ostatniego zamkniętego miesiąca od oczekiwania sezonowego.
+
+    Oczekiwanie = średnia produkcja tego samego miesiąca kalendarzowego
+    z poprzednich lat (minimum 1 poprzedni rok + łącznie ≥ 2 obserwacje).
+
+    Zwraca dict:
+      last_closed_ym:   str 'YYYY-MM'
+      actual_kwh:       rzeczywista produkcja
+      expected_kwh:     oczekiwana na podstawie historii
+      deviation_pct:    (actual−expected)/expected × 100
+      flag:             'uwaga' gdy deviation_pct ≤ alert_threshold_pct, else 'ok'
+      n_prior_years:    liczba lat użytych do obliczenia oczekiwania
+    Gdy brak wystarczających danych — zwraca flag='ok', pozostałe pola None.
+    """
+    if today is None:
+        today = date.today()
+    current_ym = (today.year, today.month)
+
+    complete = sorted(
+        [r for r in records
+         if (r.year, r.month) < current_ym and (r.produced_kwh or 0.0) > 0],
+        key=lambda r: (r.year, r.month),
+    )
+    if len(complete) < 2:
+        return {'flag': 'ok', 'last_closed_ym': None, 'actual_kwh': None,
+                'expected_kwh': None, 'deviation_pct': None, 'n_prior_years': 0}
+
+    last = complete[-1]
+
+    # Need at least 1 prior year of the same calendar month
+    prior_same = [r for r in complete
+                  if r.month == last.month and r.year < last.year
+                  and (r.produced_kwh or 0.0) > 0]
+    if not prior_same:
+        return {'flag': 'ok', 'last_closed_ym': f'{last.year}-{last.month:02d}',
+                'actual_kwh': round(last.produced_kwh, 1), 'expected_kwh': None,
+                'deviation_pct': None, 'n_prior_years': 0}
+
+    expected = round(mean(r.produced_kwh for r in prior_same), 1)
+    actual   = round(last.produced_kwh, 1)
+    deviation_pct = round((actual - expected) / expected * 100, 1) if expected > 0 else None
+    flag = ('uwaga' if deviation_pct is not None and deviation_pct <= alert_threshold_pct
+            else 'ok')
+
+    return {
+        'flag':           flag,
+        'last_closed_ym': f'{last.year}-{last.month:02d}',
+        'actual_kwh':     actual,
+        'expected_kwh':   expected,
+        'deviation_pct':  deviation_pct,
+        'n_prior_years':  len(prior_same),
+    }
+
 GROSS_INVESTMENT = 51_900.00  # zł — total project cost before any subsidy
 SUBSIDY = 28_714.00           # zł — one-time government grant (Mój Prąd / Czyste Powietrze)
 NET_INVESTMENT = GROSS_INVESTMENT - SUBSIDY  # 23_186.00 zł — kept for reference
@@ -239,6 +371,9 @@ class RoiResult:
     autarky_pct: Optional[float] = field(default=None)                # Σ autokonsumpcja / Σ zużycie
     co2_avoided_kg: float = field(default=0.0)                        # Σ produkcja × wskaźnik KOBiZE
     yoy_yield_delta_pct: Optional[float] = field(default=None)        # produkcja r/r (pary miesięcy)
+    # Alert „poniżej oczekiwań" — odchylenie produkcji ostatniego miesiąca (v0.27.0)
+    underperformance_pct: Optional[float] = field(default=None)       # (actual−expected)/expected × 100
+    underperformance_flag: str = field(default='ok')                   # 'ok' | 'uwaga'
 
 
 # ── Main calculation ─────────────────────────────────────────────────────────
@@ -313,6 +448,11 @@ def calculate(
                if total_consumed > 0 else None)
     co2_avoided = round(total_produced * co2_factor, 1)
     yoy_delta = degradation_analysis(records, system_kwp, today)['yoy_delta_pct']
+
+    # ── Alert „poniżej oczekiwań" ─────────────────────────────────────────────
+    _ua = underperformance_analysis(records, today)
+    underperf_pct  = _ua['deviation_pct']
+    underperf_flag = _ua['flag']
 
     # ── Commissioning date ───────────────────────────────────────────────────
     commissioning_date: Optional[date] = None
@@ -415,4 +555,6 @@ def calculate(
         autarky_pct=autarky,
         co2_avoided_kg=co2_avoided,
         yoy_yield_delta_pct=yoy_delta,
+        underperformance_pct=underperf_pct,
+        underperformance_flag=underperf_flag,
     )

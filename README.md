@@ -16,7 +16,7 @@ Tracks the return-on-investment of a residential photovoltaic system (Polish net
 
 ## Web UI (ingress)
 
-Tabs: **Historia miesięczna** · **Prognoza spłaty** (wachlarz spłaty P10–P90) · **Podsumowanie roczne** (z kolumnami r/r) · **Wykresy** (m.in. waterfall miesięczny, Sankey przepływu energii, oszczędności nominalne vs realne CPI, trend degradacji kWh/kWp, ranking produkcji miesięcznej z kolorem per rok i medalami top 3) · **Faktury** (upload PDF Tauron z trwałym przechowywaniem oryginałów, trening parsera, składniki kosztów faktur, depozyt prosumencki z prognozą przedawnienia, rekonsyliacja faktury vs falownik) · **Analiza taryf** (G12w vs dynamiczna) · **RCE vs RCEm** (symulacja rozliczenia godzinowego + heatmapa eksport × cena) · **Taryfa** (ręczne wpisy stawek z datą obowiązywania — zarządzanie luką ogłoszenia taryfy). Nagłówek pokazuje wersję add-onu i zawiera link **📖 Dokumentacja** otwierający modal z pełną polską dokumentacją użytkownika. The layout is responsive — tabs scroll horizontally and tables keep a sticky first column on phones.
+Tabs: **Historia miesięczna** · **Prognoza spłaty** (wachlarz spłaty P10–P90) · **Podsumowanie roczne** (z kolumnami r/r) · **Wykresy** (m.in. waterfall miesięczny, Sankey przepływu energii, oszczędności nominalne vs realne CPI, trend degradacji kWh/kWp, ranking produkcji miesięcznej z kolorem per rok i medalami top 3, rachunek bez PV vs z PV, skumulowane CO₂ z ekwiwalentami drzew/km) · **Faktury** (upload PDF Tauron z trwałym przechowywaniem oryginałów, trening parsera, składniki kosztów faktur, trend stawek jednostkowych + efektywna cena all-in 1 kWh, depozyt prosumencki z prognozą przedawnienia, rekonsyliacja faktury vs falownik) · **Analiza taryf** (G12w vs dynamiczna) · **RCE vs RCEm** (symulacja rozliczenia godzinowego + heatmapa eksport × cena) · **Taryfa** (ręczne wpisy stawek z datą obowiązywania — zarządzanie luką ogłoszenia taryfy). Nagłówek pokazuje wersję add-onu. The layout is responsive — tabs scroll horizontally and tables keep a sticky first column on phones.
 
 ### Faktury — składniki kosztów, korekty i trwałe PDF-y
 
@@ -105,6 +105,8 @@ All sensors appear under one device **PV ROI Tracker** in HA Settings → Device
 | `pv_roi_tracker_yoy_yield_delta` | PV YoY Yield Delta | % | production year-over-year, paired months |
 | `pv_roi_tracker_deposit_balance_est` | PV Deposit Balance Est | PLN | post-invoice balance + unposted inverter accruals |
 | `pv_roi_tracker_deposit_expiring_30d` | PV Deposit Expiring 30d | PLN | deposit value hitting 12-month expiry next month |
+| `pv_roi_tracker_underperformance_pct` | PV Underperformance | % | deviation of last closed month production vs seasonal expectation; `unknown` until ≥ 1 prior year of same calendar month |
+| `pv_roi_tracker_underperformance_flag` | PV Underperformance Flag | — | `ok` / `uwaga`; `uwaga` when deviation ≤ −10% |
 | `pv_roi_tracker_health` | PV ROI Tracker Health | — | `ok`/`degraded`/`error`; JSON attributes per job + `solcast_available` |
 | `pv_roi_tracker_rate_energy_peak_net` / `rate_energy_offpeak_net` | PV Rate Energy Peak/Offpeak | PLN/kWh | net energy rate from the **latest parsed invoice** — `unknown` until one is uploaded |
 | `pv_roi_tracker_rate_dist_var_peak_net` / `rate_dist_var_offpeak_net` | PV Rate Dist Var Peak/Offpeak | PLN/kWh | variable distribution component, latest invoice |

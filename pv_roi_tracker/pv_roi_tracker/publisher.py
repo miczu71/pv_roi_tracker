@@ -66,6 +66,9 @@ _SENSORS: list[_Sensor] = [
     _Sensor('autarky',                    'PV Autarky',                     'autarky_pct',                 '%',    None,       'measurement',      'mdi:home-battery'),
     _Sensor('co2_avoided',                'PV CO2 Avoided',                 'co2_avoided_kg',              'kg',   None,       'total_increasing', 'mdi:molecule-co2'),
     _Sensor('yoy_yield_delta',            'PV YoY Yield Delta',             'yoy_yield_delta_pct',         '%',    None,       'measurement',      'mdi:sun-clock'),
+    # Alert „poniżej oczekiwań" (v0.27.0)
+    _Sensor('underperformance_pct',       'PV Underperformance',            'underperformance_pct',        '%',    None,       'measurement',      'mdi:solar-power-variant-outline'),
+    _Sensor('underperformance_flag',      'PV Underperformance Flag',       'underperformance_flag',       None,   None,       None,               'mdi:alert-circle-outline'),
     # Depozyt prosumencki (v0.17.0)
     _Sensor('deposit_balance_est',        'PV Deposit Balance Est',         None,                          'PLN',  'monetary', 'measurement',      'mdi:piggy-bank'),
     _Sensor('deposit_expiring_30d',       'PV Deposit Expiring 30d',        None,                          'PLN',  'monetary', 'measurement',      'mdi:timer-sand'),

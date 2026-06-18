@@ -2,7 +2,8 @@
 import pytest
 from datetime import date
 from pv_roi_tracker.models import MonthlyRecord
-from pv_roi_tracker.roi import (calculate, degradation_analysis,
+from pv_roi_tracker.roi import (calculate, degradation_analysis, bill_comparison,
+                                underperformance_analysis,
                                 GROSS_INVESTMENT, SUBSIDY, SYSTEM_KWP)
 
 _GROSS = GROSS_INVESTMENT   # 51_900.00
@@ -191,3 +192,125 @@ def test_degradation_yearly_complete_flag():
     assert yearly[2025]['complete'] is True
     assert yearly[2025]['yield_kwh_kwp'] == pytest.approx(600.0)
     assert yearly[2026]['complete'] is False
+
+
+# ── bill_comparison ───────────────────────────────────────────────────────────
+
+
+def _bill_month(year, month_num, consumed=400.0, purchased=100.0,
+                buy_price=1.0, feedin_rev=50.0):
+    return MonthlyRecord(
+        year=year, month=month_num,
+        consumed_kwh=consumed,
+        purchased_kwh=purchased,
+        buy_price_pln_kwh=buy_price,
+        feedin_revenue_pln=feedin_rev,
+    )
+
+
+def test_bill_comparison_basic():
+    # consumed=400, buy=1.0 → without_pv=400
+    # purchased=100, buy=1.0, feedin=50 → with_pv=100−50=50
+    # saved = 400−50 = 350
+    r = _bill_month(2025, 1, consumed=400.0, purchased=100.0, buy_price=1.0, feedin_rev=50.0)
+    out = bill_comparison([r])
+    assert len(out['months']) == 1
+    m = out['months'][0]
+    assert m['bill_without_pv'] == pytest.approx(400.0)
+    assert m['bill_with_pv']    == pytest.approx(50.0)
+    assert m['saved']           == pytest.approx(350.0)
+    assert m['savings_pct']     == pytest.approx(87.5)
+    assert out['total_saved']   == pytest.approx(350.0)
+
+
+def test_bill_comparison_skips_missing_data():
+    # Month without consumed_kwh or buy_price should be skipped
+    no_consumed = MonthlyRecord(year=2025, month=2, purchased_kwh=100.0, buy_price_pln_kwh=1.0)
+    no_price    = MonthlyRecord(year=2025, month=3, consumed_kwh=400.0)
+    out = bill_comparison([no_consumed, no_price])
+    assert out['months'] == []
+    assert out['total_saved'] == pytest.approx(0.0)
+    assert out['avg_savings_pct'] is None
+
+
+def test_bill_comparison_multiple_months():
+    records = [
+        _bill_month(2025, m, consumed=400.0, purchased=100.0, buy_price=1.0, feedin_rev=50.0)
+        for m in range(1, 4)
+    ]
+    out = bill_comparison(records)
+    assert len(out['months']) == 3
+    assert out['total_without_pv'] == pytest.approx(1200.0)
+    assert out['total_with_pv']    == pytest.approx(150.0)
+    assert out['total_saved']      == pytest.approx(1050.0)
+    assert out['avg_savings_pct']  == pytest.approx(87.5)
+
+
+def test_bill_comparison_sorted_chronologically():
+    # Records in reverse order should come out sorted ym ascending
+    records = [
+        _bill_month(2025, 3),
+        _bill_month(2025, 1),
+        _bill_month(2025, 2),
+    ]
+    out = bill_comparison(records)
+    yms = [m['ym'] for m in out['months']]
+    assert yms == sorted(yms)
+
+
+# ── underperformance_analysis ─────────────────────────────────────────────────
+
+
+def _prod_month(year, month_num, kwh):
+    return MonthlyRecord(year=year, month=month_num, produced_kwh=kwh)
+
+
+def test_underperformance_ok_when_normal():
+    # 3 years of June at 600 kWh, last June also 600 → ok
+    records = ([_prod_month(y, 6, 600.0) for y in range(2023, 2026)]
+               + [_prod_month(2026, 6, 600.0)])
+    out = underperformance_analysis(records, today=date(2026, 7, 1))
+    assert out['flag'] == 'ok'
+    assert out['deviation_pct'] == pytest.approx(0.0)
+    assert out['n_prior_years'] == 3
+
+
+def test_underperformance_uwaga_when_below_threshold():
+    # Prior years: 600 kWh in June; last year: 510 kWh → -15% → uwaga
+    records = ([_prod_month(y, 6, 600.0) for y in range(2023, 2026)]
+               + [_prod_month(2026, 6, 510.0)])
+    out = underperformance_analysis(records, today=date(2026, 7, 1))
+    assert out['flag'] == 'uwaga'
+    assert out['deviation_pct'] == pytest.approx(-15.0)
+
+
+def test_underperformance_ok_when_above_threshold():
+    # -5% → below 10% threshold → ok
+    records = ([_prod_month(y, 6, 600.0) for y in range(2023, 2026)]
+               + [_prod_month(2026, 6, 570.0)])
+    out = underperformance_analysis(records, today=date(2026, 7, 1))
+    assert out['flag'] == 'ok'
+    assert out['deviation_pct'] == pytest.approx(-5.0)
+
+
+def test_underperformance_none_with_no_prior_year():
+    # Only one June — no prior year → deviation_pct=None, flag='ok'
+    records = [_prod_month(2026, 6, 500.0)]
+    out = underperformance_analysis(records, today=date(2026, 7, 1))
+    assert out['flag'] == 'ok'
+    assert out['deviation_pct'] is None
+    assert out['n_prior_years'] == 0
+
+
+def test_underperformance_none_with_empty_records():
+    out = underperformance_analysis([], today=date(2026, 7, 1))
+    assert out['flag'] == 'ok'
+    assert out['last_closed_ym'] is None
+
+
+def test_underperformance_custom_threshold():
+    # -8% below 15% threshold → ok
+    records = ([_prod_month(y, 6, 600.0) for y in range(2024, 2026)]
+               + [_prod_month(2026, 6, 552.0)])
+    out = underperformance_analysis(records, today=date(2026, 7, 1), alert_threshold_pct=-15.0)
+    assert out['flag'] == 'ok'

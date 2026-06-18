@@ -15,7 +15,7 @@ from flask import Flask, Response, jsonify, request
 
 from . import __version__
 from .models import MonthlyRecord
-from .roi import RoiResult
+from .roi import RoiResult, bill_comparison as _bill_comparison, underperformance_analysis as _underperformance_analysis
 from . import tariff_analysis as _tariff_analysis
 from . import live_reader as _live_reader
 from .tariff_analysis import _month_label
@@ -288,6 +288,9 @@ def api_data():
             'tariff': r.tariff,
             'feedin_corrections': corrections.get(month_key) or None,
             'cpi_deflator': round(_cpi.get_deflator((r.year, r.month), today_ym_t, _infl), 4),
+            # v0.27.0: rachunek „bez PV vs z PV"
+            'bill_without_pv': round(consumed * buy_px, 2) if consumed > 0 and buy_px > 0 else None,
+            'bill_with_pv': round(purchased * buy_px - feedin_rev, 2) if consumed > 0 and buy_px > 0 else None,
         })
 
     current_rec = next((r for r in records if (r.year, r.month) == current_ym), None)
@@ -382,12 +385,21 @@ def api_data():
             'autarky_pct': result.autarky_pct,
             'co2_avoided_kg': result.co2_avoided_kg,
             'yoy_yield_delta_pct': result.yoy_yield_delta_pct,
+            # v0.27.0: alert „poniżej oczekiwań"
+            'underperformance_pct': result.underperformance_pct,
+            'underperformance_flag': result.underperformance_flag,
+            'underperformance_last_closed_ym': _underperformance_analysis(records, today).get('last_closed_ym'),
+            # v0.27.0: współczynnik CO₂ (dla wykresu skumulowanego po stronie frontu)
+            'co2_factor_kg_kwh': float(__import__('os').environ.get('CO2_FACTOR_KG_KWH', '0.597')),
+            # v0.27.0: rachunek bez PV vs z PV (sumy + avg%)
+            'bill_comparison': _bill_comparison(records),
         },
         'records': records_out,
         'predictions': _build_predictions(result),
         'invoices': _build_invoices_data(records, _stored_invoices),
         'tariff_drift': _build_tariff_drift(_real_invoices),
         'cost_breakdown': _build_cost_breakdown(_real_invoices),
+        'rate_trend': _build_rate_trend(_real_invoices),
         'layouts_summary': _build_layouts_summary(),
         'tariff_comparison': _state.get('tariff_comparison'),
         'rce_comparison': _state.get('rce_comparison'),
@@ -741,6 +753,96 @@ def _build_cost_breakdown(real: dict) -> Optional[dict]:
         'per_month': {'labels': labels, 'series': series},
         'grand_total_net': grand_total,
         'any_reconstructed': any_reconstructed,
+    }
+
+
+def _build_rate_trend(real: dict) -> Optional[dict]:
+    """Buduje serię stawek jednostkowych per faktura rozliczeniowa.
+
+    Zwraca:
+      labels:               lista 'YYYY-MM' (chronologicznie)
+      rates_per_month:      [{ym, energy_peak_net, energy_offpeak_net,
+                               dist_var_peak_net, dist_var_offpeak_net,
+                               jakosciowa_net, oze_net, kogeneracja_net,
+                               effective_gross_per_kwh}]
+      latest_effective_gross_per_kwh: stawka z ostatniej faktury (lub None)
+      yoy_effective_gross_pct:        r/r efektywnej ceny all-in (lub None)
+    """
+    if not real:
+        return None
+
+    labels = sorted(k for k in real.keys() if not k.startswith('unparsed-'))
+    months_out = []
+    for ym in labels:
+        inv = real[ym]
+        kwh = inv.get('imported_kwh') or 0.0
+        # brutto = suma netto × 1.23  (przybliżenie — pełne pole VAT nieobecne w każdej fakturze)
+        gross_total = None
+        vat_total   = inv.get('vat_total_net')       # rekonstruowane 23% od sumy netto
+        energy_net  = inv.get('energy_amount_net')
+        if vat_total is not None and energy_net is not None:
+            # vat_total = 0.23 × Σ netto_składniki; gross ≈ Σ netto + vat
+            # prostsze: użyj samego vat_total + energii + reszty jak w cost_breakdown
+            pass
+        # Najrzetelniej: brutto_total z faktury — suma netto × VAT
+        # Fallback: wartość efektywna = (energia + dist_var) × kWh
+        eff = None
+        if kwh > 0:
+            # Szukaj bezpośredniego pola brutto z faktury (jeśli parser je wyciągnie w przyszłości)
+            # Na razie rekonstruujemy: Σ_netto × 1.23 / kWh
+            # Składniki netto (kwoty)
+            comps_net = [
+                inv.get('energy_amount_net'),
+                inv.get('dist_var_amount_net'),
+                inv.get('dist_jakosciowa_amount_net'),
+                inv.get('dist_oze_amount_net'),
+                inv.get('dist_kogeneracja_amount_net'),
+                inv.get('fixed_mocowa_net'),
+                inv.get('fixed_abonament_net'),
+                inv.get('fixed_stalysieciowy_net'),
+            ]
+            total_netto = sum(c for c in comps_net if c is not None)
+            if total_netto > 0:
+                eff = round(total_netto * 1.23 / kwh, 4)
+
+        months_out.append({
+            'ym':                    ym,
+            'energy_peak_net':       inv.get('energy_peak_net'),
+            'energy_offpeak_net':    inv.get('energy_offpeak_net'),
+            'dist_var_peak_net':     inv.get('dist_var_peak_net'),
+            'dist_var_offpeak_net':  inv.get('dist_var_offpeak_net'),
+            'jakosciowa_net':        inv.get('dist_jakosciowa_net'),
+            'oze_net':               inv.get('dist_oze_net'),
+            'kogeneracja_net':       inv.get('dist_kogeneracja_net'),
+            'effective_gross_per_kwh': eff,
+            'imported_kwh':          kwh if kwh > 0 else None,
+        })
+
+    latest_eff  = next((m['effective_gross_per_kwh'] for m in reversed(months_out)
+                        if m['effective_gross_per_kwh'] is not None), None)
+    # r/r efektywnej ceny — porównaj ostatni z tym samym miesiącem rok wcześniej
+    yoy_eff_pct = None
+    if months_out:
+        last = months_out[-1]
+        last_ym = last['ym']
+        try:
+            ly, lm = int(last_ym[:4]), int(last_ym[5:7])
+            prev_ym = f'{ly - 1}-{lm:02d}'
+            prev = next((m for m in months_out if m['ym'] == prev_ym), None)
+            if (prev and prev['effective_gross_per_kwh'] is not None
+                    and last['effective_gross_per_kwh'] is not None
+                    and prev['effective_gross_per_kwh'] > 0):
+                yoy_eff_pct = round(
+                    (last['effective_gross_per_kwh'] / prev['effective_gross_per_kwh'] - 1) * 100, 1
+                )
+        except (ValueError, TypeError):
+            pass
+
+    return {
+        'labels':                         labels,
+        'rates_per_month':                months_out,
+        'latest_effective_gross_per_kwh': latest_eff,
+        'yoy_effective_gross_pct':        yoy_eff_pct,
     }
 
 
@@ -1353,6 +1455,7 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
 .badge-live    { background: #fef3c7; color: var(--yellow); }
 .badge-snap    { background: #dcfce7; color: var(--green); }
 .badge-g11     { background: #ede9fe; color: #6d28d9; }
+.badge-uwaga   { background: #fef9c3; color: #854d0e; }
 
 /* -- Cost breakdown netto/brutto toggle -- */
 .cost-toggle-btn { padding: 3px 10px; border: 1px solid var(--border); cursor: pointer; font-size: 11px; background: var(--card); color: var(--fg); }
@@ -1595,6 +1698,18 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
               <canvas id="prodRankChart"></canvas>
             </div>
           </div>
+          <div class="charts2" style="margin-bottom:12px">
+            <div class="chart-wrap">
+              <h3>Rachunek bez PV vs z PV (zł)</h3>
+              <canvas id="billChart"></canvas>
+            </div>
+          </div>
+          <div class="charts2">
+            <div class="chart-wrap">
+              <h3>Unikni&#281;te emisje CO&#8322; — skumulowane (kg)</h3>
+              <canvas id="co2Chart"></canvas>
+            </div>
+          </div>
         </div>
       </div>
       <!-- Analiza taryf tab -->
@@ -1820,6 +1935,16 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
             </div>
           </div>
         </div>
+        <!-- Rate trend: stawki jednostkowe per faktura -->
+        <div style="margin-bottom:16px" id="rateTrendSection">
+          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:8px">
+            <h4 style="margin:0;font-size:13px;font-weight:600">Trend stawek jednostkowych (PLN/kWh netto) i efektywna cena all-in</h4>
+            <div id="rateTrendKpi" style="display:flex;gap:12px;flex-wrap:wrap"></div>
+          </div>
+          <div class="chart-wrap" style="height:280px">
+            <canvas id="rateTrendChart"></canvas>
+          </div>
+        </div>
         <!-- Deposit: expiry/refund KPIs + trend chart -->
         <div style="margin-bottom:16px">
           <h4 style="margin:0 0 8px;font-size:13px;font-weight:600">Depozyt prosumencki — saldo, przedawnienie 12 mies. i zwrot</h4>
@@ -1883,7 +2008,8 @@ let _barChart = null, _rcemChart = null, _autarkiaChart = null, _prodChart = nul
 let _tariffPriceChart = null, _tariffCompChart = null, _tariffCumChart = null, _tariffSeasonChart = null, _tariffHistChart = null;
 let _rceCmpChart = null;
 let _fanChart = null, _waterfallChart = null, _sankeyChart = null, _cpiRealChart = null, _degradChart = null;
-let _lastRecords = [], _lastInvoices = [], _lastRceMonths = [];
+let _billChart = null, _co2Chart = null, _rateTrendChart = null;
+let _lastRecords = [], _lastInvoices = [], _lastRceMonths = [], _lastRateTrend = null, _lastSummary = null;
 
 /* -- Formatters -- */
 function fmt(v, dp, sfx) {
@@ -1932,10 +2058,12 @@ function showTab(name) {
   if (name === 'charts') {
     [_rcemChart, _autarkiaChart, _prodChart, _arbitrageChart, _netCostChart,
      _priceSpreadChart, _yieldChart, _energyBalChart, _yearCompChart, _prodRankChart,
-     _cpiRealChart, _degradChart, _waterfallChart, _sankeyChart].forEach(c => c && c.resize());
+     _cpiRealChart, _degradChart, _waterfallChart, _sankeyChart,
+     _billChart, _co2Chart].forEach(c => c && c.resize());
   }
   if (name === 'invoices' && _depositChart) _depositChart.resize();
   if (name === 'invoices' && _costBreakdownChart) _costBreakdownChart.resize();
+  if (name === 'invoices' && _rateTrendChart) _rateTrendChart.resize();
   if (name === 'tariff') {
     [_tariffPriceChart, _tariffCompChart, _tariffCumChart,
      _tariffSeasonChart, _tariffHistChart].forEach(c => c && c.resize());
@@ -1970,8 +2098,11 @@ function renderCards(s) {
     { lbl: 'Zysk netto', val: pln(s.net_profit || 0), cls: (s.net_profit || 0) > 0 ? 'c-green' : '', sub: (s.net_profit || 0) > 0 ? 'ponad inwestycje brutto' : 'przed splata' },
     s.self_sufficiency_avg != null ? { lbl: 'Autarkia', val: pct(s.self_sufficiency_avg), sub: 'udzial autokonsumpcji' } : null,
     s.self_consumption_rate_pct != null ? { lbl: 'Autokonsumpcja', val: fmt(s.self_consumption_rate_pct, 1, '%'), sub: 'udział produkcji zużytej na miejscu' } : null,
-    s.co2_avoided_kg != null && s.co2_avoided_kg > 0 ? { lbl: 'CO₂ unikniete', val: s.co2_avoided_kg >= 1000 ? fmt(s.co2_avoided_kg / 1000, 2, 't') : fmt(s.co2_avoided_kg, 0, 'kg'), sub: 'wskaźnik KOBiZE', cls: 'c-green' } : null,
+    s.co2_avoided_kg != null && s.co2_avoided_kg > 0 ? { lbl: 'CO₂ unikniete', val: s.co2_avoided_kg >= 1000 ? fmt(s.co2_avoided_kg / 1000, 2, 't') : fmt(s.co2_avoided_kg, 0, 'kg'), sub: (() => { const trees = Math.round(s.co2_avoided_kg / 21); const km = Math.round(s.co2_avoided_kg / 0.21); return 'KOBiZE  •  ≈' + trees + ' drzew  •  ≈' + km + ' km autem'; })(), cls: 'c-green' } : null,
     s.yoy_yield_delta_pct != null ? { lbl: 'Produkcja r/r', val: fmt(s.yoy_yield_delta_pct, 1, '%'), sub: 'te same miesiące rok do roku', cls: s.yoy_yield_delta_pct >= 0 ? 'c-green' : '' } : null,
+    // v0.27.0: rachunek bez PV vs z PV
+    s.bill_comparison && s.bill_comparison.total_saved > 0 ? { lbl: 'Zaoszcz. na rachunku', val: pln(s.bill_comparison.total_saved), sub: 'łącznie gdyby nie było PV  •  śr. o ' + fmt(s.bill_comparison.avg_savings_pct, 0, '%') + ' taniej', cls: 'c-green' } : null,
+    s.bill_comparison && s.bill_comparison.total_with_pv != null ? { lbl: 'Rachunek z PV', val: pln(s.bill_comparison.total_with_pv), sub: 'suma opłacona Tauronowi za cały okres', cls: '' } : null,
     { lbl: 'Koszt netto sieci', val: pln(s.net_grid_cost_total), sub: 'zakup − sprzedaz lacznie' },
     (() => {
       const mp = s.month_progress;
@@ -2422,6 +2553,179 @@ function renderProdRankChart(records) {
   });
 }
 
+/* -- v0.27.0: Rachunek bez PV vs z PV -- */
+function renderBillChart(records) {
+  const ctx = document.getElementById('billChart');
+  if (!ctx) return;
+  if (_billChart) { _billChart.destroy(); _billChart = null; }
+  const valid = records.filter(r => r.bill_without_pv != null && r.bill_with_pv != null);
+  if (!valid.length) { ctx.getContext('2d'); return; }
+  const recent = valid.slice(-30);
+  const labels     = recent.map(r => r.month_label);
+  const withoutPV  = recent.map(r => r.bill_without_pv);
+  const withPV     = recent.map(r => r.bill_with_pv);
+  const saved      = recent.map(r => Math.max(0, r.bill_without_pv - r.bill_with_pv));
+  _billChart = new Chart(ctx.getContext('2d'), {
+    data: {
+      labels,
+      datasets: [
+        { type: 'bar', label: 'Rachunek bez PV', data: withoutPV,
+          backgroundColor: 'rgba(239,68,68,0.55)', borderColor: 'rgba(239,68,68,0.9)',
+          borderWidth: 1, order: 2 },
+        { type: 'bar', label: 'Rachunek z PV', data: withPV,
+          backgroundColor: 'rgba(59,130,246,0.55)', borderColor: 'rgba(59,130,246,0.9)',
+          borderWidth: 1, order: 2 },
+        { type: 'line', label: 'Zaoszcz. (zł)', data: saved,
+          borderColor: 'rgba(22,163,74,1)', backgroundColor: 'rgba(22,163,74,0.15)',
+          borderWidth: 2, pointRadius: 2, fill: false, tension: 0.3, order: 1 },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { labels: { font: { size: 11 } } },
+        tooltip: { callbacks: {
+          label: c => c.dataset.label + ': ' + c.raw.toLocaleString('pl-PL', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' zł',
+        }},
+      },
+      scales: {
+        x: { ticks: { font: { size: 10 }, maxRotation: 45 } },
+        y: { ticks: { font: { size: 10 }, callback: v => v.toLocaleString('pl-PL', {maximumFractionDigits: 0}) + ' zł' } },
+      },
+    },
+  });
+}
+
+
+/* -- v0.27.0: Skumulowane uniknięte CO₂ -- */
+function renderCo2Chart(records, co2Factor) {
+  const ctx = document.getElementById('co2Chart');
+  if (!ctx) return;
+  if (_co2Chart) { _co2Chart.destroy(); _co2Chart = null; }
+  const factor = co2Factor || 0.597;
+  const withProd = records.filter(r => (r.produced_kwh || 0) > 0);
+  if (!withProd.length) return;
+  let cum = 0;
+  const labels = [], dataKg = [], dataTrees = [];
+  withProd.forEach(r => {
+    cum += (r.produced_kwh || 0) * factor;
+    labels.push(r.month_label);
+    dataKg.push(Math.round(cum));
+    dataTrees.push(+(cum / 21).toFixed(1));
+  });
+  _co2Chart = new Chart(ctx.getContext('2d'), {
+    data: {
+      labels,
+      datasets: [
+        { type: 'line', label: 'CO₂ uniknięte (kg, skum.)', data: dataKg,
+          borderColor: 'rgba(22,163,74,1)', backgroundColor: 'rgba(22,163,74,0.1)',
+          borderWidth: 2, pointRadius: 2, fill: true, tension: 0.3, yAxisID: 'yCo2' },
+        { type: 'line', label: 'Ekwiwalent drzew (szt.)', data: dataTrees,
+          borderColor: 'rgba(134,239,172,1)', backgroundColor: 'transparent',
+          borderWidth: 1.5, pointRadius: 0, borderDash: [4, 3], tension: 0.3, yAxisID: 'yTrees' },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { labels: { font: { size: 11 } } },
+        tooltip: { callbacks: {
+          label: c => {
+            if (c.datasetIndex === 0)
+              return 'CO₂: ' + c.raw.toLocaleString('pl-PL') + ' kg (' + (c.raw / 1000).toFixed(2) + ' t)';
+            return 'Drzewa: ≈' + c.raw.toLocaleString('pl-PL') + ' szt.';
+          },
+        }},
+      },
+      scales: {
+        x: { ticks: { font: { size: 10 }, maxRotation: 45 } },
+        yCo2: { position: 'left', ticks: { font: { size: 10 }, callback: v => v >= 1000 ? (v/1000).toFixed(1) + ' t' : v + ' kg' } },
+        yTrees: { position: 'right', grid: { drawOnChartArea: false },
+                  ticks: { font: { size: 10 }, callback: v => Math.round(v) + ' drzew' } },
+      },
+    },
+  });
+}
+
+
+/* -- v0.27.0: Trend stawek jednostkowych z faktur -- */
+function renderRateTrendChart(rateTrend) {
+  const section = document.getElementById('rateTrendSection');
+  const ctx     = document.getElementById('rateTrendChart');
+  if (!ctx) return;
+  if (_rateTrendChart) { _rateTrendChart.destroy(); _rateTrendChart = null; }
+
+  if (!rateTrend || !rateTrend.rates_per_month || !rateTrend.rates_per_month.length) {
+    if (section) section.style.display = 'none';
+    return;
+  }
+  if (section) section.style.display = '';
+
+  const months = rateTrend.rates_per_month;
+  const labels = months.map(m => m.ym);
+
+  const FIELDS = [
+    { key: 'energy_peak_net',      label: 'Energia szczyt',        color: 'rgba(239,68,68,0.85)' },
+    { key: 'energy_offpeak_net',   label: 'Energia poza szczytem', color: 'rgba(251,146,60,0.85)' },
+    { key: 'dist_var_peak_net',    label: 'Siec zm. szczyt',       color: 'rgba(59,130,246,0.85)' },
+    { key: 'dist_var_offpeak_net', label: 'Siec zm. poza szczytem',color: 'rgba(147,197,253,0.85)' },
+    { key: 'jakosciowa_net',       label: 'Jakościowa',            color: 'rgba(134,239,172,0.85)' },
+    { key: 'oze_net',              label: 'OZE',                   color: 'rgba(167,243,208,0.85)' },
+    { key: 'kogeneracja_net',      label: 'Kogeneracja',           color: 'rgba(209,213,219,0.85)' },
+    { key: 'effective_gross_per_kwh', label: 'Efektywna all-in (brutto)', color: 'rgba(109,40,217,1)', borderWidth: 2.5, borderDash: [] },
+  ];
+
+  const datasets = [];
+  FIELDS.forEach(f => {
+    const data = months.map(m => m[f.key] ?? null);
+    if (data.every(v => v === null)) return;
+    datasets.push({
+      label: f.label, data,
+      borderColor: f.color, backgroundColor: 'transparent',
+      borderWidth: f.borderWidth || 1.5,
+      borderDash: f.borderDash !== undefined ? f.borderDash : [4, 3],
+      pointRadius: 3, tension: 0.3, spanGaps: true,
+    });
+  });
+
+  // KPI: efektywna cena + r/r
+  const kpiEl = document.getElementById('rateTrendKpi');
+  if (kpiEl) {
+    const eff = rateTrend.latest_effective_gross_per_kwh;
+    const yoy = rateTrend.yoy_effective_gross_pct;
+    let html = '';
+    if (eff != null)
+      html += '<span style="font-size:12px;font-weight:600">Efektywna: ' + eff.toFixed(4) + ' zł/kWh</span>';
+    if (yoy != null) {
+      const cls = yoy > 0 ? 'color:#ef4444' : 'color:#16a34a';
+      html += ' <span style="font-size:11px;' + cls + '">' + (yoy > 0 ? '+' : '') + yoy.toFixed(1) + '% r/r</span>';
+    }
+    kpiEl.innerHTML = html;
+  }
+
+  _rateTrendChart = new Chart(ctx.getContext('2d'), {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { labels: { font: { size: 10 }, boxWidth: 12 } },
+        tooltip: { callbacks: {
+          label: c => c.dataset.label + ': ' + (c.raw != null ? c.raw.toFixed(4) + ' zł/kWh' : '—'),
+        }},
+      },
+      scales: {
+        x: { ticks: { font: { size: 10 }, maxRotation: 45 } },
+        y: { ticks: { font: { size: 10 }, callback: v => v.toFixed(3) + ' zł' } },
+      },
+    },
+  });
+}
+
+
 /* -- History table -- */
 function renderHistTable(records, monthClosed, invoices) {
   const g11BadgeSpan = (title) => ' <span class="badge badge-g11" title="' + title + '">G11</span>';
@@ -2527,7 +2831,20 @@ function renderHistTable(records, monthClosed, invoices) {
       invBadge = ' <span title="' + tip.replace(/"/g, '&quot;') + '" style="font-size:11px;cursor:help;color:' + col + '">' + ico + warn + '</span>';
     }
 
-    const monthLabel = r.month_label + invBadge;
+    // v0.27.0: badge alertu „poniżej oczekiwań" dla ostatniego zamkniętego miesiąca
+    let underBadge = '';
+    if (_lastSummary && _lastSummary.underperformance_flag === 'uwaga') {
+      // underperformance_pct not in summary per-month — just use global last closed ym
+      // but we compare month_key to find the flagged month
+      const ym = _lastSummary.underperformance_last_closed_ym;
+      if (!ym || ym === r.month_key) {
+        const dev = _lastSummary.underperformance_pct;
+        const tip = 'Produkcja ' + (dev != null ? dev.toFixed(1) + '% ' : '') +
+                    'poniżej oczekiwania sezonowego — sprawdź zabrudzenie / uszkodzenie paneli';
+        underBadge = ' <span class="badge badge-uwaga" title="' + tip + '" style="cursor:help">⚠ poniżej</span>';
+      }
+    }
+    const monthLabel = r.month_label + invBadge + underBadge;
 
     const producedCell = r.is_current && r.projected_month_kwh != null
       ? kwh(r.produced_kwh) + '<br><span class="proj-hint">→ ' + kwh(r.projected_month_kwh) + ' proj.</span>'
@@ -3267,12 +3584,14 @@ async function loadData() {
     renderHistTable([...d.records].reverse(), d.summary.month_closed, d.invoices || []);
     renderPredTable(d.predictions, d.summary, d.summary.avg_window);
     renderYearsTable(d.records, systemKwp);
-    renderInvoicesTab(d.invoices || [], d.tariff_drift, d.records, d.layouts_summary, d.cost_breakdown);
+    renderInvoicesTab(d.invoices || [], d.tariff_drift, d.records, d.layouts_summary, d.cost_breakdown, d.rate_trend);
     if (d.tariff_comparison) renderTariffTab(d.tariff_comparison);
     if (d.rce_comparison) renderRceTab(d.rce_comparison);
     // v0.17.0
     _lastRecords = d.records || [];
     _lastInvoices = d.invoices || [];
+    _lastRateTrend = d.rate_trend || null;
+    _lastSummary = d.summary;
     renderFanChart(d.records, d.predictions, d.summary.gross_investment, d.summary.net_investment);
     renderCpiRealChart(d.records);
     renderDegradChart(d.degradation);
@@ -3281,6 +3600,10 @@ async function loadData() {
     _populateSankeySelect(d.records);
     try { redrawSankey(); } catch (e) { console.warn('sankey:', e); }
     renderDepositSection(d.deposit, d.invoices || []);
+    // v0.27.0: nowe wykresy
+    renderBillChart(d.records);
+    renderCo2Chart(d.records, d.summary.co2_factor_kg_kwh || 0.597);
+    renderRateTrendChart(d.rate_trend);
     if (d.version) document.getElementById('appVer').textContent = 'v' + d.version;
   } catch (e) {
     document.getElementById('updated').textContent = 'Blad polaczenia';
@@ -3324,11 +3647,12 @@ async function uploadInvoices() {
 /* ─────────────────────────────────────────────────────────────
    Faktury tab renderer
    ───────────────────────────────────────────────────────────── */
-function renderInvoicesTab(invoices, tariffDrift, records, layoutsSummary, costBreakdown) {
+function renderInvoicesTab(invoices, tariffDrift, records, layoutsSummary, costBreakdown, rateTrend) {
   _renderInvKpiCards(invoices, tariffDrift, records);
   _renderDriftBanner(tariffDrift);
   _renderCoverageGrid(invoices, records);
   _renderCostBreakdown(costBreakdown);
+  renderRateTrendChart(rateTrend);
   // wykres depozytu rysuje renderDepositSection (fallback: renderDepositChart)
   _renderInvoiceTable(invoices);
   _renderLayoutsPanel(layoutsSummary);

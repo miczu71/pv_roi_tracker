@@ -20,7 +20,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 from datetime import date
 from pathlib import Path
 from typing import Optional
@@ -91,6 +90,11 @@ def seed_if_missing(path, peak: float = 1.23, offpeak: float = 0.63) -> None:
     rates = dict(_SEED_RATES)
     rates['peak_gross'] = round(peak, 4)
     rates['offpeak_gross'] = round(offpeak, 4)
+    rates['fixed_total_net'] = round(
+        rates['fixed_abonament_net']
+        + rates['fixed_stalysieciowy_net']
+        + rates['fixed_mocowa_net'], 2
+    )
     cfg = {
         'tariffs': [
             {
@@ -108,7 +112,8 @@ def seed_if_missing(path, peak: float = 1.23, offpeak: float = 0.63) -> None:
 def validate_entry(entry: dict) -> None:
     """Zgłoś ValueError gdy wpis ma błędny format."""
     ef = entry.get('effective_from', '')
-    if not (isinstance(ef, str) and re.match(r'^\d{4}-\d{2}$', ef)):
+    if not (isinstance(ef, str) and len(ef) == 7 and ef[4] == '-'
+            and ef[:4].isdigit() and ef[5:].isdigit()):
         raise ValueError(f'effective_from musi być YYYY-MM, otrzymano {ef!r}')
     rates = entry.get('rates', {})
     if not isinstance(rates, dict):
