@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.25.0] — 2026-06-18
+
+### Added
+
+- **Wbudowana polska dokumentacja** — link „📖 Dokumentacja" w prawym górnym rogu nagłówka panelu otwiera modal z pełnym opisem w języku polskim: cykl pracy dodatku, opis każdej zakładki (Historia, Prognoza, Wykresy, Faktury, Analiza taryf, Taryfa, RCE vs RCEm), obsługa faktur i depozytu prosumenckiego, wzór ROI, tabela 42 sensorów MQTT, opcje konfiguracji i pliki danych. Modal zamykany przyciskiem ✕, klawiszem Escape lub kliknięciem w tło — brak przeładowania strony.
+
+### Changed
+
+- Brak zmian w logice, sensorach MQTT ani endpointach API.
+
+---
+
 ## [0.23.0] — 2026-06-17
 
 ### Added

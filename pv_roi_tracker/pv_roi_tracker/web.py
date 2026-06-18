@@ -1442,12 +1442,35 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
   .tbl-wrap tbody tr.yr  td:first-child { background: #f7fafc; }
 }
 
+/* -- Docs modal -- */
+.docs-body { line-height: 1.6; color: var(--text); }
+.docs-body h2 { font-size: 15px; font-weight: 700; margin: 20px 0 8px; padding-bottom: 4px;
+                border-bottom: 2px solid var(--border); color: var(--accent); }
+.docs-body h2:first-child { margin-top: 0; }
+.docs-body h3 { font-size: 13px; font-weight: 700; margin: 14px 0 5px; color: var(--text); }
+.docs-body p  { font-size: 13px; margin: 0 0 8px; }
+.docs-body ul { font-size: 13px; margin: 0 0 8px; padding-left: 20px; }
+.docs-body li { margin-bottom: 3px; }
+.docs-body table { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 12px; }
+.docs-body thead th { background: #f7fafc; padding: 6px 8px; text-align: left;
+                      font-weight: 600; font-size: 11px; text-transform: uppercase;
+                      letter-spacing: .4px; color: var(--muted); border-bottom: 2px solid var(--border); }
+.docs-body tbody td { padding: 5px 8px; border-bottom: 1px solid var(--border);
+                      font-size: 12px; vertical-align: top; }
+.docs-body tbody tr:hover { background: #f7fafc; }
+.docs-body code { background: var(--bg); border: 1px solid var(--border); border-radius: 3px;
+                  padding: 1px 5px; font-size: 11px; font-family: monospace; white-space: nowrap; }
+.docs-body .intro-box { background: #eff6ff; border-left: 3px solid var(--accent);
+                        padding: 8px 12px; border-radius: 0 6px 6px 0;
+                        font-size: 13px; margin-bottom: 12px; }
+
 </style>
 </head>
 <body>
 <header>
   <h1>&#9728;&#65039; PV ROI Tracker <span id="appVer" style="font-size:12px;font-weight:400;opacity:.65;vertical-align:middle"></span></h1>
   <a href="api/export/csv" class="csv-btn" download>&#8595; Eksportuj CSV</a>
+  <a href="#" class="csv-btn" onclick="openDocsModal();return false;">&#128214; Dokumentacja</a>
   <span id="updated">Ladowanie&hellip;</span>
 </header>
 <main>
@@ -4035,6 +4058,182 @@ function closeTrainModal() {
   const overlay = document.getElementById('trainOverlay');
   if (overlay) overlay.style.display = 'none';
 }
+
+/* ── Docs modal ─────────────────────────────────────────────────────────── */
+const _DOCS_HTML = `
+<h2>Co robi dodatek</h2>
+<p class="intro-box">PV ROI Tracker śledzi zwrot z inwestycji w instalację fotowoltaiczną na polskim rynku net-billing. Publikuje 42 sensory do Home Assistant przez MQTT Discovery i udostępnia panel ingress z historią ROI, prognozą spłaty, zarządzaniem fakturami Tauron i symulacją rozliczenia RCE.</p>
+<table><thead><tr><th>Kiedy</th><th>Co się dzieje</th></tr></thead><tbody>
+<tr><td><strong>Pierwszy start</strong></td><td>Pobiera historyczny CSV z Google Sheets, parsuje tabelę przestawną i zapisuje każdy miesiąc od 2023-06 do <code>/data/historic.json</code>. CSV nie jest pobierany ponownie.</td></tr>
+<tr><td><strong>Co 30 minut</strong></td><td>Odczytuje bieżące sensory HA, uruchamia obliczenie ROI, publikuje sensory MQTT, odświeża porównanie taryf i symulację RCE.</td></tr>
+<tr><td><strong>11.–20. dnia, co 2h (08–22)</strong></td><td>Scrapuje cenę RCEm za poprzedni miesiąc ze strony PSE, uzupełnia <code>historic.json</code>.</td></tr>
+<tr><td><strong>1. dzień miesiąca, 06:00 UTC</strong></td><td>Skan korekt RCEm — PSE może zmieniać ceny wstecznie do 12 miesięcy.</td></tr>
+<tr><td><strong>Ostatni dzień miesiąca, 23:55 local</strong></td><td>Snapshot bieżącego miesiąca do <code>historic.json</code>; wysyła polskie podsumowanie przez <code>notify.family</code> (jeśli włączone).</td></tr>
+<tr><td><strong>16. dnia miesiąca, 12:00 UTC</strong></td><td>Odświeża wskaźnik CPI GUS (ROI skorygowany o inflację).</td></tr>
+<tr><td><strong>Codziennie, 02:00 UTC</strong></td><td>Kopia zapasowa plików <code>/data</code> do <code>/share/pv_roi_tracker</code>.</td></tr>
+</tbody></table>
+
+<h2>Zakładki panelu</h2>
+<h3>📅 Historia miesięczna</h3>
+<p>Tabela wszystkich miesięcy: produkcja (kWh), eksport, autokonsumpcja, oszczędności, przychód z odsprzedaży, ROI skumulowany (%). Bieżący miesiąc oznaczony gwiazdką; miesiąc spłaty — zielonym tłem.</p>
+<h3>📈 Prognoza spłaty</h3>
+<p>Wachlarz spłaty — wykres skumulowanego zwrotu z pasmem niepewności P10–P90. Tabela prognozowanego miesiąca spłaty dla każdego scenariusza. Analiza wrażliwości: jak zmiana parametrów wpływa na termin spłaty.</p>
+<h3>📊 Podsumowanie roczne</h3>
+<p>Agregacja per rok kalendarzowy z kolumnami rok-do-roku (r/r): produkcja, oszczędności, ROI narastająco.</p>
+<h3>📉 Wykresy</h3>
+<ul>
+<li><strong>Waterfall miesięczny</strong> — składniki oszczędności: autokonsumpcja, odsprzedaż, arbitraż bateryjny</li>
+<li><strong>Sankey przepływu energii</strong> — bilans produkcja / eksport / autokonsumpcja / zakup z sieci</li>
+<li><strong>Oszczędności nominalne vs realne CPI</strong> — wpływ inflacji na realną wartość oszczędności</li>
+<li><strong>Trend degradacji kWh/kWp</strong> — specyficzny uzysk miesięczny z linią trendu</li>
+<li><strong>Ranking produkcji miesięcznej</strong> — kolorowane per rok, medale top 3</li>
+</ul>
+<h3>📈 Analiza taryf</h3>
+<p>Porównanie G12w (szczyt/poza szczytem) z taryfą dynamiczną opartą na godzinowych cenach RCE. Wykres 7-dniowy i tabela podsumowania. Stawki referencyjne G12w pochodzą z ostatniej przetworzonej faktury.</p>
+<h3>📑 Taryfa</h3>
+<p>Ręczne wpisy stawek z datą obowiązywania — wypełniają lukę ogłoszenia taryfy: nowe stawki Tauron wchodzą 1 stycznia, ale faktura potwierdzająca nadchodzi dopiero w lutym. Ręczny override automatycznie ustępuje po wgraniu faktury za dany miesiąc.<br><strong>Priorytet:</strong> baseline (seed) &lt; faktura &lt; override (aktywny tylko gdy data wpisu jest nowsza niż najnowsza faktura).</p>
+<h3>⚡ RCE vs RCEm</h3>
+<p>Symulacja przychodów z odsprzedaży przy rozliczeniu godzinowym RCE zamiast miesięcznego RCEm: godzinowa energia eksportowana × ceny 15-min RCE z PSE. Ceny ujemne zastępowane przez 0 zł (art. 4b ustawy o OZE). Heatmapa 24h×miesiąc: kiedy eksportujesz vs kiedy ceny są wysokie lub ujemne. Rekomendacja ROZWAŻ RCE / ZOSTAŃ PRZY RCEm / NEUTRALNA po ≥3 rozliczonych miesiącach.</p>
+
+<h2>Faktury</h2>
+<h3>Upload i trwałe przechowywanie PDF</h3>
+<p>Wgraj plik PDF faktury Tauron przez przycisk w zakładce Faktury. Oryginały są trwale przechowywane w <code>/data/pdfs/</code> obok <code>invoices.json</code>. Każdy wiersz faktury ma przyciski:</p>
+<ul>
+<li><strong>PDF</strong> — podgląd oryginalnego pliku</li>
+<li><strong>↻ PDF</strong> — przeliczenie faktury ponownie z zapisanego pliku (przydatne po poprawce parsera, bez ponownego wgrywania)</li>
+</ul>
+<h3>Typy dokumentów Tauron</h3>
+<table><thead><tr><th>Typ</th><th>Rozpoznanie</th><th>Wpływ na ROI</th></tr></thead><tbody>
+<tr><td><strong>FAKTURA VAT</strong></td><td>Rozliczeniowa (domyślna)</td><td>Pełny — stawki, kWh, depozyt</td></tr>
+<tr><td><strong>FAKTURA VAT KOREKTA</strong></td><td>Nagłówek <code>FAKTURA VAT KOREKTA NR</code></td><td>Korekta depozytu przez <code>deposit.calculate()</code></td></tr>
+<tr><td><strong>NOTA OBCIĄŻENIOWA</strong></td><td>Nagłówek <code>NOTA OBCI…</code></td><td>Tylko zapis i podgląd (brak kWh/stawek)</td></tr>
+</tbody></table>
+<p>Korekty wyświetlane jako zagnieżdżone pod-wiersze z badge KOREKTA/NOTA, delta PLN i powodem. Sensory MQTT pomijają korekty — bazują wyłącznie na fakturach rozliczeniowych.</p>
+<h3>Rozbicie kosztów netto/brutto</h3>
+<p>Parser wyciąga realne kwoty PLN per składnik: energia, zmienny sieciowy, jakościowa, OZE, kogeneracja, opłata przejściowa/handlowa, akcyza. Zakładka Faktury pokazuje tabelę sum z % udziału i wykres słupkowy skumulowany z przełącznikiem <strong>Netto / Brutto</strong>. Faktury bez realnych kwot (starsze lub brak kolumny wartości) są liczone ze stawki × kWh — UI sygnalizuje to notatką.</p>
+<h3>Depozyt prosumencki (12-miesięczne przedawnienie)</h3>
+<p>Czysty rejestr FIFO modeluje depozyt prosumencki: miesięczne akumulacje (= przychód z odsprzedaży), zużycie (z faktur lub szacunek falownika), <strong>12-miesięczne przedawnienie</strong> każdej akumulacji i limit zwrotu (<code>deposit_refund_pct</code>: 20% przy RCEm, 30% przy RCE godzinowym).</p>
+<p>Bieżące saldo zakotwiczone na <em>saldzie post-invoice</em> z najnowszej faktury + akumulacje z falownika za miesiące jeszcze nierozliczone przez Tauron (lag księgowania auto-wykrywany: 1–3 miesięcy, domyślnie 2).</p>
+<h3>Rekonsyliacja faktura vs falownik</h3>
+<p>Tabela w zakładce Faktury: implikowane akumulacje Taurona (odtworzone z łańcucha sald faktur), zestawione miesiąc po miesiącu z modelem (eksport × RCEm ×1,23), różnica w PLN i %. Karty KPI: obie sumy, skumulowana różnica i wykryty lag.</p>
+<h3>Najnowsza faktura jako źródło prawdy</h3>
+<p>Stawki z chronologicznie najnowszej faktury (wybór po miesiącu rozliczeniowym, nie kolejności wgrywania) są publikowane jako 13 sensorów MQTT (<code>sensor.pv_roi_rate_*</code> / <code>sensor.pv_roi_fixed_*</code>) i czytane przez pakiet <code>energy_simulation.yaml</code> w konfiguracji HA. Wgranie starszej faktury po nowszej <strong>nigdy</strong> nie nadpisuje aktualnych stawek.</p>
+
+<h2>Wzór ROI</h2>
+<table><thead><tr><th>Składnik</th><th>Formuła</th></tr></thead><tbody>
+<tr><td>Status</td><td><code>dofinansowanie + (autokonsumpcja + odsprzedaż + arbitraż bateryjny)</code></td></tr>
+<tr><td>ROI %</td><td><code>status / koszt_brutto × 100</code></td></tr>
+<tr><td>Pozostało do spłaty</td><td><code>max(0, koszt_brutto − status)</code></td></tr>
+<tr><td>Miesięcy do spłaty</td><td><code>pozostało / średnie_miesięczne_oszczędności</code></td></tr>
+</tbody></table>
+
+<h2>Sensory MQTT</h2>
+<p>Wszystkie 42 sensory widoczne pod urządzeniem <strong>PV ROI Tracker</strong> w HA → Ustawienia → Urządzenia. Stan <code>unknown</code> dopóki nie zostanie wgrana żadna faktura (dotyczy sensorów stawek).</p>
+<table><thead><tr><th>Entity ID</th><th>Opis</th><th>Jedn.</th></tr></thead><tbody>
+<tr><td><code>pv_roi_tracker_roi_pct</code></td><td>ROI instalacji PV</td><td>%</td></tr>
+<tr><td><code>pv_roi_tracker_payback_years</code></td><td>Czas do spłaty</td><td>lata</td></tr>
+<tr><td><code>pv_roi_tracker_payback_date</code></td><td>Data spłaty</td><td>ISO</td></tr>
+<tr><td><code>pv_roi_tracker_total_savings</code></td><td>Łączne oszczędności</td><td>PLN</td></tr>
+<tr><td><code>pv_roi_tracker_self_consumption_savings</code></td><td>Oszczędności autokonsumpcja</td><td>PLN</td></tr>
+<tr><td><code>pv_roi_tracker_feedin_revenue</code></td><td>Przychód z odsprzedaży</td><td>PLN</td></tr>
+<tr><td><code>pv_roi_tracker_net_investment</code></td><td>Inwestycja netto (koszt − dotacja)</td><td>PLN</td></tr>
+<tr><td><code>pv_roi_tracker_monthly_avg_savings</code></td><td>Śr. miesięczne oszczędności</td><td>PLN</td></tr>
+<tr><td><code>pv_roi_tracker_total_produced_kwh</code></td><td>Łączna produkcja</td><td>kWh</td></tr>
+<tr><td><code>pv_roi_tracker_total_exported_kwh</code></td><td>Łączny eksport</td><td>kWh</td></tr>
+<tr><td><code>pv_roi_tracker_specific_yield</code></td><td>Uzysk specyficzny (życie instalacji)</td><td>kWh/kWp</td></tr>
+<tr><td><code>pv_roi_tracker_battery_arbitrage_savings</code></td><td>Oszczędności arbitraż bateryjny</td><td>PLN</td></tr>
+<tr><td><code>pv_roi_tracker_net_profit</code></td><td>Zysk netto (ponad inwestycję)</td><td>PLN</td></tr>
+<tr><td><code>pv_roi_tracker_current_month_savings</code></td><td>Oszczędności bieżącego miesiąca</td><td>PLN</td></tr>
+<tr><td><code>pv_roi_tracker_rcem_scrape_status</code></td><td>Status pobierania RCEm z PSE</td><td>—</td></tr>
+<tr><td><code>pv_roi_tracker_projected_month_kwh</code></td><td>Prognoza produkcji (Solcast)</td><td>kWh</td></tr>
+<tr><td><code>pv_roi_tracker_projected_month_savings</code></td><td>Prognoza oszczędności miesiąca</td><td>PLN</td></tr>
+<tr><td><code>pv_roi_tracker_real_total_savings</code></td><td>Realne oszczędności (deflacja CPI)</td><td>PLN</td></tr>
+<tr><td><code>pv_roi_tracker_real_roi_pct</code></td><td>Realny ROI (CPI)</td><td>%</td></tr>
+<tr><td><code>pv_roi_tracker_npv</code></td><td>NPV (wartość bieżąca netto)</td><td>PLN</td></tr>
+<tr><td><code>pv_roi_tracker_irr_pct</code></td><td>IRR (wewnętrzna stopa zwrotu)</td><td>%</td></tr>
+<tr><td><code>pv_roi_tracker_vs_bond_delta</code></td><td>Delta vs obligacja skarbowa</td><td>PLN</td></tr>
+<tr><td><code>pv_roi_tracker_cumulative_inflation</code></td><td>Skumulowana inflacja CPI (GUS)</td><td>%</td></tr>
+<tr><td><code>pv_roi_tracker_self_consumption_rate</code></td><td>Wskaźnik autokonsumpcji</td><td>%</td></tr>
+<tr><td><code>pv_roi_tracker_autarky</code></td><td>Autarkia energetyczna</td><td>%</td></tr>
+<tr><td><code>pv_roi_tracker_co2_avoided</code></td><td>Uniknięte emisje CO₂ (KOBiZE)</td><td>kg</td></tr>
+<tr><td><code>pv_roi_tracker_yoy_yield_delta</code></td><td>Delta uzysku rok do roku</td><td>%</td></tr>
+<tr><td><code>pv_roi_tracker_deposit_balance_est</code></td><td>Szacowane saldo depozytu</td><td>PLN</td></tr>
+<tr><td><code>pv_roi_tracker_deposit_expiring_30d</code></td><td>Depozyt wygasający w ciągu 30 dni</td><td>PLN</td></tr>
+<tr><td><code>pv_roi_tracker_health</code></td><td>Stan zdrowia dodatku (ok/degraded/error)</td><td>—</td></tr>
+<tr><td><code>pv_roi_tracker_rate_energy_peak_net</code></td><td>Stawka energii szczyt netto</td><td>PLN/kWh</td></tr>
+<tr><td><code>pv_roi_tracker_rate_energy_offpeak_net</code></td><td>Stawka energii poza szczytem netto</td><td>PLN/kWh</td></tr>
+<tr><td><code>pv_roi_tracker_rate_dist_var_peak_net</code></td><td>Zmienny dystrybucyjny szczyt netto</td><td>PLN/kWh</td></tr>
+<tr><td><code>pv_roi_tracker_rate_dist_var_offpeak_net</code></td><td>Zmienny dystrybucyjny poza szczytem</td><td>PLN/kWh</td></tr>
+<tr><td><code>pv_roi_tracker_rate_jakosciowa_net</code></td><td>Opłata jakościowa netto</td><td>PLN/kWh</td></tr>
+<tr><td><code>pv_roi_tracker_rate_oze_net</code></td><td>Opłata OZE netto</td><td>PLN/kWh</td></tr>
+<tr><td><code>pv_roi_tracker_rate_kogeneracja_net</code></td><td>Opłata kogeneracyjna netto</td><td>PLN/kWh</td></tr>
+<tr><td><code>pv_roi_tracker_fixed_mocowa_net</code></td><td>Opłata mocowa (stała miesięczna)</td><td>PLN</td></tr>
+<tr><td><code>pv_roi_tracker_fixed_abonament_net</code></td><td>Abonament (stały miesięczny)</td><td>PLN</td></tr>
+<tr><td><code>pv_roi_tracker_fixed_stalysieciowy_net</code></td><td>Stały sieciowy (miesięczny)</td><td>PLN</td></tr>
+<tr><td><code>pv_roi_tracker_fixed_total_net</code></td><td>Suma opłat stałych</td><td>PLN</td></tr>
+<tr><td><code>pv_roi_tracker_rate_peak_gross</code></td><td>Cena brutto G12w szczyt</td><td>PLN/kWh</td></tr>
+<tr><td><code>pv_roi_tracker_rate_offpeak_gross</code></td><td>Cena brutto G12w poza szczytem</td><td>PLN/kWh</td></tr>
+</tbody></table>
+
+<h2>Opcje konfiguracji</h2>
+<table><thead><tr><th>Opcja</th><th>Domyślnie</th><th>Opis</th></tr></thead><tbody>
+<tr><td><code>gross_investment</code></td><td>51 900,00</td><td>Całkowity koszt projektu przed dofinansowaniem (zł)</td></tr>
+<tr><td><code>subsidy</code></td><td>28 714,00</td><td>Jednorazowe dofinansowanie rządowe (zł)</td></tr>
+<tr><td><code>system_kwp</code></td><td>6,72</td><td>Zainstalowana moc szczytowa (kWp)</td></tr>
+<tr><td><code>poll_interval_minutes</code></td><td>30</td><td>Jak często przeliczać i publikować dane (minuty)</td></tr>
+<tr><td><code>mqtt_host</code></td><td>core-mosquitto</td><td>Hostname brokera MQTT</td></tr>
+<tr><td><code>mqtt_port</code></td><td>1883</td><td>Port TCP brokera MQTT</td></tr>
+<tr><td><code>mqtt_user</code> / <code>mqtt_password</code></td><td>(puste)</td><td>Dane logowania MQTT — puste = bez autoryzacji</td></tr>
+<tr><td><code>log_level</code></td><td>info</td><td>Poziom logowania: debug / info / warning / error</td></tr>
+<tr><td><code>backup_share</code></td><td>/share/pv_roi_tracker</td><td>Cel codziennej kopii zapasowej plików /data</td></tr>
+<tr><td><code>discount_rate_real</code></td><td>0,04</td><td>Realna stopa dyskontowa dla NPV (4%)</td></tr>
+<tr><td><code>inflation_rate_assumption</code></td><td>0,05</td><td>Zakładana inflacja gdy CPI GUS niedostępne (5%)</td></tr>
+<tr><td><code>comparison_yield_rate</code></td><td>0,055</td><td>Stopa zwrotu alternatywnej inwestycji — obligacje (5,5%)</td></tr>
+<tr><td><code>battery_roundtrip_efficiency</code></td><td>0,92</td><td>Sprawność bateryjna round-trip dla arbitrażu (92%)</td></tr>
+<tr><td><code>monthly_notify</code></td><td>true</td><td>Wysyłaj polskie podsumowanie miesięczne przez notify.family</td></tr>
+<tr><td><code>co2_factor_kg_kwh</code></td><td>0,597</td><td>Wskaźnik emisji CO₂ sieci elektrycznej (KOBiZE)</td></tr>
+<tr><td><code>deposit_refund_pct</code></td><td>0,20</td><td>Limit zwrotu przedawnionego depozytu: 0,20 (RCEm) / 0,30 (RCE)</td></tr>
+</tbody></table>
+
+<h2>Pliki danych</h2>
+<table><thead><tr><th>Plik</th><th>Opis</th></tr></thead><tbody>
+<tr><td><code>/data/historic.json</code></td><td>Zamrożone rekordy miesięczne (+ kopia .bak)</td></tr>
+<tr><td><code>/data/rcem_history.json</code></td><td>Ceny RCEm wg klucza YYYY-MM (PLN/kWh brutto), ostatnie 60 miesięcy</td></tr>
+<tr><td><code>/data/rcem_corrections.json</code></td><td>Historia korekt cen PSE (do 12 mies. wstecz)</td></tr>
+<tr><td><code>/data/rce_hourly.json</code></td><td>Cache godzinowych cen RCE + zamrożone wyniki RCE-vs-RCEm</td></tr>
+<tr><td><code>/data/invoices.json</code></td><td>Przetworzone faktury Tauron (metadane, stawki, kwoty)</td></tr>
+<tr><td><code>/data/pdfs/</code></td><td>Oryginalne pliki PDF faktur (trwałe przechowywanie)</td></tr>
+<tr><td><code>/data/tariff_config.json</code></td><td>Ręczne wpisy stawek taryfy (zakładka Taryfa)</td></tr>
+<tr><td><code>/data/invoice_layouts.json</code></td><td>Wyuczone wzorce parsera faktur</td></tr>
+<tr><td><code>/data/cpi_history.json</code></td><td>Łańcuchowy indeks CPI z GUS</td></tr>
+</tbody></table>
+<p>Wszystkie pliki kopiowane codziennie do <code>/share/pv_roi_tracker</code>.</p>
+`;
+
+let _docsModal = null;
+function _ensureDocsModal() {
+  if (_docsModal) return _docsModal;
+  const overlay = document.createElement('div');
+  overlay.id = 'docsOverlay';
+  overlay.style.cssText = 'display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1000;overflow-y:auto;padding:16px';
+  overlay.addEventListener('click', function(e) { if (e.target === overlay) closeDocsModal(); });
+  const card = document.createElement('div');
+  card.style.cssText = 'background:var(--card);border-radius:8px;width:min(900px,96vw);margin:0 auto;padding:24px 28px;position:relative';
+  card.innerHTML =
+    '<button onclick="closeDocsModal()" title="Zamknij" style="position:absolute;top:10px;right:12px;font-size:18px;background:none;border:none;cursor:pointer;color:var(--muted)">&#x2715;</button>' +
+    '<h2 style="margin:0 0 16px;font-size:16px;color:var(--accent);border:none;padding:0">&#128214; Dokumentacja &mdash; PV ROI Tracker</h2>' +
+    '<div class="docs-body">' + _DOCS_HTML + '</div>';
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+  _docsModal = overlay;
+  return overlay;
+}
+function openDocsModal()  { _ensureDocsModal().style.display = ''; }
+function closeDocsModal() {
+  const overlay = document.getElementById('docsOverlay');
+  if (overlay) overlay.style.display = 'none';
+}
+document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeDocsModal(); });
 
 async function submitTrain() {
   const msg = document.getElementById('trainMsg');
