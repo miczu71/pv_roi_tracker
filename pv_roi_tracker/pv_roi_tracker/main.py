@@ -296,12 +296,20 @@ def main() -> None:
     from .tariff_analysis import compute_tariff_tab
 
     _last: dict = {'result': None}
+    _last_current: dict = {'record': None}
 
     def poll_and_publish() -> None:
         try:
             historic = historic_store.load(HISTORIC_PATH)
             rcem_price = rcem_scraper.get_current_month_rcem(RCEM_HISTORY_PATH)
             current = live_reader.read_current_month(rcem_price=rcem_price, historic_records=historic)
+            if current is not None:
+                _last_current['record'] = current
+            elif _last_current['record'] is not None:
+                logger.warning(
+                    'sensor.inverter_yield_monthly niedostępny — używam ostatniego odczytu bieżącego miesiąca'
+                )
+                current = _last_current['record']
             all_records = concat.concat(historic, current)
             result = roi.calculate(all_records,
                                    gross_investment=GROSS_INVESTMENT,
