@@ -27,6 +27,7 @@ log = logging.getLogger(__name__)
 _lock = threading.Lock()
 _rcem_override_callback = None
 _historic_patch_callback = None
+_reread_month_callback = None
 _invoice_reconcile_callback = None
 _invoice_remove_callback = None
 _invoice_train_callback = None
@@ -43,6 +44,11 @@ def set_rcem_override_callback(fn) -> None:
 def set_historic_patch_callback(fn) -> None:
     global _historic_patch_callback
     _historic_patch_callback = fn
+
+
+def set_reread_month_callback(fn) -> None:
+    global _reread_month_callback
+    _reread_month_callback = fn
 
 
 def set_invoice_reconcile_callback(fn) -> None:
@@ -1129,6 +1135,41 @@ def historic_patch():
         return jsonify({'ok': False, 'error': str(exc)}), 400
     except Exception as exc:
         log.exception('Historic patch failed')
+        return jsonify({'ok': False, 'error': str(exc)}), 500
+
+
+@app.route('/api/historic/reread-month', methods=['POST'])
+def historic_reread_month():
+    """
+    Backfill miesiąca ze statystyk długoterminowych HA i nadpisz rekord w historic.json.
+
+    Używane jednorazowo po błędzie strefy czasowej (month_close strzelił po resecie
+    utility_meter i zapisał zera). Statystyki HA przeżywają reset liczników.
+
+    Body: {"year": 2026, "month": 6}
+    """
+    if _reread_month_callback is None:
+        return jsonify({'ok': False, 'error': 'not initialized'}), 503
+    data = request.get_json(silent=True) or {}
+    try:
+        year = int(data['year'])
+        month = int(data['month'])
+    except (KeyError, TypeError, ValueError):
+        return jsonify({'ok': False, 'error': 'year and month (integers) required'}), 400
+    try:
+        result = _reread_month_callback(year, month)
+        if result is None:
+            return jsonify({'ok': False,
+                            'error': f'Brak danych w statystykach HA dla {year}-{month:02d}. '
+                                     'Sprawdź czy recorder ma statystyki dla encji produkcji.'}), 404
+        return jsonify({'ok': True, 'year': year, 'month': month,
+                        'produced_kwh': result.produced_kwh,
+                        'exported_kwh': result.exported_kwh,
+                        'self_consumed_savings_pln': result.self_consumed_savings_pln,
+                        'feedin_revenue_pln': result.feedin_revenue_pln,
+                        'rcem_status': result.rcem_status})
+    except Exception as exc:
+        log.exception('Reread-month failed')
         return jsonify({'ok': False, 'error': str(exc)}), 500
 
 

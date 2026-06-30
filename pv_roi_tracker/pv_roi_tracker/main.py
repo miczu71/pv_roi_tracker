@@ -156,6 +156,18 @@ def main() -> None:
 
     _web.set_historic_patch_callback(_historic_patch)
 
+    def _reread_month(year: int, month: int):
+        """Backfill miesiąca ze statystyk HA, nadpisz historic.json, przelicz ROI."""
+        rcem_price = rcem_scraper._load_history(RCEM_HISTORY_PATH).get(f'{year}-{month:02d}')
+        record = live_reader.read_month_from_statistics(year, month, rcem_price=rcem_price)
+        if record is None:
+            return None
+        historic_store.replace_month(record, HISTORIC_PATH)
+        poll_and_publish()
+        return record
+
+    _web.set_reread_month_callback(_reread_month)
+
     # Inject learned layouts into the parser at startup
     invoice_parser.set_layouts_provider(
         lambda fk: invoice_layouts.learned_for(fk, INVOICE_LAYOUTS_PATH)
