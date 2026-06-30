@@ -75,6 +75,45 @@ def cmd_roi(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_reread_month(args: argparse.Namespace) -> int:
+    """
+    Ponownie odczytaj sumy miesięczne z długoterminowych statystyk HA i nadpisz
+    rekord w historic.json. Używane do naprawy zerowego rekordu zapisanego przez
+    month_close gdy strzelił po resecie utility_meter (błąd strefy czasowej).
+
+    Przykład: python -m pv_roi_tracker.cli reread-month 2026-06
+    """
+    from . import historic_store, live_reader, rcem_scraper
+
+    try:
+        year_str, month_str = args.month.split('-')
+        year, month = int(year_str), int(month_str)
+    except ValueError:
+        print(f'ERROR: nieprawidłowy format miesiąca: {args.month!r} (oczekiwany YYYY-MM)',
+              file=sys.stderr)
+        return 1
+
+    rcem_history_path = Path(os.environ.get('RCEM_HISTORY_PATH', '/data/rcem_history.json'))
+    rcem_price = None
+    if rcem_history_path.exists():
+        rcem_price = rcem_scraper._load_history(rcem_history_path).get(f'{year}-{month:02d}')
+
+    print(f'Odczytuję statystyki HA dla {year}-{month:02d} (RCEm: {rcem_price})...')
+    record = live_reader.read_month_from_statistics(year, month, rcem_price=rcem_price)
+    if record is None:
+        print('ERROR: brak danych w statystykach HA dla tego miesiąca.', file=sys.stderr)
+        print('Sprawdź czy recorder ma włączone statystyki dla tych encji.', file=sys.stderr)
+        return 1
+
+    replaced = historic_store.replace_month(record, HISTORIC_PATH)
+    action = 'Nadpisano' if replaced else 'Dopisano'
+    print(f'{action} {year}-{month:02d}: produced={record.produced_kwh} kWh, '
+          f'exported={record.exported_kwh} kWh, '
+          f'self_consumed_savings={record.self_consumed_savings_pln} PLN, '
+          f'feedin_revenue={record.feedin_revenue_pln} PLN (rcem_status={record.rcem_status})')
+    return 0
+
+
 def main() -> None:
     p = argparse.ArgumentParser(prog='pv_roi_tracker')
     sub = p.add_subparsers(dest='command')
@@ -88,6 +127,13 @@ def main() -> None:
 
     p_roi = sub.add_parser('roi', help='Print current ROI calculation as JSON')
     p_roi.set_defaults(func=cmd_roi)
+
+    p_reread = sub.add_parser(
+        'reread-month',
+        help='Odczytaj sumy miesięczne ze statystyk HA i nadpisz rekord w historic.json',
+    )
+    p_reread.add_argument('month', help='Miesiąc w formacie YYYY-MM, np. 2026-06')
+    p_reread.set_defaults(func=cmd_reread_month)
 
     args = p.parse_args()
     if not hasattr(args, 'func'):

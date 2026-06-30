@@ -95,6 +95,38 @@ def append_month(record: MonthlyRecord, path: Path = DEFAULT_PATH) -> bool:
     return True
 
 
+def replace_month(record: MonthlyRecord, path: Path = DEFAULT_PATH) -> bool:
+    """
+    Nadpisz istniejący rekord miesiąca (lub dopisz jeśli brak).
+
+    Używane do backfillu: gdy month_close zapisał zerowy rekord z powodu błędu
+    strefy czasowej, replace_month pozwala go zastąpić danymi z długoterminowych
+    statystyk HA. Pola `tariff` i `rcem_status` ze starego rekordu są zachowane
+    jeśli nowy rekord ich nie zawiera (None).
+    Returns True jeśli rekord istniał i został zastąpiony; False jeśli był nowy (append).
+    """
+    doc = _load_document(path)
+    months: list[dict] = doc.get('months', [])
+    new_dict = record.to_dict()
+    for i, m in enumerate(months):
+        if m['year'] == record.year and m['month'] == record.month:
+            # Zachowaj tariff i rcem_status ze starego rekordu jeśli nowy nie ma lepszej wartości
+            for preserve_field in ('tariff', 'rcem_status'):
+                if new_dict.get(preserve_field) is None and m.get(preserve_field) is not None:
+                    new_dict[preserve_field] = m[preserve_field]
+            months[i] = new_dict
+            _save_document(doc, path)
+            logger.info('replace_month: nadpisano %d-%02d w historic.json', record.year, record.month)
+            return True
+    # Brak rekordu — dopisz
+    months.append(new_dict)
+    months.sort(key=lambda m: (m['year'], m['month']))
+    doc['months'] = months
+    _save_document(doc, path)
+    logger.info('replace_month: dopisano %d-%02d do historic.json', record.year, record.month)
+    return False
+
+
 _PATCHABLE_FIELDS = {
     'produced_kwh', 'consumed_kwh', 'purchased_kwh', 'exported_kwh',
     'self_consumed_kwh', 'buy_price_pln_kwh', 'feedin_price_pln_kwh',

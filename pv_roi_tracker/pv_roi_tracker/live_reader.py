@@ -258,35 +258,34 @@ def _savings_per_kwh(historic_records: list[MonthlyRecord], calendar_month: int)
     return None
 
 
-def read_current_month(
-    rcem_price: Optional[float] = None,
-    historic_records: Optional[list] = None,
-) -> Optional[MonthlyRecord]:
+def _build_record(
+    year: int,
+    month: int,
+    produced: float,
+    exported: Optional[float],
+    consumed: Optional[float],
+    peak: Optional[float],
+    offpeak: Optional[float],
+    arb_kwh: Optional[float],
+    rcem_price: Optional[float],
+    projected_month_kwh: Optional[float] = None,
+    projected_month_savings_pln: Optional[float] = None,
+) -> MonthlyRecord:
     """
-    Build a MonthlyRecord for the current calendar month from live HA values.
-    Returns None if the primary production sensor is unavailable.
+    Build a MonthlyRecord from raw kWh readings.
+
+    Called both from read_current_month() (live sensors) and
+    read_month_from_statistics() (backfill from HA long-term stats).
+    ``produced`` must be > 0 before calling this function.
     """
-    today = date.today()
-    year, month = today.year, today.month
-
-    produced  = _get_state('sensor.inverter_yield_monthly')
-    exported  = _get_state('sensor.power_meter_exported_energy_monthly')
-    consumed  = _get_state('sensor.house_consumption_energy_monthly')
-    peak      = _get_state('sensor.monthly_energy_peak')
-    offpeak   = _get_state('sensor.monthly_energy_offpeak')
-
-    # Arbitraż baterii: liczony z kWh naładowanych z sieci w dolinie × stawka
-    # (peak × sprawność − offpeak), konfigurowalna przez opcje add-onu.
-    # Fallback: stary sensor szablonowy z zaszytą stawką 0.50 PLN/kWh.
-    arb_kwh = _get_state('sensor.battery_grid_charge_off_peak_monthly')
+    # Arbitraż baterii: kWh z sieci w dolinie × (peak_rate × eff − offpeak_rate)
     if arb_kwh is not None:
         arb_rate = _TARIFF_PEAK_PRICE * _BATTERY_RT_EFF - _TARIFF_OFFPEAK_PRICE
-        arbitrage = arb_kwh * arb_rate
+        arbitrage: Optional[float] = arb_kwh * arb_rate
     else:
         arbitrage = _get_state('sensor.battery_arbitrage_savings_monthly')
 
-    # Buy price: blend config tariff rates from peak/offpeak split when available;
-    # fall back to the HA average-price template sensor.
+    # Cena zakupu: ważona z taryf szczyt/dolina, fallback na sensor HA.
     if peak is not None and offpeak is not None and (peak + offpeak) > 0:
         buy_price: Optional[float] = round(
             (peak * _TARIFF_PEAK_PRICE + offpeak * _TARIFF_OFFPEAK_PRICE)
@@ -294,24 +293,13 @@ def read_current_month(
     else:
         buy_price = _get_state('sensor.srednia_cena_energii_w_miesiacu')
 
-    if produced is None:
-        logger.warning('sensor.inverter_yield_monthly unavailable — skipping current-month record')
-        return None
-
     purchased = (peak or 0.0) + (offpeak or 0.0) if (peak is not None or offpeak is not None) else None
 
     self_consumed_kwh         = max(0.0, produced - (exported or 0.0)) if exported is not None else None
     self_consumed_savings_pln = round(self_consumed_kwh * buy_price, 2) if (self_consumed_kwh is not None and buy_price is not None) else None
-    purchase_cost_pln         = round(purchased * buy_price, 2)         if (purchased      is not None and buy_price is not None) else None
+    purchase_cost_pln         = round(purchased * buy_price, 2)         if (purchased is not None and buy_price is not None) else None
     feedin_revenue_pln        = round((exported or 0.0) * rcem_price, 2) if (exported is not None and rcem_price is not None) else None
     specific_yield            = round(produced / _SYSTEM_KWP, 1)         if _SYSTEM_KWP else None
-    projected_month_kwh       = _solcast_month_projection(today, produced)
-
-    projected_month_savings_pln = None
-    if projected_month_kwh is not None and historic_records:
-        spk = _savings_per_kwh(historic_records, month)
-        if spk is not None:
-            projected_month_savings_pln = round(projected_month_kwh * spk, 2)
 
     return MonthlyRecord(
         year=year, month=month,
@@ -333,3 +321,105 @@ def read_current_month(
         projected_month_kwh=projected_month_kwh,
         projected_month_savings_pln=projected_month_savings_pln,
     )
+
+
+# Minimalna produkcja miesięczna uznawana za „licznik po resecie".
+# Nawet pochmurny czerwiec w Polsce produkuje >5 kWh — poniżej tej wartości
+# zakładamy, że utility_meter właśnie się zresetował i odczyt jest fałszywy.
+_MIN_PRODUCED_KWH = 5.0
+
+
+def read_month_from_statistics(
+    year: int,
+    month: int,
+    rcem_price: Optional[float] = None,
+) -> Optional[MonthlyRecord]:
+    """
+    Zbuduj MonthlyRecord na podstawie długoterminowych statystyk HA (WebSocket
+    recorder/statistics_during_period). Używane do backfillu miesiąca, gdy
+    utility_meter już się zresetował (np. naprawa po błędzie strefy czasowej).
+
+    Zwraca None, jeśli statystyki są niedostępne lub produkcja ≤ 0.
+    """
+    start = f'{year}-{month:02d}-01'
+    entity_ids = [
+        'sensor.inverter_yield_monthly',
+        'sensor.power_meter_exported_energy_monthly',
+        'sensor.house_consumption_energy_monthly',
+        'sensor.monthly_energy_peak',
+        'sensor.monthly_energy_offpeak',
+        'sensor.battery_grid_charge_off_peak_monthly',
+    ]
+    stats = get_ha_monthly_stats(entity_ids, start_month=start)
+    month_key = f'{year}-{month:02d}'
+
+    def _val(eid: str) -> Optional[float]:
+        v = stats.get(eid, {}).get(month_key)
+        return v if v is not None and v > 0 else None
+
+    produced = _val('sensor.inverter_yield_monthly')
+    if produced is None:
+        logger.warning(
+            'read_month_from_statistics: brak danych produkcji dla %s w statystykach HA', month_key)
+        return None
+
+    exported = _val('sensor.power_meter_exported_energy_monthly')
+    consumed = _val('sensor.house_consumption_energy_monthly')
+    peak     = _val('sensor.monthly_energy_peak')
+    offpeak  = _val('sensor.monthly_energy_offpeak')
+    arb_kwh  = _val('sensor.battery_grid_charge_off_peak_monthly')
+
+    logger.info(
+        'read_month_from_statistics %s: produced=%.1f exported=%s peak=%s offpeak=%s',
+        month_key, produced, exported, peak, offpeak,
+    )
+    return _build_record(year, month, produced, exported, consumed, peak, offpeak,
+                         arb_kwh, rcem_price)
+
+
+def read_current_month(
+    rcem_price: Optional[float] = None,
+    historic_records: Optional[list] = None,
+) -> Optional[MonthlyRecord]:
+    """
+    Build a MonthlyRecord for the current calendar month from live HA values.
+
+    Returns None if the primary production sensor is unavailable OR if the reading
+    looks like a freshly-reset utility_meter (produced <= _MIN_PRODUCED_KWH on the
+    first day of the month, i.e. meters have just rolled over).
+    """
+    today = date.today()
+    year, month = today.year, today.month
+
+    produced  = _get_state('sensor.inverter_yield_monthly')
+    exported  = _get_state('sensor.power_meter_exported_energy_monthly')
+    consumed  = _get_state('sensor.house_consumption_energy_monthly')
+    peak      = _get_state('sensor.monthly_energy_peak')
+    offpeak   = _get_state('sensor.monthly_energy_offpeak')
+    arb_kwh   = _get_state('sensor.battery_grid_charge_off_peak_monthly')
+
+    if produced is None:
+        logger.warning('sensor.inverter_yield_monthly unavailable — skipping current-month record')
+        return None
+
+    # Zabezpieczenie: jeśli produced ≤ _MIN_PRODUCED_KWH w pierwszym dniu miesiąca,
+    # liczniki właśnie się zresetowały (month_close strzelił po północy lokalnej).
+    # Nie twórz fałszywego zerowego rekordu.
+    if produced <= _MIN_PRODUCED_KWH and today.day == 1:
+        logger.warning(
+            'read_current_month: produced=%.2f kWh ≤ %.1f kWh i today.day=1 — '
+            'utility_meter prawdopodobnie po resecie; pomijam snapshot %d-%02d.',
+            produced, _MIN_PRODUCED_KWH, year, month,
+        )
+        return None
+
+    projected_month_kwh = _solcast_month_projection(today, produced)
+
+    projected_month_savings_pln = None
+    if projected_month_kwh is not None and historic_records:
+        spk = _savings_per_kwh(historic_records, month)
+        if spk is not None:
+            projected_month_savings_pln = round(projected_month_kwh * spk, 2)
+
+    return _build_record(year, month, produced, exported, consumed, peak, offpeak,
+                         arb_kwh, rcem_price, projected_month_kwh, projected_month_savings_pln)

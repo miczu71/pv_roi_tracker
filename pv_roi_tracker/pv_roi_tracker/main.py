@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 logging.basicConfig(
     level=os.environ.get('LOG_LEVEL', 'info').upper(),
@@ -499,7 +500,9 @@ def main() -> None:
             _record_job('month_close', False, 'zamknięcie miesiąca nie powiodło się')
 
     # ── Scheduler setup ───────────────────────────────────────────────────────
-    scheduler = BlockingScheduler()
+    _tz_name = os.environ.get('TZ', 'Europe/Warsaw')
+    scheduler = BlockingScheduler(timezone=ZoneInfo(_tz_name))
+    logger.info('Scheduler timezone: %s', _tz_name)
 
     # Poll every N minutes
     scheduler.add_job(poll_and_publish, 'interval', minutes=POLL_INTERVAL,

@@ -2,7 +2,7 @@ FROM python:3.12-alpine
 
 ENV LANG=C.UTF-8
 
-RUN apk add --no-cache jq
+RUN apk add --no-cache jq tzdata
 
 WORKDIR /app
 

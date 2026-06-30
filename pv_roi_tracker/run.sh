@@ -22,6 +22,7 @@ export BATTERY_ROUNDTRIP_EFFICIENCY=$(jq -r '.battery_roundtrip_efficiency // "0
 export MONTHLY_NOTIFY=$(jq -r '.monthly_notify // "true"' "$CONFIG")
 export CO2_FACTOR_KG_KWH=$(jq -r '.co2_factor_kg_kwh // "0.597"' "$CONFIG")
 export DEPOSIT_REFUND_PCT=$(jq -r '.deposit_refund_pct // "0.20"' "$CONFIG")
+export TZ=$(jq -r '.timezone // "Europe/Warsaw"' "$CONFIG")
 
 export HISTORIC_PATH="/data/historic.json"
 export RCEM_HISTORY_PATH="/data/rcem_history.json"

@@ -163,6 +163,7 @@ Add `https://github.com/miczu71/pv_roi_tracker` in **Settings → Add-ons → Ad
 | `monthly_notify` | `true` | Push a Polish month-close summary via `notify.family` |
 | `co2_factor_kg_kwh` | `0.597` | Grid CO₂ emission factor for the avoided-emissions sensor (KOBiZE, end-user electricity) |
 | `deposit_refund_pct` | `0.20` | Refund cap on expired deposit: `0.20` under RCEm, `0.30` under hourly RCE |
+| `timezone` | `Europe/Warsaw` | Container timezone. Must match the HA host TZ so month-close fires **before** utility meters reset at midnight. |
 
 ## Data files
 
@@ -212,4 +213,17 @@ pip install -r requirements.txt pytest
 python -m pytest -q
 ```
 
-165 tests covering the CSV parser, ROI engine, historic store, concatenator, invoice parser/layouts and the RCE-hourly comparison.
+336 tests covering the CSV parser, ROI engine, historic store, concatenator, invoice parser/layouts, RCE-hourly comparison, and timezone-fix regression.
+
+### CLI tools
+
+```bash
+# Show all frozen monthly records
+python -m pv_roi_tracker.cli show
+
+# Backfill a month from HA long-term statistics (repair a zeroed record)
+# Useful when month_close fired after utility_meter reset (timezone issue)
+RCEM_HISTORY_PATH=/data/rcem_history.json \
+HISTORIC_PATH=/data/historic.json \
+python -m pv_roi_tracker.cli reread-month 2026-06
+```

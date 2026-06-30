@@ -1,5 +1,5 @@
 name: PV ROI Tracker
-version: "0.27.1"
+version: "0.28.0"
 slug: pv_roi_tracker
 description: >-
   Tracks the ROI of a residential PV solar system.
@@ -35,6 +35,7 @@ options:
   monthly_notify: true
   co2_factor_kg_kwh: 0.597
   deposit_refund_pct: 0.20
+  timezone: "Europe/Warsaw"
 schema:
   gross_investment: float
   subsidy: float
@@ -53,3 +54,4 @@ schema:
   monthly_notify: bool
   co2_factor_kg_kwh: float
   deposit_refund_pct: float
+  timezone: str?

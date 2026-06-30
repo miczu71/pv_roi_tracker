@@ -2,6 +2,67 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.28.0] — 2026-07-01
+
+### Fixed
+
+- **Krytyczna poprawka: strefa czasowa — month_close strzelał po resecie liczników.**
+  Obraz Docker (`python:3.12-alpine`) nie zawierał pakietu `tzdata`, a `run.sh` i `config.yaml`
+  nie ustawiały `TZ`. W efekcie APScheduler i `date.today()` działały w UTC zamiast
+  `Europe/Warsaw`. Cron `day='last', hour=23, minute=55` strzelał o 23:55 UTC (01:55 CEST),
+  czyli ~2 h **po** resecie liczników `utility_meter` (reset = 00:00 lokalnie = 22:00 UTC).
+  Skutek: czerwiec 2026 zapisany jako 0 kWh / 0 zł, powiadomienie z zerami.
+
+  Naprawione przez:
+  - `Dockerfile`: `apk add --no-cache jq tzdata` — dodanie systemowych danych stref.
+  - `run.sh`: `export TZ=$(jq -r '.timezone // "Europe/Warsaw"' ...)` — przekazanie strefy do procesu.
+  - `config.yaml`: nowa opcja `timezone: "Europe/Warsaw"` (pole opcjonalne `str?`).
+  - `main.py`: `BlockingScheduler(timezone=ZoneInfo(os.environ.get('TZ', 'Europe/Warsaw')))` —
+    jawna strefa przy okazji naprawiła też buketowanie statystyk w `live_reader.py`.
+
+- **Zabezpieczenie przed zerowym snapshotem.**
+  `live_reader.read_current_month()` teraz zwraca `None` (zamiast rekordu z zerami)
+  gdy `produced_kwh ≤ 5.0 kWh` przy `today.day == 1`. To sprawia, że `month_close`
+  pominie snapshot i **nie wyśle** powiadomienia z zerami, nawet jeśli cron spóźni się
+  po resecie. Próg 5 kWh jest bezpieczny — każdy pochmurny czerwiec w Polsce daje >5 kWh.
+
+### Added
+
+- **`_build_record()` helper w `live_reader.py`** — wydzielona matematyka budowania `MonthlyRecord`
+  z surowych kWh. Używana przez `read_current_month()` i nową funkcję `read_month_from_statistics()`.
+
+- **`live_reader.read_month_from_statistics(year, month)`** — backfill miesiąca z
+  długoterminowych statystyk HA (WebSocket `recorder/statistics_during_period`). Statystyki
+  przeżywają reset `utility_meter`, więc możliwe jest odtworzenie czerwcowych sum po fakcie.
+
+- **`historic_store.replace_month(record)`** — nadpisuje istniejący rekord lub dopisuje nowy
+  (w odróżnieniu od `append_month`, który jest idempotentny). Zachowuje `tariff` i `rcem_status`
+  ze starego rekordu jeśli nowy ich nie zawiera. Używane przez CLI `reread-month`.
+
+- **Nowe polecenie CLI `reread-month YYYY-MM`** — jednorazowe narzędzie do naprawy zerowego
+  rekordu bez potrzeby dostępu do archiwum Tauron:
+  ```
+  python -m pv_roi_tracker.cli reread-month 2026-06
+  ```
+  Odczytuje sumy z HA, nadpisuje rekord w `/data/historic.json`. Cena RCEm zostanie
+  doliczona automatycznie ok. 11 lipca przez istniejący mechanizm `backfill_rcem`.
+
+- **10 nowych testów jednostkowych** (`tests/test_timezone_fix.py`): `_build_record` (2),
+  `read_current_month` guard zero-reset (4), `replace_month` (4).
+
+### Entities / services touched
+
+| Encja / akcja | Zmiana |
+|---|---|
+| Wszystkie sensory MQTT add-onu | Dane za czerwiec 2026 wrócą do wartości rzeczywistych po `reread-month` |
+| Nowe polecenie CLI `reread-month` | Jednorazowy backfill miesiąca ze statystyk HA |
+
+## [0.27.1] — 2026-06-19
+
+### Fixed
+
+- Wersja techniczna bez zmian funkcjonalnych (naprawiono problem z paczkowaniem).
+
 ## [0.27.0] — 2026-06-18
 
 ### Added
