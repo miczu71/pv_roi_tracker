@@ -39,6 +39,27 @@ def test_null_feedin_treated_as_zero():
     assert r.total_savings == pytest.approx(300.0)
 
 
+# ── Seasonal payback percentiles ────────────────────────────────────────────────────────────────
+
+def test_payback_percentiles_ordered_p10_before_p90():
+    """P10 (optimistic) must fall on or before P50 (seasonal), which must fall
+    on or before P90 (pessimistic). Regression guard for the swapped z-signs bug."""
+    today = date(2026, 7, 15)
+    # 24 months of varied savings so residual_cv > 0 and the fan has width;
+    # gross large enough that payback is still in the future (dates not None).
+    records = []
+    for i in range(24):
+        y = 2024 + (i // 12)
+        m = (i % 12) + 1
+        sav = 400.0 + (i % 5) * 60.0   # variation → non-zero residual CV
+        records.append(month(y, m, savings=sav, feedin=80.0))
+    r = calculate(records, gross_investment=60_000.0, subsidy=0.0, today=today)
+    assert r.payback_date_p10 is not None
+    assert r.payback_date_seasonal is not None
+    assert r.payback_date_p90 is not None
+    assert r.payback_date_p10 <= r.payback_date_seasonal <= r.payback_date_p90
+
+
 # ── ROI % ───────────────────────────────────────────────────────────────────────────────────────
 
 def test_roi_pct_known_answer():

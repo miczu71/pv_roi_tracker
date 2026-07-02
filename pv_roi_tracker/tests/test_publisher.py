@@ -26,11 +26,17 @@ def test_all_invoice_rate_sensors_are_declared():
         assert slug in slugs, f'{slug} missing from _SENSORS'
 
 
-def test_invoice_rate_sensors_are_monetary_or_per_kwh():
+def test_invoice_rate_sensors_device_class_matches_unit():
+    """HA's 'monetary' device class requires a currency unit. Per-kWh rates must
+    therefore NOT be monetary (PLN/kWh is invalid → warnings + no long-term stats);
+    only whole-PLN/month fixed charges may be monetary."""
     for slug in _INVOICE_RATE_SENSORS:
         s = _sensor(slug)
-        assert s.device_class == 'monetary'
         assert s.unit in ('PLN', 'PLN/kWh')
+        if s.unit == 'PLN/kWh':
+            assert s.device_class is None
+        else:  # 'PLN'
+            assert s.device_class == 'monetary'
 
 
 def test_render_value_uses_invoice_rates_dict(result):

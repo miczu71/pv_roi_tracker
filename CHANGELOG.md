@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.29.0] — 2026-07-02
+
+### Fixed
+
+- **Prognoza spłaty P10/P90 była odwrócona.** W `roi.py` scenariusz optymistyczny
+  (P10) używał `z=-1.28` (niższe oszczędności → **późniejsza** spłata), a
+  pesymistyczny (P90) `z=+1.28` — czyli etykiety w tabeli „Optymistyczny/
+  Pesymistyczny" pokazywały daty na odwrót (P10 wypadał po P90). Wykres wachlarza
+  spłaty był poprawny, więc tabela KPI i wykres się rozjeżdżały. Zamieniono znaki
+  `z` (P10 = `+1.28`, P90 = `-1.28`) + test regresji `p10 ≤ P50 ≤ p90`.
+- **Sensory stawek jednostkowych (`rate_*`, `PLN/kWh`) miały błędny
+  `device_class: monetary`.** Klasa `monetary` w HA wymaga jednostki walutowej;
+  `PLN/kWh` powodował ostrzeżenia i blokował statystyki długoterminowe. Usunięto
+  `device_class` z 9 sensorów per-kWh (jednostka bez zmian); opłaty stałe
+  `fixed_*` (całe PLN/mies.) pozostają `monetary`.
+
+## [0.28.1] — 2026-07-02
+
+### Added
+
+- **`POST /api/historic/reread-month`** (`{year, month}`) — nadpisuje zerowy
+  rekord miesiąca danymi z długoterminowych statystyk HA, bez dostępu do
+  kontenera. Użyte do naprawy czerwca 2026 po błędzie strefy czasowej.
+
 ## [0.28.0] — 2026-07-01
 
 ### Fixed

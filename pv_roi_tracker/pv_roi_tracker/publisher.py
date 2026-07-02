@@ -74,19 +74,22 @@ _SENSORS: list[_Sensor] = [
     _Sensor('deposit_expiring_30d',       'PV Deposit Expiring 30d',        None,                          'PLN',  'monetary', 'measurement',      'mdi:timer-sand'),
     # Latest-invoice rates (v0.20.0) — single source of truth for energy_simulation.yaml
     # and Analiza taryf; values come from invoice_rates (see _render_value), not RoiResult.
-    _Sensor('rate_energy_peak_net',       'PV Rate Energy Peak',            None,                          'PLN/kWh', 'monetary', 'measurement', 'mdi:flash'),
-    _Sensor('rate_energy_offpeak_net',    'PV Rate Energy Offpeak',         None,                          'PLN/kWh', 'monetary', 'measurement', 'mdi:flash-outline'),
-    _Sensor('rate_dist_var_peak_net',     'PV Rate Dist Var Peak',          None,                          'PLN/kWh', 'monetary', 'measurement', 'mdi:transmission-tower'),
-    _Sensor('rate_dist_var_offpeak_net',  'PV Rate Dist Var Offpeak',       None,                          'PLN/kWh', 'monetary', 'measurement', 'mdi:transmission-tower'),
-    _Sensor('rate_jakosciowa_net',        'PV Rate Jakościowa',             None,                          'PLN/kWh', 'monetary', 'measurement', 'mdi:certificate'),
-    _Sensor('rate_oze_net',               'PV Rate OZE',                    None,                          'PLN/kWh', 'monetary', 'measurement', 'mdi:leaf'),
-    _Sensor('rate_kogeneracja_net',       'PV Rate Kogeneracja',            None,                          'PLN/kWh', 'monetary', 'measurement', 'mdi:factory'),
+    # NOTE: per-kWh rates are NOT device_class 'monetary' — HA's monetary class requires a
+    # currency unit (PLN), and 'PLN/kWh' triggers warnings + blocks long-term stats.
+    # Only the whole-PLN/month fixed_* charges keep device_class 'monetary'.
+    _Sensor('rate_energy_peak_net',       'PV Rate Energy Peak',            None,                          'PLN/kWh', None,       'measurement', 'mdi:flash'),
+    _Sensor('rate_energy_offpeak_net',    'PV Rate Energy Offpeak',         None,                          'PLN/kWh', None,       'measurement', 'mdi:flash-outline'),
+    _Sensor('rate_dist_var_peak_net',     'PV Rate Dist Var Peak',          None,                          'PLN/kWh', None,       'measurement', 'mdi:transmission-tower'),
+    _Sensor('rate_dist_var_offpeak_net',  'PV Rate Dist Var Offpeak',       None,                          'PLN/kWh', None,       'measurement', 'mdi:transmission-tower'),
+    _Sensor('rate_jakosciowa_net',        'PV Rate Jakościowa',             None,                          'PLN/kWh', None,       'measurement', 'mdi:certificate'),
+    _Sensor('rate_oze_net',               'PV Rate OZE',                    None,                          'PLN/kWh', None,       'measurement', 'mdi:leaf'),
+    _Sensor('rate_kogeneracja_net',       'PV Rate Kogeneracja',            None,                          'PLN/kWh', None,       'measurement', 'mdi:factory'),
     _Sensor('fixed_mocowa_net',           'PV Fixed Mocowa',                None,                          'PLN',     'monetary', 'measurement', 'mdi:gauge'),
     _Sensor('fixed_abonament_net',        'PV Fixed Abonament',             None,                          'PLN',     'monetary', 'measurement', 'mdi:receipt'),
     _Sensor('fixed_stalysieciowy_net',    'PV Fixed Stały Sieciowy',        None,                          'PLN',     'monetary', 'measurement', 'mdi:transmission-tower'),
     _Sensor('fixed_total_net',            'PV Fixed Total Net',             None,                          'PLN',     'monetary', 'measurement', 'mdi:sigma'),
-    _Sensor('rate_peak_gross',            'PV Rate Peak Gross',             None,                          'PLN/kWh', 'monetary', 'measurement', 'mdi:cash'),
-    _Sensor('rate_offpeak_gross',         'PV Rate Offpeak Gross',          None,                          'PLN/kWh', 'monetary', 'measurement', 'mdi:cash-outline'),
+    _Sensor('rate_peak_gross',            'PV Rate Peak Gross',             None,                          'PLN/kWh', None,       'measurement', 'mdi:cash'),
+    _Sensor('rate_offpeak_gross',         'PV Rate Offpeak Gross',          None,                          'PLN/kWh', None,       'measurement', 'mdi:cash-outline'),
 ]
 
 # slug → key in the invoice_rates dict (web.latest_invoice_rates()) for the

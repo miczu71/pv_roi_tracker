@@ -352,8 +352,8 @@ class RoiResult:
     seasonal_factors: dict              # {1..12: float}
     residual_cv: float
     payback_date_seasonal: Optional[date]
-    payback_date_p10: Optional[date]    # optimistic  (z = −1.28)
-    payback_date_p90: Optional[date]    # pessimistic (z = +1.28)
+    payback_date_p10: Optional[date]    # optimistic  (z = +1.28 → higher savings → earlier)
+    payback_date_p90: Optional[date]    # pessimistic (z = −1.28 → lower savings → later)
     # Real / NPV / IRR / bond
     commissioning_date: Optional[date]
     real_total_savings: Optional[float]
@@ -424,8 +424,10 @@ def calculate(
 
     if monthly_avg_savings and monthly_avg_savings > 0:
         payback_date_seasonal = _walk_payback(remaining_to_recover, monthly_avg_savings, factors, today)
-        payback_date_p10 = _walk_payback(remaining_to_recover, monthly_avg_savings, factors, today, z=-1.28, cv=cv)
-        payback_date_p90 = _walk_payback(remaining_to_recover, monthly_avg_savings, factors, today, z=1.28,  cv=cv)
+        # P10 = optimistic/earlier → higher monthly savings (z > 0);
+        # P90 = pessimistic/later → lower monthly savings (z < 0).
+        payback_date_p10 = _walk_payback(remaining_to_recover, monthly_avg_savings, factors, today, z=1.28,  cv=cv)
+        payback_date_p90 = _walk_payback(remaining_to_recover, monthly_avg_savings, factors, today, z=-1.28, cv=cv)
         months_to_payback: Optional[float] = remaining_to_recover / monthly_avg_savings
         years_to_payback:  Optional[float] = round(months_to_payback / 12, 2)
     else:
