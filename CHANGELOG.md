@@ -2,6 +2,45 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.30.0] — 2026-07-09
+
+### Added
+
+- **Zakładka „🔋 Magazyn +5 kWh"** — symulacja opłacalności dokupienia drugiego
+  modułu magazynu (np. Huawei LUNA2000-5-E0, 7 599 zł). Analiza **marginalna**
+  na godzinowych statystykach liczników (LTS od 2023-06): wirtualny moduł
+  (+5 kWh / +2,5 kW) ładuje się energią, która fizycznie wyszła do sieci
+  (istniejący magazyn pełny albo na limicie mocy) i rozładowuje przeciw
+  faktycznemu importowi. Marża = uniknięty zakup wg strefy G12w (z kalendarzem
+  świąt PL) − utracona sprzedaż RCEm − straty sprawności.
+  - **Scenariusze:** S1 G12w+net-billing (opcjonalny „maksymalny" arbitraż
+    dolina→szczyt), S2 taryfa dynamiczna z rozliczeniem RCEh (ceny godzinowe
+    z cache `rce_hourly.json`, ujemne → 0 zł wg art. 4b ustawy o OZE),
+    S3 sprzedaż z magazynu — próg opłacalności ceny RCE (informacyjny).
+  - **Dwie perspektywy:** retro („gdybym miał moduł od 2023-06, zarobiłby X")
+    i prognoza — sezonowy payback P10/P50/P90 (reuse `roi._walk_payback`),
+    NPV @4% i IRR w horyzoncie 10 lat gwarancji.
+  - **Panel degradacji:** ekwiwalentne cykle/mies., koszt przerobu 1 kWh
+    (cena ÷ cykle życiowe × pojemność) vs realna marża/kWh, ostrzeżenie
+    o słabym wykorzystaniu modułu.
+  - **Konfiguracja w UI** (`/data/battery_config.json`, bez restartu):
+    cena, pojemność, moc, sprawność, cykle życiowe, początek symulacji,
+    arbitraż on/off, składnik dystrybucyjny taryfy dynamicznej.
+  - Nowe moduły: `battery_sim.py` (czysta symulacja, 17 testów),
+    `battery_store.py` (konfiguracja + cache godzinowy `/data/battery_sim.json`);
+    `live_reader.get_hourly_energy()` (WS LTS, period=hour); job APScheduler
+    codziennie 05:15 + pierwszy przebieg przy starcie (w tle).
+  - Nowe API: `GET /api/data` → pole `battery_sim`;
+    `GET/POST /api/battery_config`.
+  - Nowe sensory MQTT: `PV Battery Expansion Avg Savings` (PLN/mies.),
+    `PV Battery Expansion Payback` (lata).
+
+### Fixed
+
+- **Backup do `/share`** obejmuje teraz także `tariff_config.json`
+  (wcześniej ręczna taryfa nie była backupowana) oraz nowe pliki
+  `battery_config.json` i `battery_sim.json`.
+
 ## [0.29.0] — 2026-07-02
 
 ### Fixed

@@ -1,6 +1,6 @@
 # PV ROI Tracker — Home Assistant Add-on
 
-Tracks the return-on-investment of a residential photovoltaic system (Polish net-billing market), publishes 42 sensors to Home Assistant via MQTT discovery (including the latest-invoice rate sensors consumed by `energy_simulation.yaml`) and serves a mobile-friendly ingress dashboard with ROI history, payback forecast (fan chart with P10–P90 band), Tauron invoice reconciliation, prosumer-deposit tracking with an invoices-vs-inverter reconciliation table, tariff analysis, degradation tracking, and an RCEm-vs-hourly-RCE settlement simulation with an export×price heatmap.
+Tracks the return-on-investment of a residential photovoltaic system (Polish net-billing market), publishes 44 sensors to Home Assistant via MQTT discovery (including the latest-invoice rate sensors consumed by `energy_simulation.yaml`) and serves a mobile-friendly ingress dashboard with ROI history, payback forecast (fan chart with P10–P90 band), Tauron invoice reconciliation, prosumer-deposit tracking with an invoices-vs-inverter reconciliation table, tariff analysis, degradation tracking, an RCEm-vs-hourly-RCE settlement simulation with an export×price heatmap, and a battery-expansion payback simulator (is a second storage module worth buying?).
 
 ## What it does
 
@@ -16,7 +16,7 @@ Tracks the return-on-investment of a residential photovoltaic system (Polish net
 
 ## Web UI (ingress)
 
-Tabs: **Historia miesięczna** · **Prognoza spłaty** (wachlarz spłaty P10–P90) · **Podsumowanie roczne** (z kolumnami r/r) · **Wykresy** (m.in. waterfall miesięczny, Sankey przepływu energii, oszczędności nominalne vs realne CPI, trend degradacji kWh/kWp, ranking produkcji miesięcznej z kolorem per rok i medalami top 3, rachunek bez PV vs z PV, skumulowane CO₂ z ekwiwalentami drzew/km) · **Faktury** (upload PDF Tauron z trwałym przechowywaniem oryginałów, trening parsera, składniki kosztów faktur, trend stawek jednostkowych + efektywna cena all-in 1 kWh, depozyt prosumencki z prognozą przedawnienia, rekonsyliacja faktury vs falownik) · **Analiza taryf** (G12w vs dynamiczna) · **RCE vs RCEm** (symulacja rozliczenia godzinowego + heatmapa eksport × cena) · **Taryfa** (ręczne wpisy stawek z datą obowiązywania — zarządzanie luką ogłoszenia taryfy). Nagłówek pokazuje wersję add-onu. The layout is responsive — tabs scroll horizontally and tables keep a sticky first column on phones.
+Tabs: **Historia miesięczna** · **Prognoza spłaty** (wachlarz spłaty P10–P90) · **Podsumowanie roczne** (z kolumnami r/r) · **Wykresy** (m.in. waterfall miesięczny, Sankey przepływu energii, oszczędności nominalne vs realne CPI, trend degradacji kWh/kWp, ranking produkcji miesięcznej z kolorem per rok i medalami top 3, rachunek bez PV vs z PV, skumulowane CO₂ z ekwiwalentami drzew/km) · **Faktury** (upload PDF Tauron z trwałym przechowywaniem oryginałów, trening parsera, składniki kosztów faktur, trend stawek jednostkowych + efektywna cena all-in 1 kWh, depozyt prosumencki z prognozą przedawnienia, rekonsyliacja faktury vs falownik) · **Analiza taryf** (G12w vs dynamiczna) · **RCE vs RCEm** (symulacja rozliczenia godzinowego + heatmapa eksport × cena) · **Taryfa** (ręczne wpisy stawek z datą obowiązywania — zarządzanie luką ogłoszenia taryfy) · **Magazyn +5 kWh** (symulacja opłacalności dokupienia drugiego modułu magazynu — patrz niżej). Nagłówek pokazuje wersję add-onu. The layout is responsive — tabs scroll horizontally and tables keep a sticky first column on phones.
 
 ### Faktury — składniki kosztów, korekty i trwałe PDF-y
 
@@ -47,6 +47,12 @@ Sensory mają stan `unknown`, dopóki żadna faktura nie zostanie wgrana i brak 
 ### RCE vs RCEm
 
 Simulates what feed-in revenue would have been under hourly RCE settlement instead of monthly RCEm: hourly export energy (HA long-term statistics) × 15-min RCE prices. Today's prices come from the `rce_pse` HA integration (`prices` attribute); historic months are fetched once from the official PSE REST API (`api.raporty.pse.pl/api/rce-pln`) and cached in `/data/rce_hourly.json`. Settled months are frozen. Gross ×1.23 VAT applies from 2025-02 (same rule as RCEm). **Negative RCE prices are replaced with 0 zł** in the simulation (art. 4b ustawy o OZE — the statutory default for prosumers); per-month columns show export volume in negative-price hours and how much the zero-floor rule protects. A 24h×month heatmap shows when you export vs when prices are high or negative. Produces a ROZWAŻ RCE / ZOSTAŃ PRZY RCEm / NEUTRALNA recommendation after ≥3 settled months.
+
+### Magazyn +5 kWh — czy opłaca się dokupić drugi moduł? (od v0.30.0)
+
+Symulacja **marginalna** rozbudowy magazynu (np. drugi Huawei LUNA2000-5-E0 za 7 599 zł) na godzinowych statystykach liczników (od 2023-06). Wirtualny moduł (+5 kWh / +2,5 kW, konfigurowalne w UI bez restartu) ładuje się wyłącznie energią, która **fizycznie wyszła do sieci** (istniejący magazyn był pełny albo na limicie mocy — eksport jest na to twardym dowodem) i rozładowuje przeciw **faktycznemu importowi**. Marża rozładowanego kWh = uniknięty zakup wg strefy G12w tej godziny (kalendarz dni roboczych uwzględnia polskie święta, z ruchomymi włącznie) − utracona sprzedaż RCEm − straty sprawności (√η na każdej nodze).
+
+Trzy scenariusze: **S1** G12w + net-billing (opcjonalnie „maksymalny" arbitraż dolina→szczyt), **S2** taryfa dynamiczna z rozliczeniem godzinowym RCEh (ceny z cache `rce_hourly.json`, ujemne → 0 zł), **S3** informacyjny próg opłacalności sprzedaży z magazynu (RCEm + koszt przerobu, po sprawności). Dwie perspektywy: **retro** (skumulowane oszczędności od początku danych vs cena modułu) i **prognoza** (sezonowy payback P10/P50/P90 tym samym silnikiem co spłata PV, NPV @4% i IRR w horyzoncie 10 lat gwarancji). Panel degradacji zestawia realną marżę/kWh z **kosztem przerobu** (cena ÷ cykle życiowe × pojemność) i ostrzega przy słabym wykorzystaniu modułu (< ~0,3 cyklu/dzień).
 
 ### Depozyt prosumencki (12-month expiry)
 
@@ -105,6 +111,8 @@ All sensors appear under one device **PV ROI Tracker** in HA Settings → Device
 | `pv_roi_tracker_yoy_yield_delta` | PV YoY Yield Delta | % | production year-over-year, paired months |
 | `pv_roi_tracker_deposit_balance_est` | PV Deposit Balance Est | PLN | post-invoice balance + unposted inverter accruals |
 | `pv_roi_tracker_deposit_expiring_30d` | PV Deposit Expiring 30d | PLN | deposit value hitting 12-month expiry next month |
+| `pv_roi_tracker_battery_expansion_savings` | PV Battery Expansion Avg Savings | PLN | simulated avg monthly savings of a second storage module (12-mo window) |
+| `pv_roi_tracker_battery_expansion_payback` | PV Battery Expansion Payback | years | simple payback of the second module at configured price |
 | `pv_roi_tracker_underperformance_pct` | PV Underperformance | % | deviation of last closed month production vs seasonal expectation; `unknown` until ≥ 1 prior year of same calendar month |
 | `pv_roi_tracker_underperformance_flag` | PV Underperformance Flag | — | `ok` / `uwaga`; `uwaga` when deviation ≤ −10% |
 | `pv_roi_tracker_health` | PV ROI Tracker Health | — | `ok`/`degraded`/`error`; JSON attributes per job + `solcast_available` |
@@ -177,6 +185,8 @@ Add `https://github.com/miczu71/pv_roi_tracker` in **Settings → Add-ons → Ad
 | `/data/tariff_config.json` | Ręczne wpisy stawek taryfy (lista datowanych wpisów; seed tworzony przy 1. starcie) |
 | `/data/invoice_layouts.json` | Learned invoice parser patterns |
 | `/data/cpi_history.json` | GUS CPI chain index |
+| `/data/battery_config.json` | Parametry wirtualnego drugiego modułu magazynu (edycja w zakładce Magazyn) |
+| `/data/battery_sim.json` | Cache godzinowego eksportu/importu z LTS dla symulacji magazynu |
 
 All files are backed up daily to `/share/pv_roi_tracker`.
 

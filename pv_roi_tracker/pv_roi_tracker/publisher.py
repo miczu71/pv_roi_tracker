@@ -72,6 +72,9 @@ _SENSORS: list[_Sensor] = [
     # Depozyt prosumencki (v0.17.0)
     _Sensor('deposit_balance_est',        'PV Deposit Balance Est',         None,                          'PLN',  'monetary', 'measurement',      'mdi:piggy-bank'),
     _Sensor('deposit_expiring_30d',       'PV Deposit Expiring 30d',        None,                          'PLN',  'monetary', 'measurement',      'mdi:timer-sand'),
+    # Rozbudowa magazynu — symulacja drugiego modułu (v0.30.0)
+    _Sensor('battery_expansion_savings',  'PV Battery Expansion Avg Savings', None,                        'PLN',  'monetary', 'measurement',      'mdi:battery-plus'),
+    _Sensor('battery_expansion_payback',  'PV Battery Expansion Payback',   None,                          'years', None,      'measurement',      'mdi:battery-clock'),
     # Latest-invoice rates (v0.20.0) — single source of truth for energy_simulation.yaml
     # and Analiza taryf; values come from invoice_rates (see _render_value), not RoiResult.
     # NOTE: per-kWh rates are NOT device_class 'monetary' — HA's monetary class requires a
@@ -132,7 +135,8 @@ def _render_value(sensor: _Sensor, result: RoiResult,
                   projected_month_savings: Optional[float] = None,
                   deposit_balance: Optional[float] = None,
                   deposit_expiring_30d: Optional[float] = None,
-                  invoice_rates: Optional[dict] = None) -> str:
+                  invoice_rates: Optional[dict] = None,
+                  battery_expansion: Optional[dict] = None) -> str:
     if sensor.slug == 'net_investment':
         v: Any = round(result.gross_investment - result.subsidy, 2)
     elif sensor.slug == 'current_month_savings':
@@ -147,6 +151,10 @@ def _render_value(sensor: _Sensor, result: RoiResult,
         v = deposit_balance
     elif sensor.slug == 'deposit_expiring_30d':
         v = deposit_expiring_30d
+    elif sensor.slug == 'battery_expansion_savings':
+        v = (battery_expansion or {}).get('monthly_avg_savings')
+    elif sensor.slug == 'battery_expansion_payback':
+        v = (battery_expansion or {}).get('payback_years')
     elif sensor.slug in _INVOICE_RATE_SENSORS:
         v = (invoice_rates or {}).get(_INVOICE_RATE_SENSORS[sensor.slug])
     else:
@@ -246,14 +254,16 @@ class MQTTPublisher:
                     projected_month_savings: Optional[float] = None,
                     deposit_balance: Optional[float] = None,
                     deposit_expiring_30d: Optional[float] = None,
-                    invoice_rates: Optional[dict] = None) -> None:
+                    invoice_rates: Optional[dict] = None,
+                    battery_expansion: Optional[dict] = None) -> None:
         if not self._connected:
             logger.debug('MQTT not connected — skipping publish')
             return
         for s in _SENSORS:
             payload = _render_value(s, result, current_month_savings, rcem_scrape_status,
                                     projected_month_kwh, projected_month_savings,
-                                    deposit_balance, deposit_expiring_30d, invoice_rates)
+                                    deposit_balance, deposit_expiring_30d, invoice_rates,
+                                    battery_expansion)
             self._client.publish(_state_topic(s.slug), payload, retain=True)
         logger.debug('Published ROI state to MQTT (roi_pct=%.2f%%)', result.roi_pct)
 

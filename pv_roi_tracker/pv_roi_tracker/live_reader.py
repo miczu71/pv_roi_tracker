@@ -146,6 +146,70 @@ def get_ha_tariff_stats(
                 pass
 
 
+_EXPORT_METER = 'sensor.power_meter_exported'
+_IMPORT_METER = 'sensor.power_meter_consumption'
+
+
+def get_hourly_energy(start_iso: str, end_iso: Optional[str] = None) -> dict:
+    """
+    Godzinowy eksport/import z liczników (LTS 'change', period=hour) dla
+    symulacji rozbudowy magazynu (battery_sim).
+
+    Zwraca {'YYYY-MM-DDTHH': (export_kwh, import_kwh)} w czasie lokalnym;
+    pusty dict przy błędzie. start_iso/end_iso: 'YYYY-MM-DDTHH:MM:SS+00:00'.
+    """
+    ws = None
+    try:
+        ws = _ws.create_connection('ws://supervisor/core/websocket', timeout=60)
+
+        def _recv() -> dict:
+            return _json.loads(ws.recv())
+
+        if _recv().get('type') != 'auth_required':
+            raise RuntimeError('Unexpected WS handshake')
+        ws.send(_json.dumps({'type': 'auth', 'access_token': _TOKEN}))
+        if _recv().get('type') != 'auth_ok':
+            raise RuntimeError('WebSocket auth failed')
+
+        msg: dict = {
+            'id': 1,
+            'type': 'recorder/statistics_during_period',
+            'start_time': start_iso,
+            'period': 'hour',
+            'statistic_ids': [_EXPORT_METER, _IMPORT_METER],
+            'types': ['change'],
+        }
+        if end_iso:
+            msg['end_time'] = end_iso
+        ws.send(_json.dumps(msg))
+        reply = _recv()
+        if not reply.get('success'):
+            raise RuntimeError(f'statistics_during_period failed: {reply}')
+
+        data = reply.get('result', {})
+        hours: dict = {}
+        for eid, idx in ((_EXPORT_METER, 0), (_IMPORT_METER, 1)):
+            for entry in data.get(eid, []):
+                start_ms = entry.get('start')
+                change = entry.get('change')
+                if start_ms is None or change is None:
+                    continue
+                key = _dt.fromtimestamp(start_ms / 1000).strftime('%Y-%m-%dT%H')
+                cur = hours.setdefault(key, [0.0, 0.0])
+                cur[idx] = max(float(change), 0.0)
+        logger.info('get_hourly_energy: %d godzin od %s', len(hours), start_iso)
+        return {k: (v[0], v[1]) for k, v in hours.items()}
+    except Exception as exc:
+        logger.warning('get_hourly_energy failed: %s', exc)
+        return {}
+    finally:
+        if ws is not None:
+            try:
+                ws.close()
+            except Exception:
+                pass
+
+
 def get_ha_monthly_stats(entity_ids: list, start_month: str = '2024-12-01') -> dict:
     """
     Thin wrapper around get_ha_tariff_stats for monthly statistics.

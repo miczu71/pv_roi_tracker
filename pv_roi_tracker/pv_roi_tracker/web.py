@@ -81,6 +81,21 @@ def set_tariff_config_path(path) -> None:
     _tariff_config_path = path
 
 
+_battery_config_path = None
+_battery_config_callback = None
+
+
+def set_battery_config_path(path) -> None:
+    global _battery_config_path
+    _battery_config_path = path
+
+
+def set_battery_config_callback(fn) -> None:
+    """fn(BatteryConfig) — zapisuje konfigurację i przelicza symulację magazynu."""
+    global _battery_config_callback
+    _battery_config_callback = fn
+
+
 def _load_tariff_cfg() -> dict:
     from . import tariff_config as _tc
     try:
@@ -109,6 +124,7 @@ _state: dict = {
     'tariff_comparison': None,
     'rce_comparison': None,
     'deposit': None,
+    'battery_sim': None,
 }
 
 def update_state(result: RoiResult, records: list[MonthlyRecord],
@@ -140,6 +156,12 @@ def update_deposit(deposit_result) -> None:
     from dataclasses import asdict
     with _lock:
         _state['deposit'] = asdict(deposit_result) if deposit_result is not None else None
+
+
+def update_battery_sim(payload: Optional[dict]) -> None:
+    """Store the battery expansion simulation payload (called from main.py)."""
+    with _lock:
+        _state['battery_sim'] = payload
 
 
 def _build_predictions(result: RoiResult) -> list[dict]:
@@ -410,6 +432,7 @@ def api_data():
         'tariff_comparison': _state.get('tariff_comparison'),
         'rce_comparison': _state.get('rce_comparison'),
         'deposit': deposit_payload,
+        'battery_sim': _state.get('battery_sim'),
         'degradation': _build_degradation(records, today),
         'version': __version__,
     })
@@ -1313,6 +1336,39 @@ def api_tariff_config_derived():
     return jsonify({'changes': changes, 'existing_effective_from': existing})
 
 
+@app.route('/api/battery_config')
+def api_battery_config_get():
+    """Konfiguracja wirtualnego drugiego modułu magazynu (zakładka Magazyn)."""
+    from . import battery_store as _bs
+    if not _battery_config_path:
+        return jsonify({'ok': False, 'error': 'battery_config_path not configured'}), 500
+    return jsonify({'ok': True, 'config': _bs.load_config(_battery_config_path).to_dict()})
+
+
+@app.route('/api/battery_config', methods=['POST'])
+def api_battery_config_post():
+    """Zapisz konfigurację magazynu i przelicz symulację (callback z main.py)."""
+    from .battery_sim import BatteryConfig
+    if not _battery_config_path or _battery_config_callback is None:
+        return jsonify({'ok': False, 'error': 'battery config not wired'}), 500
+    try:
+        payload = request.get_json(force=True) or {}
+        cfg = BatteryConfig.from_dict(payload)
+        if cfg.usable_kwh <= 0 or cfg.power_kw <= 0 or cfg.module_price_pln <= 0:
+            raise ValueError('pojemność, moc i cena muszą być > 0')
+        if not (0.5 <= cfg.roundtrip_eff <= 1.0):
+            raise ValueError('sprawność musi być w zakresie 0.5–1.0')
+        if len(cfg.start_month) != 7 or cfg.start_month[4] != '-':
+            raise ValueError('start_month musi być YYYY-MM')
+        _battery_config_callback(cfg)
+        return jsonify({'ok': True, 'config': cfg.to_dict()})
+    except ValueError as exc:
+        return jsonify({'ok': False, 'error': str(exc)}), 400
+    except Exception as exc:
+        log.exception('battery_config POST failed')
+        return jsonify({'ok': False, 'error': str(exc)}), 500
+
+
 @app.route('/api/tariff_stats')
 def api_tariff_stats():
     """
@@ -1543,8 +1599,8 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
 .override-form input { font-size: 13px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg); color: var(--text); }
 .override-form button { padding: 6px 16px; background: var(--accent); color: #fff; border: none; border-radius: 5px; font-size: 13px; font-weight: 600; cursor: pointer; }
 .override-form button:hover { background: #1d4ed8; }
-#ovMsg.ok  { color: var(--green); }
-#ovMsg.err { color: var(--red); }
+#ovMsg.ok, #batMsg.ok   { color: var(--green); }
+#ovMsg.err, #batMsg.err { color: var(--red); }
 .rcem-badge { font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 10px; text-transform: uppercase; letter-spacing: .4px; margin-left: 8px; vertical-align: middle; }
 .rcem-badge.ok       { background: #d1fae5; color: #065f46; }
 .rcem-badge.pending  { background: #e0e7ff; color: #3730a3; }
@@ -1642,6 +1698,7 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
       <button class="tab-btn"        onclick="showTab('tariff')">&#128200; Analiza taryf</button>
       <button class="tab-btn"        onclick="showTab('taryfa')">&#128209; Taryfa</button>
       <button class="tab-btn"        onclick="showTab('rce')">&#9889; RCE vs RCEm</button>
+      <button class="tab-btn"        onclick="showTab('battery')">&#128267; Magazyn +5 kWh</button>
     </div>
     <div class="tab-panel">
       <div id="tab-hist">
@@ -1951,6 +2008,56 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
         <div class="tbl-wrap"><table id="rceTbl"></table></div>
         <div class="tbl-foot" id="rceFoot"></div>
       </div>
+      <!-- Magazyn +5 kWh tab -->
+      <div id="tab-battery" style="display:none;padding:12px">
+        <div id="batWaiting" style="margin-bottom:12px;padding:10px 14px;background:#fff3cd;border-left:4px solid #f0ad4e;border-radius:4px;font-size:13px">
+          &#8987; Symulacja rozbudowy magazynu jeszcze trwa — pierwszy przebieg po starcie add-onu pobiera całą historię statystyk (do ~1 min). Odśwież za chwilę.
+        </div>
+        <div id="batContent" style="display:none">
+          <div class="docs-body" style="margin-bottom:14px"><div class="intro-box">
+            <b>Czy opłaca się dokupić drugi moduł 5 kWh?</b> Symulacja marginalna na godzinowych
+            statystykach liczników: wirtualny moduł (+<span id="batIntroKwh"></span> kWh /
+            +<span id="batIntroKw"></span> kW) ładuje się energią, która <b>fizycznie wyszła do sieci</b>
+            (istniejący magazyn nie mógł jej przyjąć — pełny albo limit mocy) i rozładowuje przeciw
+            <b>faktycznemu importowi</b> (magazyn nie pokrył zapotrzebowania). Marża = uniknięty zakup
+            wg strefy G12w − utracona sprzedaż RCEm − straty sprawności.
+          </div></div>
+          <div id="batKpiCards" class="cards" style="margin-bottom:14px"></div>
+          <div class="grid2" style="margin-bottom:14px">
+            <div class="chart-wrap" style="height:280px">
+              <h3>Oszczędności miesięczne wirtualnego modułu (zł)</h3>
+              <canvas id="batMonthlyChart"></canvas>
+            </div>
+            <div class="chart-wrap" style="height:280px">
+              <h3>Retro: skumulowane oszczędności vs cena modułu</h3>
+              <canvas id="batCumChart"></canvas>
+            </div>
+          </div>
+          <div id="batSellBox" style="margin-bottom:14px;padding:10px 14px;background:var(--bg);border:1px solid var(--border);border-radius:6px;font-size:12px;line-height:1.6"></div>
+          <details style="margin-bottom:14px">
+            <summary style="cursor:pointer;font-weight:600;font-size:13px;padding:6px 0">&#128203; Symulacja miesiąc po miesiącu</summary>
+            <div class="tbl-wrap" style="margin-top:8px"><table id="batTbl"></table></div>
+            <div class="tbl-foot" id="batFoot"></div>
+          </details>
+          <div class="override-wrap">
+            <h3>Parametry symulacji (zapis przelicza od nowa)</h3>
+            <div class="override-form" style="row-gap:8px">
+              <label>Cena modułu (zł): <input type="number" id="batPrice" step="1" min="1" style="width:90px"></label>
+              <label>Pojemność (kWh): <input type="number" id="batKwh" step="0.1" min="0.1" style="width:70px"></label>
+              <label>Moc (kW): <input type="number" id="batKw" step="0.1" min="0.1" style="width:60px"></label>
+              <label>Sprawność: <input type="number" id="batEff" step="0.01" min="0.5" max="1" style="width:65px"></label>
+              <label>Cykle życiowe: <input type="number" id="batCycles" step="100" min="100" style="width:75px"></label>
+              <label>Licz od: <input type="month" id="batStart"></label>
+              <label title="Wariant maksymalny: w dolinie dokupuj z sieci do pełna, oddawaj w szczycie">
+                <input type="checkbox" id="batArb"> arbitraż G12w</label>
+              <label title="Składnik dystrybucyjny ceny dynamicznej (S2), PLN/kWh brutto">
+                Dystryb. dyn. (zł/kWh): <input type="number" id="batDynDist" step="0.01" min="0" style="width:65px"></label>
+              <button onclick="saveBatteryConfig()">Zapisz i przelicz</button>
+              <span id="batMsg"></span>
+            </div>
+          </div>
+        </div>
+      </div>
       <!-- Faktury Tauron tab -->
       <div id="tab-invoices" style="display:none;padding:12px">
         <!-- KPI summary cards -->
@@ -2050,6 +2157,7 @@ let _tariffPriceChart = null, _tariffCompChart = null, _tariffCumChart = null, _
 let _rceCmpChart = null;
 let _fanChart = null, _waterfallChart = null, _sankeyChart = null, _cpiRealChart = null, _degradChart = null;
 let _billChart = null, _co2Chart = null, _rateTrendChart = null;
+let _batMonthlyChart = null, _batCumChart = null, _batCfgLoaded = false;
 let _lastRecords = [], _lastInvoices = [], _lastRceMonths = [], _lastRateTrend = null, _lastSummary = null;
 
 /* -- Formatters -- */
@@ -2088,7 +2196,7 @@ document.addEventListener('click', function(e) {
 
 /* -- Tab switching -- */
 function showTab(name) {
-  const TABS = ['hist','pred','years','charts','invoices','tariff','taryfa','rce'];
+  const TABS = ['hist','pred','years','charts','invoices','tariff','taryfa','rce','battery'];
   TABS.forEach(t => {
     document.getElementById('tab-' + t).style.display = (t === name) ? '' : 'none';
   });
@@ -2096,6 +2204,7 @@ function showTab(name) {
     b.classList.toggle('active', TABS[i] === name)
   );
   if (name === 'rce' && _rceCmpChart) _rceCmpChart.resize();
+  if (name === 'battery') [_batMonthlyChart, _batCumChart].forEach(c => c && c.resize());
   if (name === 'charts') {
     [_rcemChart, _autarkiaChart, _prodChart, _arbitrageChart, _netCostChart,
      _priceSpreadChart, _yieldChart, _energyBalChart, _yearCompChart, _prodRankChart,
@@ -3583,6 +3692,175 @@ async function submitOverride() {
 }
 
 /* -- Main data load -- */
+/* -- Magazyn +5 kWh tab -- */
+function renderBatteryTab(bs) {
+  const waiting = document.getElementById('batWaiting');
+  const content = document.getElementById('batContent');
+  if (!bs || !bs.summary) {
+    waiting.style.display = '';
+    content.style.display = 'none';
+    return;
+  }
+  waiting.style.display = 'none';
+  content.style.display = '';
+  const s = bs.summary, cfg = bs.config || {};
+  document.getElementById('batIntroKwh').textContent = fmt(cfg.usable_kwh, 1);
+  document.getElementById('batIntroKw').textContent = fmt(cfg.power_kw, 1);
+
+  const lowCycles = s.cycles_per_month != null && s.cycles_per_month < 9;
+  const marginOk  = (s.margin_above_throughput || 0) > 0;
+  const cards = [
+    { lbl: 'Śr. oszczędność/mies.', val: pln(s.monthly_avg_savings, 2),
+      sub: 'okno ' + s.avg_window + ' mies. • symulacja ' + s.months_simulated + ' mies.', cls: 'c-blue' },
+    { lbl: 'Zwrot (P50)', val: s.payback_date ? s.payback_date.slice(0, 7) : '> 20 lat',
+      sub: (s.payback_years != null ? '~' + fmt(s.payback_years, 1) + ' lat' : '')
+        + (s.payback_date_p10 ? ' • P10 ' + s.payback_date_p10.slice(0, 7) : '')
+        + (s.payback_date_p90 ? ' • P90 ' + s.payback_date_p90.slice(0, 7) : ' • P90 > 20 lat'),
+      cls: s.payback_date ? '' : '' },
+    { lbl: 'NPV @4% (10 lat)', val: pln(s.npv), sub: 'horyzont gwarancji modułu',
+      cls: (s.npv || 0) >= 0 ? 'c-green' : '' },
+    s.irr_pct != null ? { lbl: 'IRR', val: pct(s.irr_pct),
+      sub: 'roczna stopa zwrotu', cls: s.irr_pct >= 0 ? 'c-green' : '' } : null,
+    { lbl: 'Cykle/mies.', val: fmt(s.cycles_per_month, 1),
+      sub: (lowCycles ? '&#9888; moduł słabo wykorzystany • ' : '') + 'łącznie ' + fmt(s.cycles_total, 0) },
+    { lbl: 'Marża − koszt przerobu', val: fmt(s.margin_above_throughput, 2, 'zł/kWh'),
+      sub: 'marża ' + fmt(s.margin_per_kwh, 2) + ' − degradacja ' + fmt(s.throughput_cost_kwh, 2),
+      cls: marginOk ? 'c-green' : '' },
+    { lbl: 'Retro od ' + (s.retro_first_ym || '—'), val: pln(s.retro_total_savings),
+      sub: s.retro_paid_back_ym ? 'moduł spłaciłby się w ' + s.retro_paid_back_ym
+        : 'do dziś nie spłaciłby ceny ' + fmt(cfg.module_price_pln, 0, 'zł') },
+    bs.s2_avg_monthly != null ? { lbl: 'Taryfa dynamiczna (S2)', val: pln(bs.s2_avg_monthly, 2),
+      sub: 'śr./mies. przy cenach godzinowych RCE' } : null,
+    { lbl: 'Energia przechwycona', val: kwh(s.total_charged_kwh),
+      sub: 'oddane do domu ' + kwh(s.total_discharged_kwh) },
+  ].filter(Boolean);
+  document.getElementById('batKpiCards').innerHTML = cards.map(c =>
+    '<div class="card ' + (c.cls || '') + '">' +
+      '<div class="lbl">' + c.lbl + '</div>' +
+      '<div class="val">' + c.val + '</div>' +
+      (c.sub ? '<div class="sub">' + c.sub + '</div>' : '') +
+    '</div>'
+  ).join('');
+
+  const rows = (bs.s1_months || []).filter(r => !r.is_current);
+  const labels = rows.map(r => r.ym);
+  const pvShift = rows.map(r => +(r.savings_pln - (r.arb_savings_pln || 0)).toFixed(2));
+  const arb = rows.map(r => +(r.arb_savings_pln || 0).toFixed(2));
+  const s2ByYm = {};
+  (bs.s2_months || []).forEach(r => { if (!r.is_current) s2ByYm[r.ym] = r.savings_pln; });
+  const s2line = labels.map(l => s2ByYm[l] != null ? s2ByYm[l] : null);
+
+  if (_batMonthlyChart) _batMonthlyChart.destroy();
+  _batMonthlyChart = new Chart(document.getElementById('batMonthlyChart'), {
+    type: 'bar',
+    data: { labels, datasets: [
+      { label: 'Przesunięcie PV (S1)', data: pvShift, backgroundColor: 'rgba(37,99,235,0.75)', stack: 's1' },
+      { label: 'Arbitraż G12w', data: arb, backgroundColor: 'rgba(234,179,8,0.80)', stack: 's1' },
+      { label: 'Taryfa dynamiczna (S2)', data: s2line, type: 'line', borderColor: '#dc2626',
+        backgroundColor: 'transparent', borderWidth: 2, pointRadius: 2, spanGaps: false },
+    ]},
+    options: { responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { position: 'top', labels: { boxWidth: 12, font: { size: 11 } } } },
+      scales: { x: { stacked: true, ticks: { font: { size: 10 } } },
+                y: { stacked: true, title: { display: true, text: 'zł/mies.' } } } },
+  });
+
+  let cum = 0;
+  const cumData = rows.map(r => +(cum += r.savings_pln).toFixed(2));
+  const priceLine = labels.map(() => cfg.module_price_pln);
+  if (_batCumChart) _batCumChart.destroy();
+  _batCumChart = new Chart(document.getElementById('batCumChart'), {
+    type: 'line',
+    data: { labels, datasets: [
+      { label: 'Skumulowane oszczędności', data: cumData, borderColor: '#16a34a',
+        backgroundColor: 'rgba(22,163,74,0.12)', fill: true, pointRadius: 0, borderWidth: 2 },
+      { label: 'Cena modułu (' + fmt(cfg.module_price_pln, 0, 'zł') + ')', data: priceLine,
+        borderColor: '#dc2626', borderDash: [6, 4], pointRadius: 0, borderWidth: 1.5, fill: false },
+    ]},
+    options: { responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { position: 'top', labels: { boxWidth: 12, font: { size: 11 } } } },
+      scales: { x: { ticks: { font: { size: 10 } } }, y: { title: { display: true, text: 'zł' } } } },
+  });
+
+  const s3 = bs.s3 || {};
+  document.getElementById('batSellBox').innerHTML =
+    '<b>&#128176; Scenariusz S3 — sprzedaż z magazynu przy wysokim RCE (informacyjny):</b> ' +
+    (s3.breakeven_sell_price_gross != null
+      ? 'cykl „zmagazynuj nadwyżkę → sprzedaj w godzinie max RCE" zaczyna się opłacać od ceny sprzedaży <b>'
+        + fmt(s3.breakeven_sell_price_gross, 2, 'zł/kWh') + '</b> (RCEm + koszt przerobu, po sprawności). '
+        + 'Średnie dzienne maksimum RCE z analizowanych miesięcy: <b>'
+        + (s3.months && s3.months.length
+            ? fmt(s3.months.reduce((a, m) => a + m.avg_daily_max_rce_gross, 0) / s3.months.length, 2, 'zł/kWh') : '—')
+        + '</b>; miesiące z dodatnią marżą: <b>' + (s3.profitable_months || 0) + '/' + (s3.months_analyzed || 0)
+        + '</b>' + (s3.avg_margin_per_kwh != null ? ' (śr. marża ' + fmt(s3.avg_margin_per_kwh, 2, 'zł/kWh') + ')' : '') + '. '
+        + 'Przy rozliczeniu RCEm sprzedaż z magazynu nie ma sensu (sprzedajesz po średniej miesięcznej) — scenariusz dotyczy przejścia na RCE godzinową.'
+      : 'brak danych godzinowych RCE (cache add-onu obejmuje okres od 2024-07).');
+
+  const allRows = bs.s1_months || [];
+  let html = '<thead><tr><th>Miesiąc</th><th>Ładowanie kWh</th><th>Rozład. kWh</th>' +
+    '<th>Szczyt kWh</th><th>Dolina kWh</th><th>Uniknięty zakup zł</th><th>Utracone RCEm zł</th>' +
+    '<th>Arbitraż zł</th><th>Oszczędność zł</th><th>S2 dyn. zł</th><th>Pokrycie h</th></tr></thead><tbody>';
+  for (let i = allRows.length - 1; i >= 0; i--) {
+    const r = allRows[i];
+    html += '<tr' + (r.is_current ? ' class="cur"' : '') + '><td>' + r.ym
+      + (r.rcem_estimated ? ' <span class="proj-hint" title="RCEm szacowane (średnia znanych miesięcy)">≈</span>' : '') + '</td>' +
+      '<td>' + fmt(r.charged_kwh + (r.arb_charged_kwh || 0), 1) + '</td>' +
+      '<td>' + fmt(r.discharged_kwh + (r.arb_discharged_kwh || 0), 1) + '</td>' +
+      '<td>' + fmt(r.disch_peak_kwh, 1) + '</td>' +
+      '<td>' + fmt(r.disch_offpeak_kwh, 1) + '</td>' +
+      '<td>' + fmt(r.avoided_buy_pln, 2) + '</td>' +
+      '<td>' + fmt(r.foregone_rcem_pln, 2) + '</td>' +
+      '<td>' + fmt(r.arb_savings_pln, 2) + '</td>' +
+      '<td><b>' + fmt(r.savings_pln, 2) + '</b></td>' +
+      '<td>' + (s2ByYm[r.ym] != null ? fmt(s2ByYm[r.ym], 2) : '—') + '</td>' +
+      '<td>' + r.hours + '</td></tr>';
+  }
+  document.getElementById('batTbl').innerHTML = html + '</tbody>';
+  document.getElementById('batFoot').textContent =
+    'Ceny stref z zakładki Taryfa (tariff_config), RCEm z historii add-onu; „≈" = miesiąc bez opublikowanej RCEm. ' +
+    'S2 liczone tylko dla miesięcy z cenami godzinowymi RCE (od 2024-07).';
+
+  if (!_batCfgLoaded) {
+    document.getElementById('batPrice').value  = cfg.module_price_pln;
+    document.getElementById('batKwh').value    = cfg.usable_kwh;
+    document.getElementById('batKw').value     = cfg.power_kw;
+    document.getElementById('batEff').value    = cfg.roundtrip_eff;
+    document.getElementById('batCycles').value = cfg.lifetime_cycles;
+    document.getElementById('batStart').value  = cfg.start_month;
+    document.getElementById('batArb').checked  = !!cfg.arbitrage_enabled;
+    document.getElementById('batDynDist').value = cfg.dynamic_dist_gross;
+    _batCfgLoaded = true;
+  }
+}
+
+async function saveBatteryConfig() {
+  const msg = document.getElementById('batMsg');
+  msg.className = ''; msg.textContent = 'Przeliczanie…';
+  const payload = {
+    module_price_pln:  parseFloat(document.getElementById('batPrice').value),
+    usable_kwh:        parseFloat(document.getElementById('batKwh').value),
+    power_kw:          parseFloat(document.getElementById('batKw').value),
+    roundtrip_eff:     parseFloat(document.getElementById('batEff').value),
+    lifetime_cycles:   parseFloat(document.getElementById('batCycles').value),
+    start_month:       document.getElementById('batStart').value,
+    arbitrage_enabled: document.getElementById('batArb').checked,
+    dynamic_dist_gross: parseFloat(document.getElementById('batDynDist').value),
+  };
+  try {
+    const r = await fetch('api/battery_config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error || 'HTTP ' + r.status);
+    msg.className = 'ok'; msg.textContent = 'Zapisano i przeliczono ✓';
+    _batCfgLoaded = false;
+    await loadData();
+  } catch (e) {
+    msg.className = 'err'; msg.textContent = 'Błąd: ' + e.message;
+  }
+}
+
 async function loadData() {
   try {
     const resp = await fetch('api/data');
@@ -3628,6 +3906,7 @@ async function loadData() {
     renderInvoicesTab(d.invoices || [], d.tariff_drift, d.records, d.layouts_summary, d.cost_breakdown, d.rate_trend);
     if (d.tariff_comparison) renderTariffTab(d.tariff_comparison);
     if (d.rce_comparison) renderRceTab(d.rce_comparison);
+    renderBatteryTab(d.battery_sim);
     // v0.17.0
     _lastRecords = d.records || [];
     _lastInvoices = d.invoices || [];

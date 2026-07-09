@@ -33,6 +33,8 @@ BACKUP_SHARE           = Path(os.environ.get('BACKUP_SHARE', '/share/pv_roi_trac
 RCE_HOURLY_CACHE_PATH  = Path(os.environ.get('RCE_HOURLY_CACHE_PATH', '/data/rce_hourly.json'))
 MONTHLY_NOTIFY         = os.environ.get('MONTHLY_NOTIFY', 'true').lower() in ('1', 'true', 'yes')
 TARIFF_CONFIG_PATH     = Path(os.environ.get('TARIFF_CONFIG_PATH', '/data/tariff_config.json'))
+BATTERY_CONFIG_PATH    = Path(os.environ.get('BATTERY_CONFIG_PATH', '/data/battery_config.json'))
+BATTERY_HOURS_PATH     = Path(os.environ.get('BATTERY_HOURS_PATH', '/data/battery_sim.json'))
 GROSS_INVESTMENT   = float(os.environ.get('GROSS_INVESTMENT', '51900.0'))
 SUBSIDY            = float(os.environ.get('SUBSIDY', '28714.0'))
 SYSTEM_KWP         = float(os.environ.get('SYSTEM_KWP', '6.72'))
@@ -109,7 +111,8 @@ def _backup_data() -> None:
     try:
         BACKUP_SHARE.mkdir(parents=True, exist_ok=True)
         for src in [HISTORIC_PATH, RCEM_HISTORY_PATH, RCEM_CORRECTIONS_PATH,
-                    INVOICE_PATH, INVOICE_LAYOUTS_PATH, RCE_HOURLY_CACHE_PATH]:
+                    INVOICE_PATH, INVOICE_LAYOUTS_PATH, RCE_HOURLY_CACHE_PATH,
+                    TARIFF_CONFIG_PATH, BATTERY_CONFIG_PATH, BATTERY_HOURS_PATH]:
             if src.exists():
                 shutil.copy2(src, BACKUP_SHARE / src.name)
         logger.info('Data backed up to %s', BACKUP_SHARE)
@@ -295,6 +298,72 @@ def main() -> None:
 
     from datetime import date
 
+    # ── Symulacja rozbudowy magazynu (zakładka „Magazyn +5 kWh") ─────────────
+    import threading as _threading
+    from . import battery_sim, battery_store, rce_hourly as _rceh
+
+    _battery_lock = _threading.Lock()
+    _battery_state: dict = {'summary': None}
+
+    def battery_job() -> None:
+        """Dociągnij godzinowe LTS (eksport/import), przelicz symulację, odśwież UI."""
+        from datetime import datetime as _dtb, timedelta as _tdb, timezone as _tzb
+        # Blokująco: zapis konfiguracji z UI musi doczekać się przeliczenia,
+        # a równoległe przebiegi (cron + POST) wykonują się wtedy szeregowo.
+        _battery_lock.acquire()
+        try:
+            cfg = battery_store.load_config(BATTERY_CONFIG_PATH)
+            hours = battery_store.load_hours(BATTERY_HOURS_PATH)
+            # 48 h zakładki: LTS bieżących godzin bywa opóźnione/korygowane
+            if hours:
+                fetch_from = _dtb.strptime(max(hours), '%Y-%m-%dT%H') - _tdb(hours=48)
+            else:
+                fetch_from = _dtb.strptime(cfg.start_month + '-01T00', '%Y-%m-%dT%H')
+            start_iso = (fetch_from.astimezone().astimezone(_tzb.utc)
+                         .strftime('%Y-%m-%dT%H:%M:%S+00:00'))
+            new = live_reader.get_hourly_energy(start_iso)
+            if new:
+                hours.update(new)
+                battery_store.save_hours(hours, BATTERY_HOURS_PATH)
+            if not hours:
+                _record_job('battery_sim', False, 'brak godzinowych statystyk liczników')
+                return
+
+            # Cennik stref per miesiąc z tariff_config (kumulatywny baseline)
+            tcfg = _tc.load(TARIFF_CONFIG_PATH)
+            zone_prices: dict = {}
+            for ym in sorted({k[:7] for k in hours}):
+                rates = _tc.effective_baseline(tcfg, date(int(ym[:4]), int(ym[5:7]), 28))
+                zone_prices[ym] = (
+                    float(rates.get('peak_gross', live_reader._TARIFF_PEAK_PRICE)),
+                    float(rates.get('offpeak_gross', live_reader._TARIFF_OFFPEAK_PRICE)),
+                )
+            rcem = {ym: float(v) for ym, v in
+                    rcem_scraper._load_history(RCEM_HISTORY_PATH).items()}
+            rce_prices = _rceh._load_cache(RCE_HOURLY_CACHE_PATH).get('prices', {})
+
+            payload = battery_sim.simulate_all(hours, cfg, zone_prices, rcem,
+                                               rce_hourly=rce_prices)
+            _web.update_battery_sim(payload)
+            _battery_state['summary'] = payload.get('summary')
+            _record_job('battery_sim', True)
+            logger.info('Battery sim: %d mies., śr. %s zł/mies., payback %s',
+                        payload['summary']['months_simulated'],
+                        payload['summary']['monthly_avg_savings'],
+                        payload['summary']['payback_date'] or 'poza horyzontem')
+        except Exception:
+            logger.exception('Battery expansion simulation failed')
+            _record_job('battery_sim', False, 'symulacja magazynu nie powiodła się')
+        finally:
+            _battery_lock.release()
+
+    def _battery_config_changed(cfg) -> None:
+        battery_store.save_config(cfg, BATTERY_CONFIG_PATH)
+        battery_job()
+
+    _web.set_battery_config_path(BATTERY_CONFIG_PATH)
+    _web.set_battery_config_callback(_battery_config_changed)
+
     def _rcem_scrape_status(now: date) -> str:
         y, m = (now.year - 1, 12) if now.month == 1 else (now.year, now.month - 1)
         prev = f'{y}-{m:02d}'
@@ -367,7 +436,8 @@ def main() -> None:
                                              if deposit_result and deposit_result.balance_estimate is not None
                                              else (deposit_result.balance_model if deposit_result else None)),
                             deposit_expiring_30d=deposit_result.expiring_1m if deposit_result else None,
-                            invoice_rates=_invoice_rates)
+                            invoice_rates=_invoice_rates,
+                            battery_expansion=_battery_state['summary'])
             _web.update_state(result, all_records, rcem_price, month_closed=month_closed,
                               rcem_scrape_status=scrape_status)
             _web.update_deposit(deposit_result)
@@ -550,6 +620,11 @@ def main() -> None:
     scheduler.add_job(cpi_job, CronTrigger(day=16, hour=12, minute=0),
                       id='cpi_refresh', name='Monthly CPI refresh')
 
+    # Symulacja rozbudowy magazynu: raz dziennie (LTS zmienia się co godzinę,
+    # a wynik miesięczny — wolno); pierwszy przebieg w tle przy starcie.
+    scheduler.add_job(battery_job, CronTrigger(hour=5, minute=15),
+                      id='battery_sim', name='Battery expansion simulation')
+
     logger.info('PV ROI Tracker v%s started — poll every %d min', __version__, POLL_INTERVAL)
 
     _backup_data()   # ensure /share copy is current on every start
@@ -593,6 +668,10 @@ def main() -> None:
         logger.info('RCEm history %.0fh old — skipping startup scrape', _rcem_age_h)
 
     poll_and_publish()   # initial poll with up-to-date RCEm history
+
+    # Pierwszy przebieg symulacji magazynu w tle (backfill LTS może potrwać ~30 s)
+    _threading.Thread(target=battery_job, daemon=True, name='battery-sim-boot').start()
+
     scheduler.start()
 
 
