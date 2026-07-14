@@ -62,6 +62,59 @@ def _get_state_raw(entity_id: str) -> Optional[str]:
         return None
 
 
+def _ws_statistics(
+    statistic_ids: list,
+    start_iso: str,
+    period: str,
+    end_iso: Optional[str] = None,
+    timeout: int = 30,
+) -> dict:
+    """
+    recorder/statistics_during_period via HA WebSocket (auth handshake included).
+    Returns the raw result {statistic_id: [rows]}; raises on any failure.
+
+    HA 2026.x removed the REST /api/recorder/statistics_during_period endpoint;
+    statistics are available only through the WebSocket API.
+    """
+    ws = None
+    try:
+        ws = _ws.create_connection('ws://supervisor/core/websocket', timeout=timeout)
+
+        def _recv() -> dict:
+            return _json.loads(ws.recv())
+
+        msg = _recv()  # auth_required
+        if msg.get('type') != 'auth_required':
+            raise RuntimeError(f'Unexpected handshake message: {msg.get("type")}')
+
+        ws.send(_json.dumps({'type': 'auth', 'access_token': _TOKEN}))
+        auth_reply = _recv()
+        if auth_reply.get('type') != 'auth_ok':
+            raise RuntimeError(f'WebSocket auth failed: {auth_reply.get("message")}')
+
+        req: dict = {
+            'id': 1,
+            'type': 'recorder/statistics_during_period',
+            'start_time': start_iso,
+            'period': period,
+            'statistic_ids': statistic_ids,
+            'types': ['change'],
+        }
+        if end_iso:
+            req['end_time'] = end_iso
+        ws.send(_json.dumps(req))
+        stats_reply = _recv()
+        if not stats_reply.get('success'):
+            raise RuntimeError(f'statistics_during_period failed: {stats_reply}')
+        return stats_reply.get('result', {})
+    finally:
+        if ws is not None:
+            try:
+                ws.close()
+            except Exception:
+                pass
+
+
 def get_ha_tariff_stats(
     entity_ids: list,
     start: str,
@@ -76,42 +129,12 @@ def get_ha_tariff_stats(
       'hour'  → 'YYYY-MM-DDTHH'
 
     Uses 'change' stat type (monthly/daily variable cost for utility_meters).
-
-    HA 2026.x removed the REST /api/recorder/statistics_during_period endpoint;
-    statistics are available only through the WebSocket API.
     'start' timestamps from HA are epoch milliseconds in UTC — converted to local
     time for bucketing (container TZ = Europe/Warsaw).
     """
     result = {eid: {} for eid in entity_ids}
-    ws = None
     try:
-        ws = _ws.create_connection('ws://supervisor/core/websocket', timeout=30)
-
-        def _recv() -> dict:
-            return _json.loads(ws.recv())
-
-        msg = _recv()  # auth_required
-        if msg.get('type') != 'auth_required':
-            raise RuntimeError(f'Unexpected handshake message: {msg.get("type")}')
-
-        ws.send(_json.dumps({'type': 'auth', 'access_token': _TOKEN}))
-        auth_reply = _recv()
-        if auth_reply.get('type') != 'auth_ok':
-            raise RuntimeError(f'WebSocket auth failed: {auth_reply.get("message")}')
-
-        ws.send(_json.dumps({
-            'id': 1,
-            'type': 'recorder/statistics_during_period',
-            'start_time': f'{start}T00:00:00+00:00',
-            'period': period,
-            'statistic_ids': entity_ids,
-            'types': ['change'],
-        }))
-        stats_reply = _recv()
-        if not stats_reply.get('success'):
-            raise RuntimeError(f'statistics_during_period failed: {stats_reply}')
-
-        data = stats_reply.get('result', {})
+        data = _ws_statistics(entity_ids, f'{start}T00:00:00+00:00', period)
         for eid in entity_ids:
             for entry in data.get(eid, []):
                 start_ms = entry.get('start')
@@ -138,12 +161,6 @@ def get_ha_tariff_stats(
     except Exception as exc:
         logger.warning('get_ha_tariff_stats failed (period=%s): %s', period, exc)
         return {eid: {} for eid in entity_ids}
-    finally:
-        if ws is not None:
-            try:
-                ws.close()
-            except Exception:
-                pass
 
 
 _EXPORT_METER = 'sensor.power_meter_exported'
@@ -158,35 +175,9 @@ def get_hourly_energy(start_iso: str, end_iso: Optional[str] = None) -> dict:
     Zwraca {'YYYY-MM-DDTHH': (export_kwh, import_kwh)} w czasie lokalnym;
     pusty dict przy błędzie. start_iso/end_iso: 'YYYY-MM-DDTHH:MM:SS+00:00'.
     """
-    ws = None
     try:
-        ws = _ws.create_connection('ws://supervisor/core/websocket', timeout=60)
-
-        def _recv() -> dict:
-            return _json.loads(ws.recv())
-
-        if _recv().get('type') != 'auth_required':
-            raise RuntimeError('Unexpected WS handshake')
-        ws.send(_json.dumps({'type': 'auth', 'access_token': _TOKEN}))
-        if _recv().get('type') != 'auth_ok':
-            raise RuntimeError('WebSocket auth failed')
-
-        msg: dict = {
-            'id': 1,
-            'type': 'recorder/statistics_during_period',
-            'start_time': start_iso,
-            'period': 'hour',
-            'statistic_ids': [_EXPORT_METER, _IMPORT_METER],
-            'types': ['change'],
-        }
-        if end_iso:
-            msg['end_time'] = end_iso
-        ws.send(_json.dumps(msg))
-        reply = _recv()
-        if not reply.get('success'):
-            raise RuntimeError(f'statistics_during_period failed: {reply}')
-
-        data = reply.get('result', {})
+        data = _ws_statistics([_EXPORT_METER, _IMPORT_METER], start_iso, 'hour',
+                              end_iso=end_iso, timeout=60)
         hours: dict = {}
         for eid, idx in ((_EXPORT_METER, 0), (_IMPORT_METER, 1)):
             for entry in data.get(eid, []):
@@ -202,12 +193,6 @@ def get_hourly_energy(start_iso: str, end_iso: Optional[str] = None) -> dict:
     except Exception as exc:
         logger.warning('get_hourly_energy failed: %s', exc)
         return {}
-    finally:
-        if ws is not None:
-            try:
-                ws.close()
-            except Exception:
-                pass
 
 
 def get_ha_monthly_stats(entity_ids: list, start_month: str = '2024-12-01') -> dict:

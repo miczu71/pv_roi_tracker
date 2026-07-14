@@ -31,18 +31,13 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, asdict
 from datetime import date, datetime
-from statistics import mean, stdev
+from statistics import mean
 from typing import Optional
 
-from .roi import _walk_payback, _npv, _irr
-
+from .rce_hourly import _vat_factor
+from .roi import _npv, _irr, _residual_cv, _seasonal_factors, _walk_payback
 # Domyślne stawki G12w (brutto, PLN/kWh) — nadpisywane cennikiem z tariff_config.
-_DEFAULT_PEAK_GROSS = 1.23
-_DEFAULT_OFFPEAK_GROSS = 0.63
-
-# VAT/współczynnik korekcyjny depozytu od 2025-02 (nowelizacja ustawy o OZE) —
-# ta sama reguła co rcem_scraper._MULTIPLIER_FROM / rce_hourly._vat_factor.
-_MULTIPLIER_FROM = '2025-02'
+from .tariff_analysis import _DEFAULT_OFFPEAK_GROSS, _DEFAULT_PEAK_GROSS
 
 
 @dataclass
@@ -113,21 +108,20 @@ def polish_holidays(year: int) -> set[date]:
 _HOLIDAY_CACHE: dict[int, set[date]] = {}
 
 
-def is_peak(dt: datetime) -> bool:
+def _is_peak_hour(d: date, hour: int) -> bool:
     """Strefa szczytowa G12w: dni robocze 06–13 i 15–22 czasu lokalnego."""
-    d = dt.date()
-    if dt.weekday() >= 5:
+    if d.weekday() >= 5:
         return False
     hol = _HOLIDAY_CACHE.get(d.year)
     if hol is None:
         hol = _HOLIDAY_CACHE[d.year] = polish_holidays(d.year)
     if d in hol:
         return False
-    return 6 <= dt.hour < 13 or 15 <= dt.hour < 22
+    return 6 <= hour < 13 or 15 <= hour < 22
 
 
-def _vat_factor(ym: str) -> float:
-    return 1.23 if ym >= _MULTIPLIER_FROM else 1.0
+def is_peak(dt: datetime) -> bool:
+    return _is_peak_hour(dt.date(), dt.hour)
 
 
 # ── Symulacja godzinowa ───────────────────────────────────────────────────────
@@ -137,17 +131,25 @@ def _new_month_row(ym: str) -> dict:
         'ym': ym,
         'charged_kwh': 0.0,          # energia pobrana z eksportu (przed stratami)
         'discharged_kwh': 0.0,       # energia oddana do domu (po stratach)
+        'avoided_buy_pln': 0.0,      # uniknięty zakup
+        'foregone_rcem_pln': 0.0,    # utracona sprzedaż zmagazynowanej nadwyżki
+        'savings_pln': 0.0,          # marża = avoided − foregone (+ arbitraż)
+        'hours': 0,                  # godziny z danymi (pokrycie)
+    }
+
+
+def _new_s1_row(ym: str) -> dict:
+    """Wiersz S1 = wspólna baza + strefy G12w i arbitraż."""
+    row = _new_month_row(ym)
+    row.update({
         'disch_peak_kwh': 0.0,
         'disch_offpeak_kwh': 0.0,
-        'avoided_buy_pln': 0.0,      # uniknięty zakup wg strefy
-        'foregone_rcem_pln': 0.0,    # utracona sprzedaż RCEm zmagazynowanej nadwyżki
-        'savings_pln': 0.0,          # marża = avoided − foregone (+ arbitraż)
         'arb_charged_kwh': 0.0,      # arbitraż: dokupione z sieci w dolinie
         'arb_discharged_kwh': 0.0,   # arbitraż: oddane w szczycie
         'arb_savings_pln': 0.0,
-        'hours': 0,                  # godziny z danymi (pokrycie)
         'rcem_estimated': False,
-    }
+    })
+    return row
 
 
 def simulate_s1(
@@ -155,6 +157,7 @@ def simulate_s1(
     cfg: BatteryConfig,
     zone_prices: dict[str, tuple],
     rcem_by_ym: dict[str, float],
+    keys: Optional[list[str]] = None,
 ) -> list[dict]:
     """
     Scenariusz S1 (G12w + net-billing): wirtualny moduł ładowany nadwyżką PV
@@ -163,6 +166,7 @@ def simulate_s1(
     hours:       {'YYYY-MM-DDTHH': (export_kwh, import_kwh)} — czas lokalny
     zone_prices: {'YYYY-MM': (peak_gross, offpeak_gross)} PLN/kWh
     rcem_by_ym:  {'YYYY-MM': PLN/kWh} — efektywna cena sprzedaży RCEm
+    keys:        posortowane klucze hours (opcjonalnie, oszczędza powtórny sort)
 
     Zwraca listę miesięcznych wierszy (posortowaną po ym).
     """
@@ -174,21 +178,24 @@ def simulate_s1(
     soc_grid = 0.0    # kWh dokupione z sieci w dolinie (arbitraż)
     months: dict[str, dict] = {}
 
-    for key in sorted(hours):
+    for key in (keys if keys is not None else sorted(hours)):
         exp, imp = hours[key]
         try:
-            dt = datetime.strptime(key, '%Y-%m-%dT%H')
+            # klucz ma stałą szerokość 'YYYY-MM-DDTHH' — parsowanie wycinkami
+            # jest ~10× szybsze od strptime (pętla po ~26k godzin)
+            day = date(int(key[:4]), int(key[5:7]), int(key[8:10]))
+            hour = int(key[11:13])
         except ValueError:
             continue
         ym = key[:7]
         row = months.get(ym)
         if row is None:
-            row = months[ym] = _new_month_row(ym)
+            row = months[ym] = _new_s1_row(ym)
             row['rcem_estimated'] = ym not in rcem_by_ym
         peak_px, offpeak_px = zone_prices.get(
             ym, (_DEFAULT_PEAK_GROSS, _DEFAULT_OFFPEAK_GROSS))
         rcem = rcem_by_ym.get(ym, rcem_fallback)
-        peak = is_peak(dt)
+        peak = _is_peak_hour(day, hour)
         row['hours'] += 1
         budget = cap_h  # wspólny limit mocy godziny (ładowanie + rozładowanie)
 
@@ -240,6 +247,7 @@ def simulate_s2(
     hours: dict[str, tuple],
     cfg: BatteryConfig,
     rce_hourly: dict[str, float],
+    keys: Optional[list[str]] = None,
 ) -> list[dict]:
     """
     Scenariusz S2 (taryfa dynamiczna + rozliczenie RCEh): te same przepływy
@@ -254,7 +262,7 @@ def simulate_s2(
     soc = 0.0
     months: dict[str, dict] = {}
 
-    for key in sorted(hours):
+    for key in (keys if keys is not None else sorted(hours)):
         exp, imp = hours[key]
         rce = rce_hourly.get(key)
         if rce is None:
@@ -347,39 +355,6 @@ def throughput_cost_kwh(cfg: BatteryConfig) -> float:
     return cfg.module_price_pln / denom if denom > 0 else 0.0
 
 
-def _seasonal_factors_rows(rows: list[dict]) -> dict[int, float]:
-    """Współczynniki sezonowe per miesiąc kalendarzowy (odpowiednik roi._seasonal_factors)."""
-    by_month: dict[int, list[float]] = {m: [] for m in range(1, 13)}
-    for r in rows:
-        s = r.get('savings_pln') or 0.0
-        if s > 0:
-            by_month[int(r['ym'][5:7])].append(s)
-    present = [m for m, v in by_month.items() if v]
-    if len(present) < 2:
-        return {m: 1.0 for m in range(1, 13)}
-    month_means = {m: mean(v) for m, v in by_month.items() if v}
-    overall = mean(month_means.values())
-    if overall <= 0:
-        return {m: 1.0 for m in range(1, 13)}
-    return {m: (month_means[m] / overall if m in month_means else 1.0)
-            for m in range(1, 13)}
-
-
-def _residual_cv_rows(rows: list[dict], monthly_avg: float, factors: dict[int, float]) -> float:
-    if monthly_avg <= 0:
-        return 0.0
-    ratios = []
-    for r in rows:
-        s = r.get('savings_pln') or 0.0
-        expected = monthly_avg * factors.get(int(r['ym'][5:7]), 1.0)
-        if s > 0 and expected > 0:
-            ratios.append(s / expected)
-    if len(ratios) < 2:
-        return 0.0
-    m = mean(ratios)
-    return min(stdev(ratios) / m, 0.5) if m > 0 else 0.0
-
-
 def summarize(
     s1_rows: list[dict],
     cfg: BatteryConfig,
@@ -405,8 +380,9 @@ def summarize(
     window = [r for r in closed if r['savings_pln'] > 0][-12:]
     monthly_avg = (sum(r['savings_pln'] for r in window) / len(window)) if window else None
 
-    factors = _seasonal_factors_rows(closed)
-    cv = _residual_cv_rows(closed, monthly_avg or 0.0, factors)
+    savings_pairs = [(int(r['ym'][5:7]), r['savings_pln'] or 0.0) for r in closed]
+    factors = _seasonal_factors(savings_pairs)
+    cv = _residual_cv(savings_pairs, monthly_avg or 0.0, factors)
 
     payback_p50 = payback_p10 = payback_p90 = None
     npv_v = irr_pct = None
@@ -476,8 +452,9 @@ def simulate_all(
 ) -> dict:
     """Pełny payload zakładki: S1 (+podsumowanie), S2, S3, echo konfiguracji."""
     hours = {k: v for k, v in hours.items() if k[:7] >= cfg.start_month}
-    s1 = simulate_s1(hours, cfg, zone_prices, rcem_by_ym)
-    s2 = simulate_s2(hours, cfg, rce_hourly or {})
+    keys = sorted(hours)
+    s1 = simulate_s1(hours, cfg, zone_prices, rcem_by_ym, keys=keys)
+    s2 = simulate_s2(hours, cfg, rce_hourly or {}, keys=keys)
     s3 = sell_threshold_analysis(rce_hourly or {}, cfg, rcem_by_ym)
     summary = summarize(s1, cfg, today=today)
 

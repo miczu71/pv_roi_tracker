@@ -159,13 +159,13 @@ def _msav(r: MonthlyRecord) -> float:
 
 # ── Seasonal forecast helpers ────────────────────────────────────────────────
 
-def _seasonal_factors(complete_records: list[MonthlyRecord]) -> dict[int, float]:
-    """Per-calendar-month savings index relative to overall mean. Returns {1..12: float}."""
+def _seasonal_factors(pairs: list[tuple[int, float]]) -> dict[int, float]:
+    """Per-calendar-month savings index relative to overall mean.
+    Takes (calendar_month, savings) pairs. Returns {1..12: float}."""
     by_month: dict[int, list[float]] = {m: [] for m in range(1, 13)}
-    for r in complete_records:
-        s = _msav(r)
+    for month, s in pairs:
         if s > 0:
-            by_month[r.month].append(s)
+            by_month[month].append(s)
     months_present = [m for m, vals in by_month.items() if vals]
     if len(months_present) < 2:
         return {m: 1.0 for m in range(1, 13)}
@@ -176,14 +176,15 @@ def _seasonal_factors(complete_records: list[MonthlyRecord]) -> dict[int, float]
     return {m: (month_means[m] / overall_mean if m in month_means else 1.0) for m in range(1, 13)}
 
 
-def _residual_cv(complete_records: list[MonthlyRecord], monthly_avg: float, factors: dict[int, float]) -> float:
-    """Coefficient of variation of actual vs seasonal-expected savings, capped at 0.5."""
+def _residual_cv(pairs: list[tuple[int, float]], monthly_avg: float, factors: dict[int, float]) -> float:
+    """Coefficient of variation of actual vs seasonal-expected savings, capped at 0.5.
+    Takes (calendar_month, savings) pairs."""
     if monthly_avg <= 0:
         return 0.0
     ratios = [
-        _msav(r) / (monthly_avg * factors.get(r.month, 1.0))
-        for r in complete_records
-        if _msav(r) > 0 and monthly_avg * factors.get(r.month, 1.0) > 0
+        s / (monthly_avg * factors.get(month, 1.0))
+        for month, s in pairs
+        if s > 0 and monthly_avg * factors.get(month, 1.0) > 0
     ]
     if len(ratios) < 2:
         return 0.0
@@ -419,8 +420,9 @@ def calculate(
     remaining_to_recover = max(0.0, gross_investment - total_return)
 
     # ── Seasonal forecast ────────────────────────────────────────────────────
-    factors = _seasonal_factors(complete)
-    cv = _residual_cv(complete, monthly_avg_savings or 0.0, factors)
+    savings_pairs = [(r.month, _msav(r)) for r in complete]
+    factors = _seasonal_factors(savings_pairs)
+    cv = _residual_cv(savings_pairs, monthly_avg_savings or 0.0, factors)
 
     if monthly_avg_savings and monthly_avg_savings > 0:
         payback_date_seasonal = _walk_payback(remaining_to_recover, monthly_avg_savings, factors, today)

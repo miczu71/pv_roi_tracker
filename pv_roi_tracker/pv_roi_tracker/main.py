@@ -305,7 +305,7 @@ def main() -> None:
     _battery_lock = _threading.Lock()
     _battery_state: dict = {'summary': None}
 
-    def battery_job() -> None:
+    def battery_job(fetch_lts: bool = True) -> None:
         """Dociągnij godzinowe LTS (eksport/import), przelicz symulację, odśwież UI."""
         from datetime import datetime as _dtb, timedelta as _tdb, timezone as _tzb
         # Blokująco: zapis konfiguracji z UI musi doczekać się przeliczenia,
@@ -314,17 +314,18 @@ def main() -> None:
         try:
             cfg = battery_store.load_config(BATTERY_CONFIG_PATH)
             hours = battery_store.load_hours(BATTERY_HOURS_PATH)
-            # 48 h zakładki: LTS bieżących godzin bywa opóźnione/korygowane
-            if hours:
-                fetch_from = _dtb.strptime(max(hours), '%Y-%m-%dT%H') - _tdb(hours=48)
-            else:
-                fetch_from = _dtb.strptime(cfg.start_month + '-01T00', '%Y-%m-%dT%H')
-            start_iso = (fetch_from.astimezone().astimezone(_tzb.utc)
-                         .strftime('%Y-%m-%dT%H:%M:%S+00:00'))
-            new = live_reader.get_hourly_energy(start_iso)
-            if new:
-                hours.update(new)
-                battery_store.save_hours(hours, BATTERY_HOURS_PATH)
+            if fetch_lts:
+                # 48 h zakładki: LTS bieżących godzin bywa opóźnione/korygowane
+                if hours:
+                    fetch_from = _dtb.strptime(max(hours), '%Y-%m-%dT%H') - _tdb(hours=48)
+                else:
+                    fetch_from = _dtb.strptime(cfg.start_month + '-01T00', '%Y-%m-%dT%H')
+                start_iso = (fetch_from.astimezone().astimezone(_tzb.utc)
+                             .strftime('%Y-%m-%dT%H:%M:%S+00:00'))
+                new = live_reader.get_hourly_energy(start_iso)
+                if new:
+                    hours.update(new)
+                    battery_store.save_hours(hours, BATTERY_HOURS_PATH)
             if not hours:
                 _record_job('battery_sim', False, 'brak godzinowych statystyk liczników')
                 return
@@ -359,7 +360,9 @@ def main() -> None:
 
     def _battery_config_changed(cfg) -> None:
         battery_store.save_config(cfg, BATTERY_CONFIG_PATH)
-        battery_job()
+        # Zmiana parametrów nie zmienia zmierzonych godzin — licz z cache,
+        # bez rundy WebSocket do HA (fetch dołoży cron/boot).
+        battery_job(fetch_lts=False)
 
     _web.set_battery_config_path(BATTERY_CONFIG_PATH)
     _web.set_battery_config_callback(_battery_config_changed)

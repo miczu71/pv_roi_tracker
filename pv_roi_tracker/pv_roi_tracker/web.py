@@ -3715,8 +3715,7 @@ function renderBatteryTab(bs) {
     { lbl: 'Zwrot (P50)', val: s.payback_date ? s.payback_date.slice(0, 7) : '> 20 lat',
       sub: (s.payback_years != null ? '~' + fmt(s.payback_years, 1) + ' lat' : '')
         + (s.payback_date_p10 ? ' • P10 ' + s.payback_date_p10.slice(0, 7) : '')
-        + (s.payback_date_p90 ? ' • P90 ' + s.payback_date_p90.slice(0, 7) : ' • P90 > 20 lat'),
-      cls: s.payback_date ? '' : '' },
+        + (s.payback_date_p90 ? ' • P90 ' + s.payback_date_p90.slice(0, 7) : ' • P90 > 20 lat') },
     { lbl: 'NPV @4% (10 lat)', val: pln(s.npv), sub: 'horyzont gwarancji modułu',
       cls: (s.npv || 0) >= 0 ? 'c-green' : '' },
     s.irr_pct != null ? { lbl: 'IRR', val: pct(s.irr_pct),

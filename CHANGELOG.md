@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.30.1] — 2026-07-14
+
+### Changed
+
+Porządki po przeglądzie kodu 0.30.0 — bez zmian funkcjonalnych; wyniki symulacji
+bitowo identyczne (zweryfikowane testem parzystości starej i nowej wersji na
+37 miesiącach syntetycznych danych, oba tryby arbitrażu).
+
+- **Deduplikacja:**
+  - `_vat_factor` / `_MULTIPLIER_FROM` importowane z `rce_hourly` zamiast
+    trzeciej kopii reguły VAT ×1,23 od 2025-02,
+  - domyślne stawki G12w (1,23/0,63) z `tariff_analysis` zamiast czwartej kopii,
+  - współczynniki sezonowe i CV rezyduów współdzielone z `roi.py` — jedna
+    implementacja na parach `(miesiąc, oszczędność)`, kopie `_rows` usunięte
+    (poprawki modelu prognozy, jak fix P10/P90 z 0.29.0, obowiązują odtąd
+    automatycznie w obu miejscach),
+  - wspólny handshake WebSocket `live_reader._ws_statistics()` dla
+    `get_ha_tariff_stats` i `get_hourly_energy` (dotąd dwie rozbieżne kopie).
+- **Wydajność:** pełny przebieg symulacji ~3× szybszy (2,1 s → 0,7 s przy
+  27 tys. godzin) — parsowanie kluczy godzinowych wycinkami zamiast `strptime`,
+  jeden sort kluczy dla S1+S2; „Zapisz i przelicz" nie pobiera już LTS
+  z HA (zmiana parametrów nie zmienia zmierzonych godzin — liczy z cache,
+  dociąganie danych zostaje w cronie i przy starcie).
+- **Czystszy payload:** wiersze `s2_months` bez martwych pól S1
+  (strefy G12w, arbitraż, `rcem_estimated` — zawsze zerowe w S2); usunięty
+  martwy warunek `cls` w kartach KPI.
+
 ## [0.30.0] — 2026-07-09
 
 ### Added
