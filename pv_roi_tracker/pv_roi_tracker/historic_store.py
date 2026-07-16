@@ -224,16 +224,60 @@ def reconcile_invoice(
     return found
 
 
+def _invoice_kwh_diverged(inv: dict, m: dict) -> bool:
+    """Czy kWh z faktury różnią się od rekordu historic (utracona rekonsyliacja)."""
+    for inv_field, hist_field in (('exported_kwh', 'exported_kwh'),
+                                  ('imported_kwh', 'purchased_kwh')):
+        inv_v = inv.get(inv_field)
+        if inv_v is None:
+            continue
+        hist_v = m.get(hist_field)
+        if hist_v is None or abs(inv_v - hist_v) > 0.01:
+            return True
+    return False
+
+
 def reconcile_pending_invoices(
     invoice_path: Path,
     historic_path: Path = DEFAULT_PATH,
 ) -> int:
-    """Apply all stored-but-unreconciled invoices to historic.json at startup/month-close."""
+    """Apply stored invoices to historic.json at startup/month-close.
+
+    Rekonsyliuje dwie grupy:
+      • pending — reconciled=False (jak dotychczas),
+      • diverged — rozliczeniowe z reconciled=True, których kWh różnią się od
+        historic.json. Flaga bywa „stale": rekonsyliacja przeszła złym parsem
+        (np. nowy layout Taurona przed treningiem), poprawka trafiła tylko do
+        invoice store i historic nigdy się nie naprawił (przypadek 2026-03).
+        Faktura jest źródłem prawdy dla zamkniętych miesięcy — rozjazd kWh
+        nadpisuje też ręczne patche exported/purchased z /api/historic/patch.
+    """
     from . import invoice_store
     from .invoice_parser import InvoiceData
 
+    months_by_key = {(m.get('year'), m.get('month')): m
+                     for m in _load_document(historic_path).get('months', [])}
+
+    candidates: list[dict] = []
+    for key, rec in invoice_store.load(invoice_path).items():
+        if rec.get('needs_training', False):
+            continue
+        if not rec.get('reconciled', False):
+            candidates.append(rec)   # dotychczasowe pending()
+            continue
+        if key.startswith('unparsed-') or '~' in key:
+            continue                 # korekty/noty nie rekonsyliują historic
+        m = months_by_key.get((rec.get('year'), rec.get('month')))
+        if m is not None and _invoice_kwh_diverged(rec, m):
+            logger.warning(
+                'Invoice %s oznaczona reconciled, ale kWh rozjechane z historic '
+                '(eksport %s vs %s, import %s vs %s) — ponowna rekonsyliacja',
+                key, rec.get('exported_kwh'), m.get('exported_kwh'),
+                rec.get('imported_kwh'), m.get('purchased_kwh'))
+            candidates.append(rec)
+
     count = 0
-    for rec in invoice_store.pending(invoice_path):
+    for rec in candidates:
         try:
             fields = {k: rec.get(k) for k in InvoiceData.__dataclass_fields__}
             data = InvoiceData(**fields)  # type: ignore[arg-type]
@@ -241,10 +285,10 @@ def reconcile_pending_invoices(
                 invoice_store.mark_reconciled(f'{data.year}-{data.month:02d}', invoice_path)
                 count += 1
         except Exception:
-            logger.exception('Failed to auto-reconcile pending invoice %s-%s',
+            logger.exception('Failed to auto-reconcile invoice %s-%s',
                              rec.get('year'), rec.get('month'))
     if count:
-        logger.info('Auto-reconciled %d pending invoice(s)', count)
+        logger.info('Auto-reconciled %d invoice(s) (pending + diverged)', count)
     return count
 
 

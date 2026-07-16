@@ -171,3 +171,88 @@ def test_backfill_tariff_idempotent(store):
     historic_store.backfill_tariff(store)
     changed_again = historic_store.backfill_tariff(store)
     assert changed_again == 0
+
+
+# ── reconcile_pending_invoices: diverged re-reconciliation ─────────────────────────────────────────
+
+def _invoice(year=2026, month=3, imported=343.0, exported=307.0) -> 'InvoiceData':
+    from pv_roi_tracker.invoice_parser import InvoiceData
+    return InvoiceData(
+        year=year, month=month,
+        imported_kwh=imported, exported_kwh=exported,
+        imported_kwh_peak=None, imported_kwh_offpeak=None,
+        exported_kwh_peak=None, exported_kwh_offpeak=None,
+        energy_peak_net=None, energy_offpeak_net=None,
+        dist_var_peak_net=None, dist_var_offpeak_net=None,
+        dist_jakosciowa_net=None, dist_oze_net=None, dist_kogeneracja_net=None,
+        fixed_mocowa_net=None, fixed_abonament_net=None, fixed_stalysieciowy_net=None,
+    )
+
+
+@pytest.fixture
+def invoices(tmp_path) -> Path:
+    return tmp_path / 'invoices.json'
+
+
+def test_diverged_reconciled_invoice_is_reapplied(store, invoices):
+    """reconciled=True, ale historic ma inne kWh (utracona rekonsyliacja) → re-apply."""
+    from pv_roi_tracker import invoice_store
+    r = _rec(2026, 3, produced=643.98, exported=0.0)  # zepsuty rekord (przypadek 2026-03)
+    historic_store.save([r], store)
+    invoice_store.upsert(_invoice(), reconciled=True, path=invoices)
+
+    count = historic_store.reconcile_pending_invoices(invoices, store)
+
+    assert count == 1
+    loaded = historic_store.load(store)[0]
+    assert loaded.exported_kwh == pytest.approx(307.0)
+    assert loaded.purchased_kwh == pytest.approx(343.0)
+    assert loaded.feedin_revenue_pln == pytest.approx(307.0 * 0.40)  # rcem z _rec
+
+
+def test_matching_reconciled_invoice_is_left_alone(store, invoices):
+    from pv_roi_tracker import invoice_store
+    r = _rec(2026, 3, produced=643.98, exported=307.0)
+    r.purchased_kwh = 343.0
+    historic_store.save([r], store)
+    invoice_store.upsert(_invoice(), reconciled=True, path=invoices)
+
+    count = historic_store.reconcile_pending_invoices(invoices, store)
+
+    assert count == 0
+
+
+def test_diverged_check_ignores_none_invoice_kwh(store, invoices):
+    """Faktura bez kWh (None) nie jest traktowana jako rozjazd."""
+    from pv_roi_tracker import invoice_store
+    r = _rec(2026, 3, produced=643.98, exported=0.0)
+    historic_store.save([r], store)
+    invoice_store.upsert(_invoice(imported=None, exported=None), reconciled=True, path=invoices)
+
+    count = historic_store.reconcile_pending_invoices(invoices, store)
+
+    assert count == 0
+    assert historic_store.load(store)[0].exported_kwh == pytest.approx(0.0)
+
+
+def test_pending_invoice_still_reconciled(store, invoices):
+    """Dotychczasowa ścieżka pending (reconciled=False) działa bez zmian."""
+    from pv_roi_tracker import invoice_store
+    historic_store.save([_rec(2026, 3, produced=643.98, exported=0.0)], store)
+    invoice_store.upsert(_invoice(), reconciled=False, path=invoices)
+
+    count = historic_store.reconcile_pending_invoices(invoices, store)
+
+    assert count == 1
+    assert historic_store.load(store)[0].exported_kwh == pytest.approx(307.0)
+    assert invoice_store.get('2026-03', invoices)['reconciled'] is True
+
+
+def test_reconcile_pending_idempotent_after_fix(store, invoices):
+    """Po naprawie kolejne wywołanie nic nie zmienia (brak pętli zapisu przy każdym starcie)."""
+    from pv_roi_tracker import invoice_store
+    historic_store.save([_rec(2026, 3, produced=643.98, exported=0.0)], store)
+    invoice_store.upsert(_invoice(), reconciled=True, path=invoices)
+
+    assert historic_store.reconcile_pending_invoices(invoices, store) == 1
+    assert historic_store.reconcile_pending_invoices(invoices, store) == 0

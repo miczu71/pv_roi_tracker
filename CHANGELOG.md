@@ -2,7 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.30.1] — 2026-07-14
+## [0.30.2] — 2026-07-16
+
+### Fixed
+
+- **Rekonsyliacja faktur odporna na „stale" flagę `reconciled`** — przy starcie
+  i month-close `reconcile_pending_invoices()` porównuje teraz kWh
+  (eksport/import) każdej faktury rozliczeniowej z rekordem w `historic.json`
+  i ponownie rekonsyliuje miesiące, które się rozjechały — zamiast ufać
+  flagi `reconciled` ustawionej raz na zawsze. Domyka to incydent 2026-03:
+  rekonsyliacja przeszła złym parsem (pierwsza faktura w nowym layoucie
+  Taurona), poprawka po treningu trafiła tylko do invoice store, a historic
+  do czasu ręcznego reparse pokazywał eksport 0 kWh (wiersz „Falownik (model)
+  = 0 zł" w tabeli rekonsyliacji depozytu). Faktura jest źródłem prawdy dla
+  zamkniętych miesięcy — rozjazd nadpisuje też ręczne patche
+  exported/purchased z `/api/historic/patch`. Korekty, noty i stuby są
+  pomijane (jak dotąd nie rekonsyliują historic); operacja jest idempotentna
+  (po naprawie kolejny start niczego nie zapisuje). Bez nowych encji,
+  endpointów i zmian w UI.
 
 ### Changed
 
