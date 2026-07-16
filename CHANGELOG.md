@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.30.3] — 2026-07-16
+
+### Fixed
+
+- **Korekty i noty nie rekonsyliują już historic.json** — faktyczny root cause
+  incydentu 2026-03, odkryty przy weryfikacji 0.30.2: noty (i korekty) są
+  składowane z `reconciled=False` na stałe, więc pętla po
+  `invoice_store.pending()` przy KAŻDYM starcie/month-close rekonsyliowała je
+  jak faktury rozliczeniowe. Nota nie niesie kWh (eksport/import = 0), więc
+  nota K1NBN567872/025 dla 2026-03 zerowała eksport miesiąca po każdym
+  restarcie add-onu — dlatego majowa rekonsyliacja faktury ani ręczny reparse
+  nie były trwałe. Teraz `reconcile_pending_invoices()` pomija stuby, korekty
+  i noty w obu grupach (pending + diverged), a mechanizm diverged z 0.30.2
+  sam naprawia wyzerowany miesiąc przy najbliższym starcie. +2 testy
+  odtwarzające scenariusz incydentu.
+
 ## [0.30.2] — 2026-07-16
 
 ### Fixed

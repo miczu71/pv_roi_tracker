@@ -256,3 +256,43 @@ def test_reconcile_pending_idempotent_after_fix(store, invoices):
 
     assert historic_store.reconcile_pending_invoices(invoices, store) == 1
     assert historic_store.reconcile_pending_invoices(invoices, store) == 0
+
+
+def test_nota_never_reconciles_historic(store, invoices):
+    """Nota (reconciled=False na stałe, kWh=0) nie może zerować rekordu miesiąca."""
+    import dataclasses
+    from pv_roi_tracker import invoice_store
+    r = _rec(2026, 3, produced=643.98, exported=307.0)
+    r.purchased_kwh = 343.0
+    historic_store.save([r], store)
+    nota = dataclasses.replace(_invoice(imported=0.0, exported=0.0),
+                               doc_type='nota', invoice_number='K1NBN567872/025')
+    invoice_store.upsert(nota, reconciled=False, path=invoices)
+
+    count = historic_store.reconcile_pending_invoices(invoices, store)
+
+    assert count == 0
+    loaded = historic_store.load(store)[0]
+    assert loaded.exported_kwh == pytest.approx(307.0)
+    assert loaded.purchased_kwh == pytest.approx(343.0)
+
+
+def test_diverged_billing_heals_despite_pending_nota(store, invoices):
+    """Scenariusz incydentu 2026-03: rekord wyzerowany przez notę, billing reconciled=True.
+    Start ma naprawić rekord z faktury rozliczeniowej, a noty nie tknąć."""
+    import dataclasses
+    from pv_roi_tracker import invoice_store
+    historic_store.save([_rec(2026, 3, produced=643.98, exported=0.0)], store)
+    invoice_store.upsert(_invoice(), reconciled=True, path=invoices)
+    nota = dataclasses.replace(_invoice(imported=0.0, exported=0.0),
+                               doc_type='nota', invoice_number='K1NBN567872/025')
+    invoice_store.upsert(nota, reconciled=False, path=invoices)
+
+    count = historic_store.reconcile_pending_invoices(invoices, store)
+
+    assert count == 1
+    loaded = historic_store.load(store)[0]
+    assert loaded.exported_kwh == pytest.approx(307.0)
+    # i idempotentnie — nota nie wraca przy kolejnym starcie
+    assert historic_store.reconcile_pending_invoices(invoices, store) == 0
+    assert historic_store.load(store)[0].exported_kwh == pytest.approx(307.0)

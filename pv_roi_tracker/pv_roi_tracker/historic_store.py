@@ -243,14 +243,19 @@ def reconcile_pending_invoices(
 ) -> int:
     """Apply stored invoices to historic.json at startup/month-close.
 
-    Rekonsyliuje dwie grupy:
-      • pending — reconciled=False (jak dotychczas),
-      • diverged — rozliczeniowe z reconciled=True, których kWh różnią się od
-        historic.json. Flaga bywa „stale": rekonsyliacja przeszła złym parsem
-        (np. nowy layout Taurona przed treningiem), poprawka trafiła tylko do
-        invoice store i historic nigdy się nie naprawił (przypadek 2026-03).
+    Rekonsyliuje dwie grupy faktur ROZLICZENIOWYCH:
+      • pending — reconciled=False,
+      • diverged — reconciled=True, ale kWh różnią się od historic.json.
+        Flaga bywa „stale": rekonsyliacja przeszła złym parsem, poprawka
+        trafiła tylko do invoice store i historic nigdy się nie naprawił.
         Faktura jest źródłem prawdy dla zamkniętych miesięcy — rozjazd kWh
         nadpisuje też ręczne patche exported/purchased z /api/historic/patch.
+
+    Korekty, noty i stuby są pomijane w OBU grupach. Noty nie niosą kWh
+    (exported/imported = 0), a są składowane z reconciled=False na stałe —
+    dawna pętla po invoice_store.pending() rekonsyliowała je przy każdym
+    starcie i zerowała kWh miesiąca (incydent 2026-03: nota K1NBN567872/025
+    nadpisywała eksport 307 kWh zerem po każdym restarcie add-onu).
     """
     from . import invoice_store
     from .invoice_parser import InvoiceData
@@ -260,13 +265,13 @@ def reconcile_pending_invoices(
 
     candidates: list[dict] = []
     for key, rec in invoice_store.load(invoice_path).items():
-        if rec.get('needs_training', False):
-            continue
+        if (rec.get('needs_training', False)
+                or key.startswith('unparsed-') or '~' in key
+                or rec.get('doc_type', 'rozliczeniowa') != 'rozliczeniowa'):
+            continue   # stuby/korekty/noty nie rekonsyliują historic
         if not rec.get('reconciled', False):
-            candidates.append(rec)   # dotychczasowe pending()
+            candidates.append(rec)   # pending
             continue
-        if key.startswith('unparsed-') or '~' in key:
-            continue                 # korekty/noty nie rekonsyliują historic
         m = months_by_key.get((rec.get('year'), rec.get('month')))
         if m is not None and _invoice_kwh_diverged(rec, m):
             logger.warning(
