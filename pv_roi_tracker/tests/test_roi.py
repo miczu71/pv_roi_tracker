@@ -215,6 +215,49 @@ def test_degradation_yearly_complete_flag():
     assert yearly[2026]['complete'] is False
 
 
+def test_degradation_warranty_flag_uwaga_when_trend_exceeds_guarantee():
+    # Ten sam szereg co test_degradation_rolling_and_trend — trend ok. -11%/rok,
+    # znacznie szybciej niż typowa gwarancja producenta (domyślnie 0.5%/rok).
+    records = []
+    y, m = 2024, 7
+    for i in range(24):
+        records.append(_prod(y, m, 120.0 - i))
+        m += 1
+        if m > 12:
+            y, m = y + 1, 1
+    out = degradation_analysis(records, system_kwp=1.0, today=date(2026, 7, 15))
+    assert out['trend_pct_per_year'] < -0.5
+    assert out['warranty_flag'] == 'uwaga'
+
+
+def test_degradation_warranty_flag_ok_when_within_guarantee():
+    # Płaski szereg (brak trendu spadkowego) — mieści się w gwarancji.
+    records = [_prod(2024 + i // 12, (i % 12) + 1, 100.0) for i in range(24)]
+    out = degradation_analysis(records, system_kwp=1.0, today=date(2026, 7, 15))
+    assert out['warranty_flag'] == 'ok'
+
+
+def test_degradation_warranty_flag_ok_when_trend_none():
+    records = [_prod(2026, m, 100.0) for m in range(1, 6)]
+    out = degradation_analysis(records, system_kwp=1.0, today=date(2026, 6, 15))
+    assert out['trend_pct_per_year'] is None
+    assert out['warranty_flag'] == 'ok'
+
+
+def test_degradation_warranty_flag_respects_custom_threshold():
+    # Ten sam trend co wyżej (ok. -11%/rok), ale luźniejszy próg (15%/rok) — nadal ok.
+    records = []
+    y, m = 2024, 7
+    for i in range(24):
+        records.append(_prod(y, m, 120.0 - i))
+        m += 1
+        if m > 12:
+            y, m = y + 1, 1
+    out = degradation_analysis(records, system_kwp=1.0, today=date(2026, 7, 15),
+                                panel_degradation_pct_year=15.0)
+    assert out['warranty_flag'] == 'ok'
+
+
 # ── bill_comparison ───────────────────────────────────────────────────────────
 
 
@@ -408,3 +451,65 @@ def test_npv_irr_none_without_commissioning_date():
     r = calculate([])
     assert r.npv is None
     assert r.irr_pct is None
+
+
+# ── forecast_lifetime (v0.33.0 — panel prognozy wieloletniej) ────────────────
+
+def test_forecast_lifetime_empty_without_commissioning_date():
+    from pv_roi_tracker.roi import forecast_lifetime
+    out = forecast_lifetime([])
+    assert out['years'] == []
+    assert out['asset_lifetime_years'] == pytest.approx(25.0)
+
+
+def test_forecast_lifetime_spans_full_asset_lifetime():
+    """Horyzont lat kalendarzowych musi sięgać końca zakładanej żywotności,
+    licząc od roku uruchomienia (nie od dziś)."""
+    from pv_roi_tracker.roi import forecast_lifetime
+    today = date(2026, 7, 25)
+    records = _steady_history(46, today, savings=250.0, feedin=60.0)
+    out = forecast_lifetime(records, today=today, gross_investment=51_900.0, subsidy=28_714.0,
+                            asset_lifetime_years=25.0, panel_degradation_pct_year=0.5)
+    years = [row['calendar_year'] for row in out['years']]
+    commissioning_year = min(years)
+    assert max(years) - commissioning_year in (24, 25)   # 25-year horizon, ±1 for partial edge years
+
+
+def test_forecast_lifetime_bands_ordered_p10_before_p90():
+    """Ta sama reguła co payback P10/P50/P90: P10 (optymistyczne) >= P50 >= P90
+    (pesymistyczne) dla skumulowanego zwrotu w każdym roku prognozy."""
+    from pv_roi_tracker.roi import forecast_lifetime
+    today = date(2026, 7, 15)
+    records = []
+    for i in range(24):
+        y = 2024 + (i // 12)
+        m = (i % 12) + 1
+        sav = 400.0 + (i % 5) * 60.0   # variation → non-zero residual CV
+        records.append(month(y, m, savings=sav, feedin=80.0))
+    out = forecast_lifetime(records, today=today, gross_investment=60_000.0, subsidy=0.0,
+                            asset_lifetime_years=25.0, panel_degradation_pct_year=0.5)
+    assert len(out['years']) > 0
+    for row in out['years']:
+        assert row['cumulative_return_p10'] >= row['cumulative_return_p50'] >= row['cumulative_return_p90']
+
+
+def test_forecast_lifetime_cumulative_return_grows_monotonically():
+    from pv_roi_tracker.roi import forecast_lifetime
+    today = date(2026, 7, 25)
+    records = _steady_history(46, today, savings=250.0, feedin=60.0)
+    out = forecast_lifetime(records, today=today, gross_investment=51_900.0, subsidy=28_714.0,
+                            asset_lifetime_years=25.0, panel_degradation_pct_year=0.5)
+    p50 = [row['cumulative_return_p50'] for row in out['years']]
+    assert all(p50[i] <= p50[i + 1] for i in range(len(p50) - 1))
+
+
+def test_forecast_lifetime_roi_pct_matches_cumulative_return_over_gross():
+    from pv_roi_tracker.roi import forecast_lifetime
+    today = date(2026, 7, 25)
+    records = _steady_history(46, today, savings=250.0, feedin=60.0)
+    gross = 51_900.0
+    out = forecast_lifetime(records, today=today, gross_investment=gross, subsidy=28_714.0,
+                            asset_lifetime_years=25.0, panel_degradation_pct_year=0.5)
+    last = out['years'][-1]
+    assert last['cumulative_roi_pct_p50'] == pytest.approx(
+        last['cumulative_return_p50'] / gross * 100.0, abs=0.01)

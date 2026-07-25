@@ -9,6 +9,7 @@ from pv_roi_tracker.rce_hourly import (
     build_summary,
     compare_month,
     rows_to_hourly,
+    switch_advisor,
     update_and_compare,
 )
 
@@ -146,6 +147,33 @@ def test_build_summary_excludes_estimated_and_low_coverage():
     s = build_summary(rows)
     assert s['n_months'] == 1
     assert s['recommendation'] == 'BRAK DANYCH'
+
+
+# ── switch_advisor ────────────────────────────────────────────────────────────
+
+def test_switch_advisor_recommends_rce_when_combined_clearly_positive():
+    # sama różnica przychodu (5 zł/mies.) za mała, ale + efekt depozytu (72 zł/rok
+    # = 6 zł/mies.) daje łącznie 11 zł/mies. — przekracza próg +10
+    out = switch_advisor(revenue_avg_monthly=5.0, deposit_refund_delta_annual=72.0, n_months=6)
+    assert out['combined_avg_monthly_pln'] == pytest.approx(11.0)
+    assert out['recommendation'] == 'ROZWAŻ RCE'
+
+
+def test_switch_advisor_recommends_rcem_when_combined_clearly_negative():
+    out = switch_advisor(revenue_avg_monthly=-15.0, deposit_refund_delta_annual=0.0, n_months=6)
+    assert out['combined_avg_monthly_pln'] == pytest.approx(-15.0)
+    assert out['recommendation'] == 'ZOSTAŃ PRZY RCEm'
+
+
+def test_switch_advisor_neutral_within_thresholds():
+    out = switch_advisor(revenue_avg_monthly=3.0, deposit_refund_delta_annual=24.0, n_months=6)
+    assert out['combined_avg_monthly_pln'] == pytest.approx(5.0)
+    assert out['recommendation'] == 'NEUTRALNA'
+
+
+def test_switch_advisor_brak_danych_when_too_few_months():
+    out = switch_advisor(revenue_avg_monthly=50.0, deposit_refund_delta_annual=120.0, n_months=2)
+    assert out['recommendation'] == 'BRAK DANYCH'
 
 
 # ── update_and_compare (z wstrzykniętym fetchem statystyk, bez sieci) ────────

@@ -449,13 +449,22 @@ def main() -> None:
 
             # --- Depozyt prosumencki: ledger FIFO z przedawnieniem ---
             deposit_result = None
+            deposit_refund_delta_annual = None
             try:
                 from . import deposit as _deposit
+                _invoices_effective = invoice_store.effective_by_month(invoice_store.load(INVOICE_PATH))
                 deposit_result = _deposit.calculate(
                     all_records,
-                    invoice_store.effective_by_month(invoice_store.load(INVOICE_PATH)),
+                    _invoices_effective,
                     refund_cap=DEPOSIT_REFUND_PCT,
                 )
+                # Hipotetyczny efekt przejścia na RCE godzinową: wyższy limit zwrotu
+                # depozytu (30% zamiast 20%) — wejście dla doradcy RCEm→RCE.
+                deposit_result_rce = _deposit.calculate(
+                    all_records, _invoices_effective, refund_cap=0.30,
+                )
+                deposit_refund_delta_annual = round(
+                    deposit_result_rce.projected_refund_12m - deposit_result.projected_refund_12m, 2)
                 _record_job('deposit', True)
             except Exception:
                 logger.exception('Deposit ledger failed — continuing')
@@ -479,6 +488,21 @@ def main() -> None:
             _web.update_state(result, all_records, rcem_price, month_closed=month_closed,
                               rcem_scrape_status=scrape_status)
             _web.update_deposit(deposit_result)
+
+            # --- Prognoza wieloletnia (panel 25 lat) ---
+            try:
+                lifetime_forecast = roi.forecast_lifetime(
+                    all_records, today=_now,
+                    gross_investment=GROSS_INVESTMENT, subsidy=SUBSIDY,
+                    system_kwp=SYSTEM_KWP, discount_rate=DISCOUNT_RATE,
+                    asset_lifetime_years=ASSET_LIFETIME_YEARS,
+                    panel_degradation_pct_year=PANEL_DEGRADATION_PCT_YEAR,
+                )
+                _web.update_lifetime_forecast(lifetime_forecast)
+                _record_job('lifetime_forecast', True)
+            except Exception:
+                logger.exception('Lifetime forecast failed — continuing')
+                _record_job('lifetime_forecast', False, 'prognoza wieloletnia nie powiodła się')
 
             # --- Tariff comparison tab ---
             try:
@@ -526,6 +550,13 @@ def main() -> None:
                     rcem_scraper._load_history(RCEM_HISTORY_PATH),
                     cache_path=RCE_HOURLY_CACHE_PATH,
                 )
+                if deposit_refund_delta_annual is not None:
+                    summary = rce_payload['summary']
+                    rce_payload['advisor'] = rce_hourly.switch_advisor(
+                        summary['avg_monthly_diff_pln'],
+                        deposit_refund_delta_annual,
+                        summary['n_months'],
+                    )
                 _web.update_rce_comparison(rce_payload)
                 _record_job('rce_hourly', True)
             except Exception:

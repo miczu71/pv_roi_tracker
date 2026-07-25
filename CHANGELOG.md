@@ -2,6 +2,46 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.33.0] — 2026-07-25
+
+Etap 3 z przeglądu 0.31.0/0.32.0 — trzy funkcje "insight" oparte na module
+NPV/IRR i module RCE godzinowej dodanych wcześniej. Zero nowych sensorów
+MQTT — wszystkie trzy żyją wyłącznie w UI.
+
+### Added
+
+- **Alarm degradacji vs gwarancja producenta** — `degradation_analysis()`
+  liczy teraz `warranty_flag` ('uwaga'/'ok') porównując nachylenie trendu
+  kroczącego uzysku 12-mies. z `panel_degradation_pct_year` (ta sama opcja
+  co już używana do prognoz NPV/IRR od 0.31.0 — jedna wielkość fizyczna,
+  dwa zastosowania). Badge na wykresie degradacji (zakładka Wykresy)
+  ostrzega, gdy realny spadek wydajności jest szybszy niż zakładany w
+  gwarancji.
+- **Doradca RCEm→RCE z uwzględnieniem depozytu** — dotychczasowa
+  rekomendacja w zakładce RCE vs RCEm liczyła tylko różnicę przychodu ze
+  sprzedaży. Nowa druga karta (`rce_hourly.switch_advisor()`) dolicza roczny
+  efekt wyższego limitu zwrotu depozytu przy rozliczeniu godzinowym (30%
+  zamiast 20% — druga symulacja `deposit.calculate(refund_cap=0.30)` obok
+  istniejącej) i łączy oba efekty w jedną rekomendację, tymi samymi progami
+  ±10 PLN/mies. Osobna karta, nie podmienia poprzedniej — obie widoczne
+  równocześnie.
+- **Prognoza wieloletnia (zakładka "Prognoza 25 lat")** — skumulowany zwrot
+  rok po roku do końca zakładanej żywotności instalacji (domyślnie 25 lat),
+  z pasmem niepewności P10/P50/P90 (ten sam mechanizm statystyczny co
+  wachlarz spłaty). Nowa funkcja `roi.forecast_lifetime()` reużywa
+  wyodrębniony z `calculate()` helper `_build_lifetime_cashflows()` — ta
+  sama definicja miesięcznego przepływu co licząca NPV/IRR, więc zakładka i
+  sensory NPV/IRR nie mogą się rozjechać.
+
+### Changed
+
+- `roi.py`: logika budowy wektora przepływów pieniężnych na potrzeby NPV/IRR
+  wyodrębniona z `calculate()` do współdzielonego `_build_lifetime_cashflows()`
+  — czysty refaktor, identyczne wyniki NPV/IRR (zweryfikowane testami).
+
++13 testów (`test_roi.py` degradacja/prognoza, `test_rce_hourly.py`
+doradca). 406 zielonych łącznie.
+
 ## [0.32.0] — 2026-07-25
 
 Kontynuacja przeglądu z 0.31.0 (Etap 2 z zaakceptowanego backlogu): front

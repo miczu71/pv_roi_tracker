@@ -37,6 +37,7 @@
       <button class="tab-btn"        onclick="showTab('taryfa')">&#128209; Taryfa</button>
       <button class="tab-btn"        onclick="showTab('rce')">&#9889; RCE vs RCEm</button>
       <button class="tab-btn"        onclick="showTab('battery')">&#128267; Magazyn +5 kWh</button>
+      <button class="tab-btn"        onclick="showTab('forecast')">&#128200; Prognoza 25 lat</button>
     </div>
     <div class="tab-panel">
       <div id="tab-hist">
@@ -331,6 +332,7 @@
           &#9888;&#65039; Za mało rozliczonych miesięcy — rekomendacja będzie wiarygodna po 3 pełnych miesiącach z opublikowaną RCEm.
         </div>
         <div id="rceKpiCards" style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px"></div>
+        <div id="rceAdvisorCards" style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px"></div>
         <div class="chart-wrap" style="height:280px;margin-bottom:16px">
           <h3>Przychód ze sprzedaży nadwyżek: RCEm vs RCE godzinowa (zł/mies.)</h3>
           <canvas id="rceCmpChart"></canvas>
@@ -394,6 +396,14 @@
               <span id="batMsg"></span>
             </div>
           </div>
+        </div>
+      </div>
+      <!-- Prognoza 25 lat tab -->
+      <div id="tab-forecast" style="display:none;padding:12px">
+        <div id="forecastKpiCards" style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px"></div>
+        <div class="chart-wrap" style="height:340px">
+          <h3>Skumulowany zwrot — pasmo P10/P50/P90 do końca żywotności instalacji</h3>
+          <canvas id="forecastChart"></canvas>
         </div>
       </div>
       <!-- Faktury Tauron tab -->

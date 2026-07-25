@@ -126,6 +126,7 @@ _state: dict = {
     'rce_comparison': None,
     'deposit': None,
     'battery_sim': None,
+    'lifetime_forecast': None,
 }
 
 def update_state(result: RoiResult, records: list[MonthlyRecord],
@@ -163,6 +164,12 @@ def update_battery_sim(payload: Optional[dict]) -> None:
     """Store the battery expansion simulation payload (called from main.py)."""
     with _lock:
         _state['battery_sim'] = payload
+
+
+def update_lifetime_forecast(payload: Optional[dict]) -> None:
+    """Store the forecast_lifetime() payload (called from main.py poll loop)."""
+    with _lock:
+        _state['lifetime_forecast'] = payload
 
 
 def _build_predictions(result: RoiResult) -> list[dict]:
@@ -434,6 +441,7 @@ def api_data():
         'rce_comparison': _state.get('rce_comparison'),
         'deposit': deposit_payload,
         'battery_sim': _state.get('battery_sim'),
+        'lifetime_forecast': _state.get('lifetime_forecast'),
         'degradation': _build_degradation(records, today),
         'version': __version__,
     })
@@ -444,7 +452,9 @@ def _build_degradation(records, today):
     from .roi import degradation_analysis
     try:
         kwp = float(_os.environ.get('SYSTEM_KWP', '6.72'))
-        return degradation_analysis(records, system_kwp=kwp, today=today)
+        degradation_pct_year = float(_os.environ.get('PANEL_DEGRADATION_PCT_YEAR', '0.5'))
+        return degradation_analysis(records, system_kwp=kwp, today=today,
+                                     panel_degradation_pct_year=degradation_pct_year)
     except Exception:
         log.exception('degradation analysis failed')
         return None

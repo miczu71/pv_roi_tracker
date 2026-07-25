@@ -345,6 +345,47 @@ def build_summary(months_out: list) -> dict:
     }
 
 
+def switch_advisor(revenue_avg_monthly: float, deposit_refund_delta_annual: float,
+                    n_months: int) -> dict:
+    """Rekomendacja RCEm→RCE uwzględniająca ORAZ różnicę przychodu ORAZ efekt
+    wyższego limitu zwrotu depozytu (20%→30%), w jednej łącznej liczbie PLN/mies.
+
+    revenue_avg_monthly:          avg_monthly_diff_pln z build_summary() — sama
+                                   różnica przychodu ze sprzedaży (RCE − RCEm)
+    deposit_refund_delta_annual:  roczna różnica projected_refund_12m między
+                                   deposit.calculate(refund_cap=0.30) i (0.20)
+    n_months:                     liczba rozliczonych miesięcy (jak w build_summary)
+
+    Te same progi ±10 PLN/mies. co build_summary() — jedna rekomendacja, dwa
+    źródła; osobna karta w UI, nie podmienia rekomendacji opartej samej różnicy
+    przychodu.
+    """
+    combined_avg_monthly = round(revenue_avg_monthly + deposit_refund_delta_annual / 12, 2)
+
+    if n_months < 3:
+        recommendation = 'BRAK DANYCH'
+        reason = f'Za mało rozliczonych miesięcy ({n_months}) — potrzeba min. 3'
+    elif combined_avg_monthly > 10:
+        recommendation = 'ROZWAŻ RCE'
+        reason = (f'Z uwzględnieniem wyższego limitu zwrotu depozytu: średnio '
+                  f'+{combined_avg_monthly:.0f} PLN/mies.')
+    elif combined_avg_monthly < -10:
+        recommendation = 'ZOSTAŃ PRZY RCEm'
+        reason = (f'Nawet z wyższym limitem zwrotu depozytu RCEm korzystniejsza '
+                  f'średnio o {abs(combined_avg_monthly):.0f} PLN/mies.')
+    else:
+        recommendation = 'NEUTRALNA'
+        reason = f'Łącznie {combined_avg_monthly:.0f} PLN/mies. — zbyt mała różnica, by uzasadnić zmianę'
+
+    return {
+        'revenue_avg_monthly_pln': round(revenue_avg_monthly, 2),
+        'deposit_refund_delta_annual_pln': round(deposit_refund_delta_annual, 2),
+        'combined_avg_monthly_pln': combined_avg_monthly,
+        'recommendation': recommendation,
+        'recommendation_reason': reason,
+    }
+
+
 # ── Orkiestracja ──────────────────────────────────────────────────────────────
 
 def update_and_compare(

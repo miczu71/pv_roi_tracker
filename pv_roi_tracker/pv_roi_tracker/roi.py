@@ -231,6 +231,7 @@ def degradation_analysis(
     records: list[MonthlyRecord],
     system_kwp: float = SYSTEM_KWP,
     today: Optional[date] = None,
+    panel_degradation_pct_year: float = PANEL_DEGRADATION_PCT_YEAR,
 ) -> dict:
     """Znormalizowana analiza wydajności (kWh/kWp) do wykrywania degradacji/zabrudzenia.
 
@@ -240,6 +241,8 @@ def degradation_analysis(
       yoy_delta_pct:     produkcja r/r po sparowanych miesiącach (ost. 12 zamkn. mies.
                          vs te same miesiące rok wcześniej); None gdy <3 par
       trend_pct_per_year: nachylenie regresji liniowej serii kroczącej, %/rok; None gdy <6 punktów
+      warranty_flag:     'uwaga' gdy trend_pct_per_year < -panel_degradation_pct_year
+                         (spadek szybszy niż zakładana gwarancja producenta), else 'ok'
     """
     if today is None:
         today = date.today()
@@ -300,13 +303,61 @@ def degradation_analysis(
             slope_per_month = num / den
             trend_pct_per_year = round(slope_per_month * 12 / mean_y * 100.0, 2)
 
+    warranty_flag = ('uwaga' if trend_pct_per_year is not None
+                      and trend_pct_per_year < -panel_degradation_pct_year
+                      else 'ok')
+
     return {
         'yearly': yearly,
         'rolling': rolling,
         'yoy_delta_pct': yoy_delta_pct,
         'trend_pct_per_year': trend_pct_per_year,
         'pairs_used': pairs,
+        'warranty_flag': warranty_flag,
     }
+
+
+def _build_lifetime_cashflows(
+    complete: list[MonthlyRecord],
+    commissioning_date: date,
+    today: date,
+    monthly_avg_savings: Optional[float],
+    factors: dict[int, float],
+    gross_investment: float,
+    subsidy: float,
+    asset_lifetime_years: float,
+    panel_degradation_pct_year: float,
+    z: float = 0.0,
+    cv: float = 0.0,
+) -> list[float]:
+    """Miesięczny wektor przepływów: -net_inv w miesiącu uruchomienia, potem
+    rzeczywiste miesięczne oszczędności do dziś, potem prognoza do końca
+    zakładanej żywotności (asset_lifetime_years), z roczną degradacją
+    panel_degradation_pct_year nałożoną na sezonową średnią. Współdzielone
+    przez calculate() (NPV/IRR, z domyślnym z=0 — bez wariancji) i
+    forecast_lifetime() (panel wieloletni, z=±1.28 dla pasma P10/P90 — ten
+    sam mechanizm co _walk_payback) — ta sama definicja przepływu w obu
+    miejscach z konstrukcji, nie przez koordynację dwóch kopii. Wariancja
+    dotyczy wyłącznie miesięcy prognozowanych (przyszłość), nie historii.
+    """
+    net_inv = gross_investment - subsidy
+    hist_by_ym = {(r.year, r.month): _msav(r) for r in complete}
+    n_hist = (today.year - commissioning_date.year) * 12 + (today.month - commissioning_date.month)
+    cfs: list[float] = [-net_inv]
+    for i in range(1, n_hist + 1):
+        d = commissioning_date + relativedelta(months=i)
+        cfs.append(hist_by_ym.get((d.year, d.month), 0.0))
+
+    horizon_months = round(asset_lifetime_years * 12)
+    fwd_months_needed = max(0, horizon_months - n_hist)
+    fwd = today + relativedelta(months=1)
+    for i in range(1, fwd_months_needed + 1):
+        years_out = i / 12.0
+        degr = (1.0 - panel_degradation_pct_year / 100.0) ** years_out
+        m_sav = max((monthly_avg_savings or 0.0) * factors.get(fwd.month, 1.0) * degr * (1.0 + z * cv), 0.0)
+        cfs.append(m_sav)
+        fwd = fwd + relativedelta(months=1)
+    return cfs
 
 
 # ── NPV / IRR helpers ────────────────────────────────────────────────────────
@@ -506,24 +557,10 @@ def calculate(
         # full rated lifetime (not just until nominal payback — see the note
         # on ASSET_LIFETIME_YEARS above). Mirrors battery_sim.summarize().
         net_inv = gross_investment - subsidy
-        hist_by_ym = {(r.year, r.month): _msav(r) for r in complete}
-        n_hist = (today.year - commissioning_date.year) * 12 + (today.month - commissioning_date.month)
-        cfs: list[float] = [-net_inv]
-        for i in range(1, n_hist + 1):
-            d = commissioning_date + relativedelta(months=i)
-            cfs.append(hist_by_ym.get((d.year, d.month), 0.0))
-
-        # Forward months out to the rated lifetime, degrading the trailing-
-        # 12-month average savings rate year over year (panel output decay).
-        horizon_months = round(asset_lifetime_years * 12)
-        fwd_months_needed = max(0, horizon_months - n_hist)
-        fwd = today + relativedelta(months=1)
-        for i in range(1, fwd_months_needed + 1):
-            years_out = i / 12.0
-            degr = (1.0 - panel_degradation_pct_year / 100.0) ** years_out
-            m_sav = max((monthly_avg_savings or 0.0) * factors.get(fwd.month, 1.0) * degr, 0.0)
-            cfs.append(m_sav)
-            fwd = fwd + relativedelta(months=1)
+        cfs = _build_lifetime_cashflows(
+            complete, commissioning_date, today, monthly_avg_savings, factors,
+            gross_investment, subsidy, asset_lifetime_years, panel_degradation_pct_year,
+        )
 
         monthly_disc = discount_rate / 12.0
         npv_v = round(_npv(cfs, monthly_disc), 2)
@@ -577,3 +614,77 @@ def calculate(
         underperformance_pct=underperf_pct,
         underperformance_flag=underperf_flag,
     )
+
+
+# ── Prognoza wieloletnia (v0.33.0) ────────────────────────────────────────────
+
+def forecast_lifetime(
+    records: list[MonthlyRecord],
+    today: Optional[date] = None,
+    gross_investment: float = GROSS_INVESTMENT,
+    subsidy: float = SUBSIDY,
+    system_kwp: float = SYSTEM_KWP,
+    discount_rate: float = 0.04,
+    asset_lifetime_years: float = ASSET_LIFETIME_YEARS,
+    panel_degradation_pct_year: float = PANEL_DEGRADATION_PCT_YEAR,
+) -> dict:
+    """Prognoza skumulowanego zwrotu (subsidy + oszczędności — ta sama wielkość
+    co pole 'cumulative_return' na rekordach, patrz renderFanChart) rok po
+    roku do końca zakładanej żywotności instalacji, z pasmem niepewności
+    P10/P50/P90 (ten sam mechanizm z=±1.28×cv co _walk_payback / wachlarz
+    spłaty — P10 = optymistyczne/wyższe, P90 = pesymistyczne/niższe).
+
+    Zwraca: {'years': [{'calendar_year', 'cumulative_return_p10',
+    'cumulative_return_p50', 'cumulative_return_p90',
+    'cumulative_roi_pct_p50'}, ...], 'asset_lifetime_years': ...}
+    'years' pusta, gdy brak wyznaczonej daty uruchomienia (za mało danych).
+    """
+    if today is None:
+        today = date.today()
+
+    result = calculate(records, today=today, gross_investment=gross_investment,
+                       subsidy=subsidy, system_kwp=system_kwp,
+                       discount_rate=discount_rate,
+                       asset_lifetime_years=asset_lifetime_years,
+                       panel_degradation_pct_year=panel_degradation_pct_year)
+    if result.commissioning_date is None:
+        return {'years': [], 'asset_lifetime_years': asset_lifetime_years}
+
+    current_ym = (today.year, today.month)
+    complete = sorted([r for r in records if (r.year, r.month) != current_ym],
+                      key=lambda r: (r.year, r.month))
+
+    cv = result.residual_cv or 0.0
+    cum_by_variant = {}
+    for key, z in (('p10', 1.28), ('p50', 0.0), ('p90', -1.28)):
+        cfs = _build_lifetime_cashflows(
+            complete, result.commissioning_date, today, result.monthly_avg_savings,
+            result.seasonal_factors, gross_investment, subsidy,
+            asset_lifetime_years, panel_degradation_pct_year, z=z, cv=cv,
+        )
+        running = 0.0
+        cum = []
+        for cf in cfs:
+            running += cf
+            cum.append(running + gross_investment)
+        cum_by_variant[key] = cum
+
+    # Ostatni indeks miesiąca w każdym roku kalendarzowym — wartość na koniec roku.
+    last_idx_by_year: dict[int, int] = {}
+    for i in range(len(cum_by_variant['p50'])):
+        d = result.commissioning_date + relativedelta(months=i)
+        last_idx_by_year[d.year] = i
+
+    years_out = []
+    for y in sorted(last_idx_by_year):
+        i = last_idx_by_year[y]
+        p50 = round(cum_by_variant['p50'][i], 2)
+        years_out.append({
+            'calendar_year': y,
+            'cumulative_return_p10': round(cum_by_variant['p10'][i], 2),
+            'cumulative_return_p50': p50,
+            'cumulative_return_p90': round(cum_by_variant['p90'][i], 2),
+            'cumulative_roi_pct_p50': round(p50 / gross_investment * 100.0, 2) if gross_investment else None,
+        })
+
+    return {'years': years_out, 'asset_lifetime_years': asset_lifetime_years}

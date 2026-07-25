@@ -5,6 +5,7 @@ let _rceCmpChart = null;
 let _fanChart = null, _waterfallChart = null, _sankeyChart = null, _cpiRealChart = null, _degradChart = null;
 let _billChart = null, _co2Chart = null, _rateTrendChart = null;
 let _batMonthlyChart = null, _batCumChart = null, _batCfgLoaded = false;
+let _forecastChart = null;
 let _lastRecords = [], _lastInvoices = [], _lastRceMonths = [], _lastRateTrend = null, _lastSummary = null;
 
 /* -- Formatters -- */
@@ -43,7 +44,7 @@ document.addEventListener('click', function(e) {
 
 /* -- Tab switching -- */
 function showTab(name) {
-  const TABS = ['hist','pred','years','charts','invoices','tariff','taryfa','rce','battery'];
+  const TABS = ['hist','pred','years','charts','invoices','tariff','taryfa','rce','battery','forecast'];
   TABS.forEach(t => {
     document.getElementById('tab-' + t).style.display = (t === name) ? '' : 'none';
   });
@@ -61,6 +62,7 @@ function showTab(name) {
   if (name === 'invoices' && _depositChart) _depositChart.resize();
   if (name === 'invoices' && _costBreakdownChart) _costBreakdownChart.resize();
   if (name === 'invoices' && _rateTrendChart) _rateTrendChart.resize();
+  if (name === 'forecast' && _forecastChart) _forecastChart.resize();
   if (name === 'tariff') {
     [_tariffPriceChart, _tariffCompChart, _tariffCumChart,
      _tariffSeasonChart, _tariffHistChart].forEach(c => c && c.resize());
@@ -1078,6 +1080,25 @@ function renderRceTab(rc) {
       sub: fmt(s.neg_share_pct_total, 1, '%') + ' eksportu • reguła "ujemna → 0 zł" chroni ' + pln(s.neg_saved_pln_total, 2),
       cls: (s.neg_share_pct_total || 0) > 5 ? '' : 'c-green' } : null,
   ].filter(Boolean);
+
+  // v0.33.0: druga karta doradcy — z uwzględnieniem wyższego limitu zwrotu
+  // depozytu (30% RCE vs 20% RCEm). Osobna karta, nie podmienia rekomendacji
+  // powyżej opartej wyłącznie na różnicy przychodu.
+  const adv = rc.advisor;
+  const advCards = adv ? [
+    { lbl: 'Rekomendacja z uwzgl. depozytu', val: adv.recommendation || '—', sub: adv.recommendation_reason || '',
+      cls: adv.recommendation === 'ROZWAŻ RCE' ? 'c-green' : adv.recommendation === 'ZOSTAŃ PRZY RCEm' ? 'c-blue' : '' },
+    { lbl: 'Efekt depozytu (limit 30% vs 20%)', val: pln(adv.deposit_refund_delta_annual_pln, 2), sub: 'rocznie, dodatkowy zwrot przy RCE' },
+    { lbl: 'Łącznie / mies. (przychód + depozyt)', val: pln(adv.combined_avg_monthly_pln, 2), sub: 'różnica + 1/12 efektu depozytu',
+      cls: (adv.combined_avg_monthly_pln || 0) > 0 ? 'c-green' : '' },
+  ] : [];
+  document.getElementById('rceAdvisorCards').innerHTML = advCards.length ? advCards.map(c =>
+    '<div class="card ' + (c.cls || '') + '">' +
+      '<div class="lbl">' + c.lbl + '</div>' +
+      '<div class="val">' + c.val + '</div>' +
+      (c.sub ? '<div class="sub">' + c.sub + '</div>' : '') +
+    '</div>'
+  ).join('') : '';
   document.getElementById('rceKpiCards').innerHTML = cards.map(c =>
     '<div class="card ' + (c.cls || '') + '">' +
       '<div class="lbl">' + c.lbl + '</div>' +
@@ -1214,6 +1235,65 @@ function renderCpiRealChart(records) {
   });
 }
 
+/* v0.33.0: Prognoza wieloletnia — skumulowany zwrot P10/P50/P90 do końca żywotności */
+function renderForecastTab(lf, summary) {
+  const ctx = document.getElementById('forecastChart');
+  if (!ctx) return;
+  const cards = document.getElementById('forecastKpiCards');
+  const years = (lf && lf.years) || [];
+  if (!years.length) {
+    if (cards) cards.innerHTML = '<div class="card"><div class="lbl">Prognoza wieloletnia</div><div class="val">—</div>' +
+      '<div class="sub">za mało danych — brak ustalonej daty uruchomienia</div></div>';
+    if (_forecastChart) { _forecastChart.destroy(); _forecastChart = null; }
+    return;
+  }
+  const last = years[years.length - 1];
+  if (cards) {
+    const kpis = [
+      { lbl: 'Horyzont prognozy', val: (lf.asset_lifetime_years || years.length) + ' lat', sub: years[0].calendar_year + '–' + last.calendar_year },
+      { lbl: 'Zwrot skumulowany P50 (koniec horyzontu)', val: pln(last.cumulative_return_p50), sub: 'ROI ' + pct(last.cumulative_roi_pct_p50), cls: 'c-green' },
+      { lbl: 'Pasmo niepewności (koniec horyzontu)', val: pln(last.cumulative_return_p10) + ' – ' + pln(last.cumulative_return_p90), sub: 'P10 (optymistyczne) – P90 (pesymistyczne)' },
+    ];
+    cards.innerHTML = kpis.map(c =>
+      '<div class="card ' + (c.cls || '') + '">' +
+        '<div class="lbl">' + c.lbl + '</div>' +
+        '<div class="val">' + c.val + '</div>' +
+        (c.sub ? '<div class="sub">' + c.sub + '</div>' : '') +
+      '</div>'
+    ).join('');
+  }
+
+  const labels = years.map(y => String(y.calendar_year));
+  const gross = summary && summary.gross_investment;
+  const netInvestment = summary && summary.net_investment;
+  const datasets = [
+    { label: 'P50 (sezonowa)', data: years.map(y => y.cumulative_return_p50), borderColor: '#2563eb', borderDash: [6,4], fill: false, tension: .3, pointRadius: 0 },
+    { label: 'P10 (optymistyczne)', data: years.map(y => y.cumulative_return_p10), borderColor: 'rgba(22,163,74,.45)', backgroundColor: 'rgba(37,99,235,.12)', fill: '+1', tension: .3, pointRadius: 0, borderWidth: 1 },
+    { label: 'P90 (pesymistyczne)', data: years.map(y => y.cumulative_return_p90), borderColor: 'rgba(220,38,38,.45)', fill: false, tension: .3, pointRadius: 0, borderWidth: 1 },
+    { label: 'Inwestycja brutto', data: labels.map(() => gross), borderColor: '#dc2626', borderDash: [4,4], fill: false, pointRadius: 0 },
+  ];
+  if (netInvestment != null)
+    datasets.push({ label: 'Inwestycja netto', data: labels.map(() => netInvestment), borderColor: '#16a34a', borderDash: [4,4], fill: false, pointRadius: 0 });
+
+  if (_forecastChart) _forecastChart.destroy();
+  _forecastChart = new Chart(ctx, {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { position: 'top', labels: { boxWidth: 12, font: { size: 11 } } },
+        tooltip: { callbacks: { label: c => c.raw == null ? null : c.dataset.label + ': ' + Number(c.raw).toLocaleString('pl-PL', {maximumFractionDigits: 0}) + ' zl' } },
+      },
+      scales: {
+        x: { ticks: { maxTicksLimit: 20, font: { size: 10 }, maxRotation: 45 } },
+        y: { ticks: { callback: v => (v/1000).toFixed(0) + 'k zl', font: { size: 10 } } },
+      },
+    },
+  });
+}
+
 /* Degradacja: kroczący uzysk 12-mies. */
 function renderDegradChart(deg) {
   const ctx = document.getElementById('degradChart');
@@ -1228,7 +1308,12 @@ function renderDegradChart(deg) {
     const parts = [];
     if (deg.trend_pct_per_year != null) parts.push('trend ' + fmt(deg.trend_pct_per_year, 1, '%/rok'));
     if (deg.yoy_delta_pct != null) parts.push('r/r ' + fmt(deg.yoy_delta_pct, 1, '%'));
-    badge.textContent = parts.length ? '(' + parts.join(' • ') + ')' : '';
+    let html = parts.length ? '(' + parts.join(' • ') + ')' : '';
+    if (deg.warranty_flag === 'uwaga') {
+      const tip = 'Spadek wydajności szybszy niż zakładana gwarancja producenta';
+      html += ' <span class="badge badge-uwaga" title="' + tip + '" style="cursor:help">⚠ szybciej niż zakładana gwarancja</span>';
+    }
+    badge.innerHTML = html;
   }
   if (_degradChart) _degradChart.destroy();
   _degradChart = new Chart(ctx, {
@@ -1753,6 +1838,7 @@ async function loadData() {
     if (d.tariff_comparison) renderTariffTab(d.tariff_comparison);
     if (d.rce_comparison) renderRceTab(d.rce_comparison);
     renderBatteryTab(d.battery_sim);
+    renderForecastTab(d.lifetime_forecast, d.summary);
     // v0.17.0
     _lastRecords = d.records || [];
     _lastInvoices = d.invoices || [];
@@ -2525,7 +2611,7 @@ const _DOCS_HTML = `
 <li><strong>Waterfall miesięczny</strong> — składniki oszczędności: autokonsumpcja, odsprzedaż, arbitraż bateryjny</li>
 <li><strong>Sankey przepływu energii</strong> — bilans produkcja / eksport / autokonsumpcja / zakup z sieci</li>
 <li><strong>Oszczędności nominalne vs realne CPI</strong> — wpływ inflacji na realną wartość oszczędności</li>
-<li><strong>Trend degradacji kWh/kWp</strong> — specyficzny uzysk miesięczny z linią trendu</li>
+<li><strong>Trend degradacji kWh/kWp</strong> — specyficzny uzysk miesięczny z linią trendu; badge ostrzega, gdy trend spadkowy jest szybszy niż zakładana gwarancja producenta (<code>panel_degradation_pct_year</code>)</li>
 <li><strong>Ranking produkcji miesięcznej</strong> — kolorowane per rok, medale top 3</li>
 </ul>
 <h3>📈 Analiza taryf</h3>
@@ -2534,6 +2620,9 @@ const _DOCS_HTML = `
 <p>Ręczne wpisy stawek z datą obowiązywania — wypełniają lukę ogłoszenia taryfy: nowe stawki Tauron wchodzą 1 stycznia, ale faktura potwierdzająca nadchodzi dopiero w lutym. Ręczny override automatycznie ustępuje po wgraniu faktury za dany miesiąc.<br><strong>Priorytet:</strong> baseline (seed) &lt; faktura &lt; override (aktywny tylko gdy data wpisu jest nowsza niż najnowsza faktura).</p>
 <h3>⚡ RCE vs RCEm</h3>
 <p>Symulacja przychodów z odsprzedaży przy rozliczeniu godzinowym RCE zamiast miesięcznego RCEm: godzinowa energia eksportowana × ceny 15-min RCE z PSE. Ceny ujemne zastępowane przez 0 zł (art. 4b ustawy o OZE). Heatmapa 24h×miesiąc: kiedy eksportujesz vs kiedy ceny są wysokie lub ujemne. Rekomendacja ROZWAŻ RCE / ZOSTAŃ PRZY RCEm / NEUTRALNA po ≥3 rozliczonych miesiącach.</p>
+<p><strong>Druga karta — rekomendacja z uwzględnieniem depozytu:</strong> przejście na RCE godzinową podnosi też limit zwrotu depozytu (30% zamiast 20%). Druga karta łączy różnicę przychodu z rocznym efektem tego wyższego limitu (<code>deposit.calculate(refund_cap=0.30)</code> vs <code>0.20</code>) w jedną liczbę PLN/mies. — te same progi ±10 PLN co rekomendacja podstawowa, ale osobno, bo opiera się na dodatkowym założeniu (przyszłe zwroty depozytu).</p>
+<h3>📈 Prognoza 25 lat</h3>
+<p>Skumulowany zwrot (subsydium + oszczędności) rok po roku do końca zakładanej żywotności instalacji (<code>asset_lifetime_years</code>, domyślnie 25 lat), z pasmem niepewności P10/P50/P90 — ten sam mechanizm co wachlarz spłaty w zakładce Prognoza spłaty. Degradacja paneli (<code>panel_degradation_pct_year</code>) obniża prognozowaną przyszłą produkcję rok po roku. Historia (lata już przeszłe) to rzeczywiste dane, nie prognoza — pasmo niepewności dotyczy wyłącznie przyszłości.</p>
 
 <h2>Faktury</h2>
 <h3>Upload i trwałe przechowywanie PDF</h3>
