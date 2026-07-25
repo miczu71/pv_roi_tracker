@@ -2,6 +2,49 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.32.0] — 2026-07-25
+
+Kontynuacja przeglądu z 0.31.0 (Etap 2 z zaakceptowanego backlogu): front
+offline-first, zero zmian funkcjonalnych — wyłącznie JAK pliki są serwowane.
+
+### Changed
+
+- **Cały dashboard wydzielony z `web.py` do osobnych plików statycznych** —
+  dotąd ~4060-liniowy string `_HTML` (bez podświetlania składni, bez
+  lintowania, bez testów JS) zastąpiony przez `static/index.html`,
+  `static/app.js`, `static/app.css` — czytane raz przy starcie, serwowane
+  jawnymi route'ami (`/app.js`, `/app.css`, `/vendor/<plik>`) zamiast
+  Flaskowego folderu `static/` (który emitowałby ścieżki bezwzględne
+  `/static/...` — pod dynamicznym prefiksem ingress HA to 404). Ekstrakcja
+  zrobiona skryptem (nie ręcznie) i zweryfikowana bajt-w-bajt identycznie ze
+  starą treścią. `web.py`: 5511 → 1497 linii.
+- **Chart.js i chartjs-chart-sankey zwendorowane lokalnie** — dotąd ładowane
+  z `cdn.jsdelivr.net` bez fallbacku; awaria WAN/DNS dawała pusty dashboard.
+  Te same przypięte wersje (4.4.3 / 0.12.1), teraz w
+  `static/vendor/` i serwowane z tego samego hosta co reszta add-onu —
+  dashboard działa offline.
+- **Nagłówki cache zgodnie z konwencją CLAUDE.md** — `Cache-Control: no-store`
+  na `/` i `/api/*` (mobilny WebView Companiona cache'uje agresywnie i nigdy
+  nie rewaliduje — bez tego stary dashboard zostaje w cache po force-close);
+  `public, max-age=31536000, immutable` na statyki wersjonowane `?v=<wersja>`
+  (bump wersji = nowy URL, bezpieczne do cache'owania na zawsze). Badge
+  wersji w UI istniał już wcześniej — teraz konwencja domknięta w całości.
+- **Serwer produkcyjny: Flask dev server → `waitress`** (pinned
+  `waitress==3.0.2`) — dev server jawnie ostrzegał w logu, że nie nadaje się
+  do produkcji; podmiana jednej funkcji (`start_server()`), bez zmian API.
+
+### Fixed
+
+- **Podwójny `charset=utf-8` w nagłówku `Content-Type`** dla `/` i teraz
+  też `/app.css` — Werkzeug dokleja własny `; charset=utf-8` do typów
+  `text/*` bezwarunkowo, nawet gdy jeden już jest w przekazanym mimetype;
+  przeglądarki to tolerowały, ale nagłówek był nieprawidłowy. Naprawione
+  przez przekazywanie samego typu bez jawnego charsetu.
+
++10 testów (`test_web_static.py`) — nagłówki cache, brak `{{VERSION}}` w
+serwowanym HTML, brak ścieżek bezwzględnych (regression guard na ingress),
+brak zdublowanego charsetu. 393 zielonych łącznie.
+
 ## [0.31.0] — 2026-07-25
 
 Pełny przegląd kodu produkcyjnego (361 testów → wynik: kilka konkretnych

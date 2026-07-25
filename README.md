@@ -226,7 +226,7 @@ pip install -r requirements.txt pytest
 python -m pytest -q
 ```
 
-383 tests covering the CSV parser, ROI engine (incl. the v0.31.0 NPV/IRR-horizon regression), historic store (incl. crash-window safe-write regression), concatenator, invoice parser/layouts/store, RCE-hourly comparison, timezone-fix regression, and main.py's missed-month-close catch-up logic.
+393 tests covering the CSV parser, ROI engine (incl. the v0.31.0 NPV/IRR-horizon regression), historic store (incl. crash-window safe-write regression), concatenator, invoice parser/layouts/store, RCE-hourly comparison, timezone-fix regression, main.py's missed-month-close catch-up logic, and (v0.32.0) the static-asset routes/cache headers.
 
 ### CLI tools
 

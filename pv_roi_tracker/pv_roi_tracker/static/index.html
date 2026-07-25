@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PV ROI Tracker</title>
+<link rel="stylesheet" href="app.css?v={{VERSION}}">
+</head>
+<body>
+<header>
+  <h1>&#9728;&#65039; PV ROI Tracker <span id="appVer" style="font-size:12px;font-weight:400;opacity:.65;vertical-align:middle"></span></h1>
+  <a href="api/export/csv" class="csv-btn" download>&#8595; Eksportuj CSV</a>
+  <a href="#" class="csv-btn" onclick="openDocsModal();return false;">&#128214; Dokumentacja</a>
+  <span id="updated">Ladowanie&hellip;</span>
+</header>
+<main>
+  <div id="loading" class="loading">Pobieranie danych&hellip;</div>
+  <div id="content" style="display:none">
+    <div class="cards" id="cards"></div>
+    <div class="charts">
+      <div class="chart-wrap">
+        <h3>Wachlarz spłaty — skumulowany zwrot z pasmem niepewności (P10–P90)</h3>
+        <canvas id="fanChart"></canvas>
+      </div>
+      <div class="chart-wrap">
+        <h3>Miesieczne oszczednosci (ostatnie 24 mies.)</h3>
+        <canvas id="barChart"></canvas>
+      </div>
+    </div>
+    <div class="tabs">
+      <button class="tab-btn active" onclick="showTab('hist')">Historia miesieczna</button>
+      <button class="tab-btn"        onclick="showTab('pred')">Prognoza splaty</button>
+      <button class="tab-btn"        onclick="showTab('years')">Podsumowanie roczne</button>
+      <button class="tab-btn"        onclick="showTab('charts')">Wykresy</button>
+      <button class="tab-btn"        onclick="showTab('invoices')">&#128196; Faktury</button>
+      <button class="tab-btn"        onclick="showTab('tariff')">&#128200; Analiza taryf</button>
+      <button class="tab-btn"        onclick="showTab('taryfa')">&#128209; Taryfa</button>
+      <button class="tab-btn"        onclick="showTab('rce')">&#9889; RCE vs RCEm</button>
+      <button class="tab-btn"        onclick="showTab('battery')">&#128267; Magazyn +5 kWh</button>
+    </div>
+    <div class="tab-panel">
+      <div id="tab-hist">
+        <div class="tbl-wrap"><table id="histTbl"></table></div>
+        <div class="tbl-foot" id="histFoot"></div>
+      </div>
+      <div id="tab-pred" style="display:none">
+        <div class="tbl-wrap"><table id="predTbl"></table></div>
+        <div class="tbl-foot" id="predFoot"></div>
+        <div class="sensi-wrap" id="sensiWrap">
+          <div class="tbl-wrap"><table id="sensiTbl"></table></div>
+        </div>
+      </div>
+      <div id="tab-years" style="display:none">
+        <div class="tbl-wrap"><table id="yearsTbl"></table></div>
+        <div class="tbl-foot" id="yearsFoot"></div>
+      </div>
+      <div id="tab-charts" style="display:none">
+        <div style="padding:12px">
+          <div class="charts" style="margin-bottom:12px">
+            <div class="chart-wrap">
+              <h3>Historia ceny RCEm (zl/kWh)</h3>
+              <canvas id="rcemChart"></canvas>
+            </div>
+            <div class="chart-wrap">
+              <h3>Autarkia miesięczna (%)</h3>
+              <canvas id="autarkiaChart"></canvas>
+            </div>
+          </div>
+          <div class="charts" style="margin-bottom:12px">
+            <div class="chart-wrap">
+              <h3>Arbitraż baterii (zl/mies.)</h3>
+              <canvas id="arbitrageChart"></canvas>
+            </div>
+            <div class="chart-wrap">
+              <h3>Koszt netto sieci (zl/mies.)</h3>
+              <canvas id="netCostChart"></canvas>
+            </div>
+          </div>
+          <div class="charts" style="margin-bottom:12px">
+            <div class="chart-wrap">
+              <h3>Spread cen: zakup vs sprzedaz (zl/kWh)</h3>
+              <canvas id="priceSpreadChart"></canvas>
+            </div>
+            <div class="chart-wrap">
+              <h3>Uzysk specyficzny (kWh/kWp)</h3>
+              <canvas id="yieldChart"></canvas>
+            </div>
+          </div>
+          <div class="charts2" style="margin-bottom:12px">
+            <div class="chart-wrap">
+              <h3>Bilans energetyczny: produkcja vs zuzycie (kWh)</h3>
+              <canvas id="energyBalChart"></canvas>
+            </div>
+          </div>
+          <div class="charts2" style="margin-bottom:12px">
+            <div class="chart-wrap">
+              <h3>Produkcja i zakup z sieci — szczyt vs poza szczytem (kWh)</h3>
+              <canvas id="prodChart"></canvas>
+            </div>
+          </div>
+          <div class="charts2">
+            <div class="chart-wrap" style="height:320px">
+              <h3>Porownanie roczne produkcji (kWh)</h3>
+              <canvas id="yearCompChart"></canvas>
+            </div>
+          </div>
+          <div class="charts" style="margin-bottom:12px">
+            <div class="chart-wrap">
+              <h3>Oszczędności skumulowane: nominalne vs realne (CPI, dzisiejsze zł)</h3>
+              <canvas id="cpiRealChart"></canvas>
+            </div>
+            <div class="chart-wrap">
+              <h3>Uzysk kroczący 12 mies. (kWh/kWp) — trend degradacji <span id="degradBadge" style="font-size:11px;font-weight:400;color:var(--muted)"></span></h3>
+              <canvas id="degradChart"></canvas>
+            </div>
+          </div>
+          <div class="charts" style="margin-bottom:12px">
+            <div class="chart-wrap">
+              <h3>Dekompozycja miesiąca (waterfall)
+                <select id="waterfallMonth" onchange="redrawWaterfall()" style="font-size:11px;margin-left:8px"></select>
+              </h3>
+              <canvas id="waterfallChart"></canvas>
+            </div>
+            <div class="chart-wrap">
+              <h3>Przepływ energii (Sankey)
+                <select id="sankeyYear" onchange="redrawSankey()" style="font-size:11px;margin-left:8px"></select>
+              </h3>
+              <canvas id="sankeyChart"></canvas>
+            </div>
+          </div>
+          <div class="charts2">
+            <div class="chart-wrap" id="prodRankWrap">
+              <h3>Produkcja miesięczna — ranking (najlepsza → najgorsza)</h3>
+              <canvas id="prodRankChart"></canvas>
+            </div>
+          </div>
+          <div class="charts2" style="margin-bottom:12px">
+            <div class="chart-wrap">
+              <h3>Rachunek bez PV vs z PV (zł)</h3>
+              <canvas id="billChart"></canvas>
+            </div>
+          </div>
+          <div class="charts2">
+            <div class="chart-wrap">
+              <h3>Unikni&#281;te emisje CO&#8322; — skumulowane (kg)</h3>
+              <canvas id="co2Chart"></canvas>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- Analiza taryf tab -->
+      <div id="tab-tariff" style="display:none;padding:12px">
+        <div id="tariffWarning" style="display:none;margin-bottom:12px;padding:10px 14px;background:#fff3cd;border-left:4px solid #f0ad4e;border-radius:4px;font-size:13px">
+          &#9888;&#65039; Za mało danych — prognoza i wykres historyczny będą dostępne po 3 pełnych miesiącach.
+        </div>
+        <!-- SEKCJA 1: TERAZ -->
+        <h3 style="margin:0 0 8px;font-size:14px;font-weight:700;color:#555">&#9889; TERAZ</h3>
+        <div id="tariffStatusBar" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px"></div>
+        <div style="margin-bottom:16px">
+          <div class="chart-wrap" style="height:320px">
+            <h3>Cena 1 kWh — ostatnie 7 dni</h3>
+            <canvas id="tariffPriceChart"></canvas>
+          </div>
+        </div>
+        <!-- SEKCJA 2: TEN MIESIĄC I HISTORIA -->
+        <h3 style="margin:0 0 8px;font-size:14px;font-weight:700;color:#555">&#128197; TEN MIESIĄC I HISTORIA</h3>
+        <div id="tariffKpiCards" style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px"></div>
+        <div class="chart-wrap" style="height:260px;margin-bottom:16px">
+          <h3>Koszt miesięczny G12w vs Dynamiczna</h3>
+          <canvas id="tariffCompChart"></canvas>
+        </div>
+        <div class="grid2" style="margin-bottom:16px">
+          <div class="chart-wrap" style="height:220px">
+            <h3>Skumulowane oszczędności (PLN)</h3>
+            <canvas id="tariffCumChart"></canvas>
+          </div>
+          <div class="chart-wrap" style="height:220px">
+            <h3>Sezonowość (lato vs zima)</h3>
+            <canvas id="tariffSeasonChart"></canvas>
+          </div>
+        </div>
+        <div class="grid2" style="margin-bottom:16px">
+          <div class="chart-wrap" style="height:200px">
+            <h3>Rozkład różnic miesięcznych (PLN)</h3>
+            <canvas id="tariffHistChart"></canvas>
+          </div>
+          <div id="tariffPredSection" style="padding:12px;background:#f9f9f9;border-radius:6px">
+            <h4 style="margin:0 0 8px;font-size:13px;font-weight:600">Prognoza roczna</h4>
+            <div id="tariffPredCards" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px"></div>
+            <h4 style="margin:8px 0 6px;font-size:12px;font-weight:600;color:#666">Wrażliwość na zmianę stawki G12w</h4>
+            <table id="tariffSensiTbl" style="width:100%;font-size:12px;border-collapse:collapse"></table>
+          </div>
+        </div>
+        <!-- Monthly table -->
+        <details style="margin-bottom:14px">
+          <summary style="cursor:pointer;font-weight:600;font-size:13px;padding:6px 0">&#128203; Dane miesiąc po miesiącu <button onclick="window.location='api/export/tariff_csv'" style="font-size:11px;padding:2px 8px;margin-left:10px;cursor:pointer">&#128229; Eksportuj CSV</button></summary>
+          <div class="tbl-wrap" style="margin-top:8px"><table id="tariffMonthTbl" style="width:100%;font-size:12px"></table></div>
+        </details>
+        <!-- Explanation -->
+        <details style="margin-bottom:8px">
+          <summary style="cursor:pointer;font-weight:600;font-size:13px;padding:6px 0">&#8505;&#65039; Kontekst prosumenta i metodologia</summary>
+          <div id="tariffContextText" style="font-size:12px;line-height:1.6;padding:10px;background:#f5f5f5;border-radius:4px;margin-top:6px"></div>
+        </details>
+
+        <!-- SEKCJA 3: INTERAKTYWNA ANALIZA ZAKRESU -->
+        <h3 style="margin:16px 0 8px;font-size:14px;font-weight:700;color:#555">&#128202; ANALIZA WYBRANEGO ZAKRESU</h3>
+        <div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px;padding:10px;background:#f8f8f8;border-radius:6px;font-size:13px">
+          <label style="font-weight:600">Od:</label>
+          <input type="date" id="tariffFrom" style="padding:3px 6px;font-size:13px;border:1px solid #ccc;border-radius:4px">
+          <label style="font-weight:600">Do:</label>
+          <input type="date" id="tariffTo" style="padding:3px 6px;font-size:13px;border:1px solid #ccc;border-radius:4px">
+          <span style="color:#aaa">|</span>
+          <label><input type="radio" name="tariffPeriod" value="day" checked onchange="fetchTariffRange()"> Dzień</label>
+          <label><input type="radio" name="tariffPeriod" value="month" onchange="fetchTariffRange()"> Miesiąc</label>
+          <button onclick="fetchTariffRange()" style="padding:4px 14px;cursor:pointer;background:#2980b9;color:#fff;border:none;border-radius:4px;font-size:13px">&#128260; Odśwież</button>
+          <span id="tariffRangeStatus" style="color:#888;font-size:12px"></span>
+        </div>
+        <!-- Range KPI pills -->
+        <div id="tariffRangeKpis" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px"></div>
+        <!-- Interactive chart -->
+        <div class="chart-wrap" style="height:280px;margin-bottom:8px">
+          <canvas id="tariffRangeChart"></canvas>
+        </div>
+        <!-- Series toggles -->
+        <div style="font-size:12px;color:#555;margin-bottom:16px;display:flex;gap:14px;flex-wrap:wrap">
+          <strong>Serie:</strong>
+          <label><input type="checkbox" id="chkRangeG12w" checked onchange="redrawRangeChart()"> G12w PLN</label>
+          <label><input type="checkbox" id="chkRangeDyn" checked onchange="redrawRangeChart()"> Dynamiczna PLN</label>
+          <label><input type="checkbox" id="chkRangeDiff" checked onchange="redrawRangeChart()"> Różnica PLN</label>
+          <label><input type="checkbox" id="chkRangeCum" onchange="redrawRangeChart()"> Skumulowana PLN</label>
+        </div>
+      </div>
+      <!-- Taryfa configuration tab -->
+      <div id="tab-taryfa" style="display:none;padding:12px">
+        <div id="taryfaBadge" style="margin-bottom:14px;padding:10px 14px;border-radius:4px;font-size:13px;background:#e8f4fd;border-left:4px solid #2196F3">
+          Ładowanie stanu taryfy...
+        </div>
+        <h3 style="margin:0 0 6px">Historia taryf</h3>
+        <p style="font-size:12px;color:#666;margin:0 0 12px">
+          Jedna oś czasu łącząca: <strong>&#128203; z faktury</strong> — zmiany stawek
+          wykryte automatycznie z wgranych faktur (tylko podgląd); <strong>&#9998; ręczny</strong> —
+          wpisy wyprzedzające fakturę (luka / override / przyszłe zmiany). Wpis ręczny jest
+          <strong>override</strong>, gdy jego data jest nowsza niż najnowsza faktura;
+          automatycznie ustępuje, gdy faktura za ten okres dotrze. Puste pola dziedziczą
+          wartości z wcześniejszych wpisów — wystarczy wpisać tylko co się zmieniło.
+        </p>
+        <div id="taryfaList" style="margin-bottom:18px"></div>
+        <h3 style="margin:0 0 10px" id="taryfaFormTitle">Dodaj / edytuj wpis</h3>
+        <form id="taryfaForm" style="max-width:640px">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+            <label style="font-size:13px">Obowiązuje od (YYYY-MM)<br>
+              <input type="month" id="tfEffectiveFrom" style="width:100%;padding:5px;margin-top:3px" required>
+            </label>
+            <label style="font-size:13px">Notatka<br>
+              <input type="text" id="tfNote" placeholder="np. Taryfa TD 2027" style="width:100%;padding:5px;margin-top:3px">
+            </label>
+          </div>
+          <details open style="margin-bottom:10px">
+            <summary style="cursor:pointer;font-weight:600;font-size:13px;margin-bottom:8px">Cena brutto wszystko-w-jednym (PLN/kWh)</summary>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:6px 0">
+              <label style="font-size:12px">Szczyt (peak_gross)<br>
+                <input type="number" id="tf_peak_gross" step="0.0001" min="0" style="width:100%;padding:4px;margin-top:2px" placeholder="1.23">
+              </label>
+              <label style="font-size:12px">Pozaszczyt (offpeak_gross)<br>
+                <input type="number" id="tf_offpeak_gross" step="0.0001" min="0" style="width:100%;padding:4px;margin-top:2px" placeholder="0.63">
+              </label>
+            </div>
+          </details>
+          <details style="margin-bottom:10px">
+            <summary style="cursor:pointer;font-weight:600;font-size:13px;margin-bottom:8px">Energia netto (PLN/kWh)</summary>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:6px 0">
+              <label style="font-size:12px">Energia szczyt (energy_peak_net)<br>
+                <input type="number" id="tf_energy_peak_net" step="0.0001" min="0" style="width:100%;padding:4px;margin-top:2px">
+              </label>
+              <label style="font-size:12px">Energia pozaszczyt (energy_offpeak_net)<br>
+                <input type="number" id="tf_energy_offpeak_net" step="0.0001" min="0" style="width:100%;padding:4px;margin-top:2px">
+              </label>
+            </div>
+          </details>
+          <details style="margin-bottom:10px">
+            <summary style="cursor:pointer;font-weight:600;font-size:13px;margin-bottom:8px">Dystrybucja zmienna netto (PLN/kWh)</summary>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:6px 0">
+              <label style="font-size:12px">Składnik sieciowy szczyt (dist_var_peak_net)<br>
+                <input type="number" id="tf_dist_var_peak_net" step="0.0001" min="0" style="width:100%;padding:4px;margin-top:2px">
+              </label>
+              <label style="font-size:12px">Składnik sieciowy poza (dist_var_offpeak_net)<br>
+                <input type="number" id="tf_dist_var_offpeak_net" step="0.0001" min="0" style="width:100%;padding:4px;margin-top:2px">
+              </label>
+            </div>
+          </details>
+          <details style="margin-bottom:10px">
+            <summary style="cursor:pointer;font-weight:600;font-size:13px;margin-bottom:8px">Opłaty jakościowe netto (PLN/kWh)</summary>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;padding:6px 0">
+              <label style="font-size:12px">Jakościowa (dist_jakosciowa_net)<br>
+                <input type="number" id="tf_dist_jakosciowa_net" step="0.0001" min="0" style="width:100%;padding:4px;margin-top:2px">
+              </label>
+              <label style="font-size:12px">OZE (dist_oze_net)<br>
+                <input type="number" id="tf_dist_oze_net" step="0.0001" min="0" style="width:100%;padding:4px;margin-top:2px">
+              </label>
+              <label style="font-size:12px">Kogeneracja (dist_kogeneracja_net)<br>
+                <input type="number" id="tf_dist_kogeneracja_net" step="0.0001" min="0" style="width:100%;padding:4px;margin-top:2px">
+              </label>
+            </div>
+          </details>
+          <details style="margin-bottom:10px">
+            <summary style="cursor:pointer;font-weight:600;font-size:13px;margin-bottom:8px">Opłaty stałe netto (PLN/miesiąc)</summary>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;padding:6px 0">
+              <label style="font-size:12px">Abonament (fixed_abonament_net)<br>
+                <input type="number" id="tf_fixed_abonament_net" step="0.01" min="0" style="width:100%;padding:4px;margin-top:2px">
+              </label>
+              <label style="font-size:12px">Stały sieciowy (fixed_stalysieciowy_net)<br>
+                <input type="number" id="tf_fixed_stalysieciowy_net" step="0.01" min="0" style="width:100%;padding:4px;margin-top:2px">
+              </label>
+              <label style="font-size:12px">Mocowa (fixed_mocowa_net)<br>
+                <input type="number" id="tf_fixed_mocowa_net" step="0.01" min="0" style="width:100%;padding:4px;margin-top:2px">
+              </label>
+            </div>
+          </details>
+          <p style="font-size:11px;color:#888;margin:0 0 10px">
+            Pola puste = wartości nie zostaną nadpisane przez ten wpis. Publikacja do MQTT
+            nastąpi przy najbliższym pollu (do 30 min).
+          </p>
+          <button type="submit" class="btn" style="margin-right:8px">Zapisz wpis</button>
+          <button type="button" class="btn" onclick="clearTaryfaForm()" style="background:#6c757d">Wyczyść formularz</button>
+        </form>
+        <div id="taryfaMsg" style="margin-top:10px;font-size:13px"></div>
+      </div>
+      <!-- RCE vs RCEm tab -->
+      <div id="tab-rce" style="display:none;padding:12px">
+        <div id="rceWarning" style="display:none;margin-bottom:12px;padding:10px 14px;background:#fff3cd;border-left:4px solid #f0ad4e;border-radius:4px;font-size:13px">
+          &#9888;&#65039; Za mało rozliczonych miesięcy — rekomendacja będzie wiarygodna po 3 pełnych miesiącach z opublikowaną RCEm.
+        </div>
+        <div id="rceKpiCards" style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px"></div>
+        <div class="chart-wrap" style="height:280px;margin-bottom:16px">
+          <h3>Przychód ze sprzedaży nadwyżek: RCEm vs RCE godzinowa (zł/mies.)</h3>
+          <canvas id="rceCmpChart"></canvas>
+        </div>
+        <div style="margin-bottom:16px">
+          <h4 style="margin:0 0 6px;font-size:13px;font-weight:600">Heatmapa: eksport × cena RCE (godzina doby × miesiąc)
+            <label style="font-weight:400;font-size:11px;margin-left:10px"><input type="radio" name="hmMetric" value="price" checked onchange="redrawRceHeatmap()"> cena RCE</label>
+            <label style="font-weight:400;font-size:11px;margin-left:6px"><input type="radio" name="hmMetric" value="kwh" onchange="redrawRceHeatmap()"> eksport kWh</label>
+          </h4>
+          <div id="rceHeatmap" style="overflow-x:auto"></div>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px">Kolor = śr. cena RCE ważona eksportem (czerwień = godziny z ceną ujemną → 0 zł, art. 4b ustawy o OZE) lub wolumen eksportu. Najedź na komórkę po szczegóły.</div>
+        </div>
+        <div class="tbl-wrap"><table id="rceTbl"></table></div>
+        <div class="tbl-foot" id="rceFoot"></div>
+      </div>
+      <!-- Magazyn +5 kWh tab -->
+      <div id="tab-battery" style="display:none;padding:12px">
+        <div id="batWaiting" style="margin-bottom:12px;padding:10px 14px;background:#fff3cd;border-left:4px solid #f0ad4e;border-radius:4px;font-size:13px">
+          &#8987; Symulacja rozbudowy magazynu jeszcze trwa — pierwszy przebieg po starcie add-onu pobiera całą historię statystyk (do ~1 min). Odśwież za chwilę.
+        </div>
+        <div id="batContent" style="display:none">
+          <div class="docs-body" style="margin-bottom:14px"><div class="intro-box">
+            <b>Czy opłaca się dokupić drugi moduł 5 kWh?</b> Symulacja marginalna na godzinowych
+            statystykach liczników: wirtualny moduł (+<span id="batIntroKwh"></span> kWh /
+            +<span id="batIntroKw"></span> kW) ładuje się energią, która <b>fizycznie wyszła do sieci</b>
+            (istniejący magazyn nie mógł jej przyjąć — pełny albo limit mocy) i rozładowuje przeciw
+            <b>faktycznemu importowi</b> (magazyn nie pokrył zapotrzebowania). Marża = uniknięty zakup
+            wg strefy G12w − utracona sprzedaż RCEm − straty sprawności.
+          </div></div>
+          <div id="batKpiCards" class="cards" style="margin-bottom:14px"></div>
+          <div class="grid2" style="margin-bottom:14px">
+            <div class="chart-wrap" style="height:280px">
+              <h3>Oszczędności miesięczne wirtualnego modułu (zł)</h3>
+              <canvas id="batMonthlyChart"></canvas>
+            </div>
+            <div class="chart-wrap" style="height:280px">
+              <h3>Retro: skumulowane oszczędności vs cena modułu</h3>
+              <canvas id="batCumChart"></canvas>
+            </div>
+          </div>
+          <div id="batSellBox" style="margin-bottom:14px;padding:10px 14px;background:var(--bg);border:1px solid var(--border);border-radius:6px;font-size:12px;line-height:1.6"></div>
+          <details style="margin-bottom:14px">
+            <summary style="cursor:pointer;font-weight:600;font-size:13px;padding:6px 0">&#128203; Symulacja miesiąc po miesiącu</summary>
+            <div class="tbl-wrap" style="margin-top:8px"><table id="batTbl"></table></div>
+            <div class="tbl-foot" id="batFoot"></div>
+          </details>
+          <div class="override-wrap">
+            <h3>Parametry symulacji (zapis przelicza od nowa)</h3>
+            <div class="override-form" style="row-gap:8px">
+              <label>Cena modułu (zł): <input type="number" id="batPrice" step="1" min="1" style="width:90px"></label>
+              <label>Pojemność (kWh): <input type="number" id="batKwh" step="0.1" min="0.1" style="width:70px"></label>
+              <label>Moc (kW): <input type="number" id="batKw" step="0.1" min="0.1" style="width:60px"></label>
+              <label>Sprawność: <input type="number" id="batEff" step="0.01" min="0.5" max="1" style="width:65px"></label>
+              <label>Cykle życiowe: <input type="number" id="batCycles" step="100" min="100" style="width:75px"></label>
+              <label>Licz od: <input type="month" id="batStart"></label>
+              <label title="Wariant maksymalny: w dolinie dokupuj z sieci do pełna, oddawaj w szczycie">
+                <input type="checkbox" id="batArb"> arbitraż G12w</label>
+              <label title="Składnik dystrybucyjny ceny dynamicznej (S2), PLN/kWh brutto">
+                Dystryb. dyn. (zł/kWh): <input type="number" id="batDynDist" step="0.01" min="0" style="width:65px"></label>
+              <button onclick="saveBatteryConfig()">Zapisz i przelicz</button>
+              <span id="batMsg"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- Faktury Tauron tab -->
+      <div id="tab-invoices" style="display:none;padding:12px">
+        <!-- KPI summary cards -->
+        <div id="invKpiCards" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px"></div>
+        <!-- Drift banners -->
+        <div id="tariffDriftBanner" style="display:none;margin-bottom:10px;padding:8px 12px;background:#fff3cd;border-left:4px solid #f0ad4e;border-radius:4px;font-size:13px"></div>
+        <!-- Coverage grid -->
+        <div style="margin-bottom:16px">
+          <h4 style="margin:0 0 8px;font-size:13px;font-weight:600">Pokrycie fakturami</h4>
+          <div id="invCoverageGrid"></div>
+        </div>
+        <!-- Cost breakdown: where the grid-purchase money goes, per component -->
+        <div style="margin-bottom:16px">
+          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:8px">
+            <h4 style="margin:0;font-size:13px;font-weight:600">Składniki kosztów — na co idą pieniądze</h4>
+            <div id="costBreakdownToggle" style="display:flex;gap:0;font-size:11px"></div>
+          </div>
+          <div id="costBreakdownNote" style="font-size:11px;color:var(--muted);margin-bottom:8px"></div>
+          <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
+            <div id="costBreakdownTableWrap" class="tbl-wrap" style="flex:1;min-width:280px"></div>
+            <div class="chart-wrap" style="flex:2;min-width:320px;height:280px">
+              <canvas id="costBreakdownChart"></canvas>
+            </div>
+          </div>
+        </div>
+        <!-- Rate trend: stawki jednostkowe per faktura -->
+        <div style="margin-bottom:16px" id="rateTrendSection">
+          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:8px">
+            <h4 style="margin:0;font-size:13px;font-weight:600">Trend stawek jednostkowych (PLN/kWh netto) i efektywna cena all-in</h4>
+            <div id="rateTrendKpi" style="display:flex;gap:12px;flex-wrap:wrap"></div>
+          </div>
+          <div class="chart-wrap" style="height:280px">
+            <canvas id="rateTrendChart"></canvas>
+          </div>
+        </div>
+        <!-- Deposit: expiry/refund KPIs + trend chart -->
+        <div style="margin-bottom:16px">
+          <h4 style="margin:0 0 8px;font-size:13px;font-weight:600">Depozyt prosumencki — saldo, przedawnienie 12 mies. i zwrot</h4>
+          <div id="depKpiCards" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:10px"></div>
+          <div class="chart-wrap" style="height:240px;margin-bottom:8px">
+            <canvas id="depositChart"></canvas>
+          </div>
+          <div id="depositNote" style="font-size:11px;color:var(--muted)"></div>
+        </div>
+        <!-- Deposit reconciliation: invoices vs inverter model -->
+        <div style="margin-bottom:16px">
+          <h4 style="margin:0 0 8px;font-size:13px;font-weight:600">Depozyt — faktury vs falownik (rekonsyliacja zasileń)</h4>
+          <div id="reconKpiCards" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:10px"></div>
+          <div id="reconTableWrap" class="tbl-wrap" style="max-height:380px"></div>
+          <div id="reconNote" style="font-size:11px;color:var(--muted);margin-top:6px"></div>
+        </div>
+        <!-- Invoice table (click to expand) -->
+        <div style="margin-bottom:16px">
+          <h4 style="margin:0 0 8px;font-size:13px;font-weight:600">Wgrane faktury</h4>
+          <div class="override-form" style="align-items:flex-start;gap:12px;margin-bottom:10px">
+            <label style="display:flex;flex-direction:column;gap:4px;font-size:13px">
+              Wgraj faktury PDF (jedna lub wiele):
+              <input type="file" id="invoiceFiles" accept=".pdf" multiple style="margin-top:4px">
+            </label>
+            <button onclick="uploadInvoices()" style="align-self:flex-end">Wgraj i uzgodnij</button>
+            <span id="invoiceMsg" style="align-self:flex-end;font-size:12px"></span>
+          </div>
+          <div id="invoiceTableWrap" style="overflow-x:auto"></div>
+        </div>
+        <!-- Trained layouts panel -->
+        <div id="invLayoutsPanel" style="margin-bottom:16px;padding:10px 12px;background:var(--bg);border-radius:4px;border:1px solid var(--border)"></div>
+        <!-- Raw-text debug view -->
+        <details style="margin-bottom:16px">
+          <summary style="cursor:pointer;font-size:13px;color:var(--muted)">Diagnoza parsera PDF (debug)</summary>
+          <div style="margin-top:8px;display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+            <label style="font-size:13px">Plik PDF:
+              <input type="file" id="debugPdfFile" accept=".pdf" style="margin-left:6px">
+            </label>
+            <button onclick="runInvoiceDebug()" style="font-size:12px">Pokaż surowy tekst</button>
+          </div>
+          <div id="debugOutput" style="margin-top:10px"></div>
+        </details>
+      </div>
+    </div>
+
+    <div class="override-wrap" style="margin-top:18px">
+      <h3>Reczne nadpisanie ceny RCEm<span id="rcemBadge" class="rcem-badge"></span></h3>
+      <div class="override-form">
+        <label>Miesiac: <input type="month" id="ovMonth"></label>
+        <label>Cena (zl/kWh): <input type="number" id="ovPrice" step="0.0001" min="0.0001" max="2" placeholder="0.0000" style="width:100px"></label>
+        <button onclick="submitOverride()">Zapisz</button>
+        <span id="ovMsg"></span>
+      </div>
+    </div>
+
+  </div>
+</main>
+<script src="vendor/chart.umd.min.js?v={{VERSION}}"></script>
+<script src="vendor/chartjs-chart-sankey.min.js?v={{VERSION}}"></script>
+<script src="app.js?v={{VERSION}}"></script>
+</body>
+</html>
