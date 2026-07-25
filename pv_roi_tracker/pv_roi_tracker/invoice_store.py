@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import shutil
 import time
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -40,7 +41,16 @@ def _atomic_write(path: Path, doc: dict) -> None:
 
 
 def _load_document(path: Path) -> dict:
+    """Load the JSON document, falling back to .bak on parse error OR if missing
+    (see historic_store._load_document for why the missing case matters)."""
     if not path.exists():
+        bak = path.with_suffix('.json.bak')
+        if bak.exists():
+            logger.error('%s missing but .bak present — loading .bak', path)
+            try:
+                return json.loads(bak.read_text(encoding='utf-8'))
+            except (json.JSONDecodeError, OSError):
+                logger.exception('%s.bak also unreadable — starting empty', path)
         return {'schema_version': 2, 'invoices': {}}
     try:
         return json.loads(path.read_text(encoding='utf-8'))
@@ -53,8 +63,10 @@ def _load_document(path: Path) -> dict:
 
 
 def _save_document(doc: dict, path: Path) -> None:
+    # Back up via copy (not rename) so `path` never disappears mid-write —
+    # see historic_store._save_document for the rationale.
     if path.exists():
-        path.rename(path.with_suffix('.json.bak'))
+        shutil.copy2(path, path.with_suffix('.json.bak'))
     _atomic_write(path, doc)
 
 

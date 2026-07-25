@@ -48,6 +48,20 @@ INFLATION_RATE     = float(os.environ.get('INFLATION_RATE', '0.05'))
 COMPARISON_YIELD   = float(os.environ.get('COMPARISON_YIELD_RATE', '0.055'))
 CO2_FACTOR         = float(os.environ.get('CO2_FACTOR_KG_KWH', '0.597'))
 DEPOSIT_REFUND_PCT = float(os.environ.get('DEPOSIT_REFUND_PCT', '0.20'))
+ASSET_LIFETIME_YEARS       = float(os.environ.get('ASSET_LIFETIME_YEARS', '25.0'))
+PANEL_DEGRADATION_PCT_YEAR = float(os.environ.get('PANEL_DEGRADATION_PCT_YEAR', '0.5'))
+
+
+# ── Pure helpers (module-level so they're unit-testable without booting main()) ──
+
+def previous_month(today) -> tuple:
+    """Poprzedni miesiąc kalendarzowy względem `today` (obsługuje zawijanie stycznia)."""
+    return (today.year - 1, 12) if today.month == 1 else (today.year, today.month - 1)
+
+
+def month_present(records, year: int, month: int) -> bool:
+    """Czy dany rok/miesiąc jest już w liście MonthlyRecord (np. z historic_store.load())."""
+    return any(r.year == year and r.month == month for r in records)
 
 
 def _notify_ha(title: str, message: str) -> None:
@@ -162,7 +176,10 @@ def main() -> None:
     def _reread_month(year: int, month: int):
         """Backfill miesiąca ze statystyk HA, nadpisz historic.json, przelicz ROI."""
         rcem_price = rcem_scraper._load_history(RCEM_HISTORY_PATH).get(f'{year}-{month:02d}')
-        record = live_reader.read_month_from_statistics(year, month, rcem_price=rcem_price)
+        peak_gross, offpeak_gross = _tariff_rates_for(date(year, month, 28))
+        record = live_reader.read_month_from_statistics(
+            year, month, rcem_price=rcem_price,
+            peak_gross=peak_gross, offpeak_gross=offpeak_gross)
         if record is None:
             return None
         historic_store.replace_month(record, HISTORIC_PATH)
@@ -298,6 +315,19 @@ def main() -> None:
 
     from datetime import date
 
+    def _tariff_rates_for(d: date) -> tuple:
+        """Stawki brutto peak/offpeak (PLN/kWh) z tariff_config na dany dzień.
+
+        Podmienia zaszyty fallback env TARIFF_PEAK_PRICE/TARIFF_OFFPEAK_PRICE
+        (opcje usunięte z config.yaml w 0.22.0, więc dawny fallback nigdy nie
+        widział realnej zmiany taryfy zanim nadeszła faktura). Ta sama ścieżka
+        co battery_job i rekonsyliacja faktur — jeden pierwotny cennik."""
+        rates = _tc.effective_baseline(_tc.load(TARIFF_CONFIG_PATH), d)
+        return (
+            float(rates.get('peak_gross', live_reader._TARIFF_PEAK_PRICE)),
+            float(rates.get('offpeak_gross', live_reader._TARIFF_OFFPEAK_PRICE)),
+        )
+
     # ── Symulacja rozbudowy magazynu (zakładka „Magazyn +5 kWh") ─────────────
     import threading as _threading
     from . import battery_sim, battery_store, rce_hourly as _rceh
@@ -387,7 +417,10 @@ def main() -> None:
         try:
             historic = historic_store.load(HISTORIC_PATH)
             rcem_price = rcem_scraper.get_current_month_rcem(RCEM_HISTORY_PATH)
-            current = live_reader.read_current_month(rcem_price=rcem_price, historic_records=historic)
+            _peak_gross, _offpeak_gross = _tariff_rates_for(date.today())
+            current = live_reader.read_current_month(
+                rcem_price=rcem_price, historic_records=historic,
+                peak_gross=_peak_gross, offpeak_gross=_offpeak_gross)
             if current is not None:
                 _last_current['record'] = current
             elif _last_current['record'] is not None:
@@ -403,7 +436,9 @@ def main() -> None:
                                    discount_rate=DISCOUNT_RATE,
                                    inflation=INFLATION_RATE,
                                    comparison_yield=COMPARISON_YIELD,
-                                   co2_factor=CO2_FACTOR)
+                                   co2_factor=CO2_FACTOR,
+                                   asset_lifetime_years=ASSET_LIFETIME_YEARS,
+                                   panel_degradation_pct_year=PANEL_DEGRADATION_PCT_YEAR)
             _now = date.today()
             month_closed = any(r.year == _now.year and r.month == _now.month for r in historic)
             current_month_savings = (
@@ -514,8 +549,34 @@ def main() -> None:
             logger.exception('Health publish failed')
 
     def _target_month_key(now: date) -> str:
-        y, m = (now.year - 1, 12) if now.month == 1 else (now.year, now.month - 1)
+        y, m = previous_month(now)
         return f'{y}-{m:02d}'
+
+    def _catch_up_missing_month_close() -> None:
+        """
+        Month-close fires only at 23:55 on the last day of the month (cron). If the
+        add-on wasn't running at that exact minute — update, restart, host reboot —
+        the month never lands in historic.json, and the gap is permanent: utility
+        meters reset at midnight, so live sensors no longer hold the number.
+
+        HA long-term statistics survive the meter reset, so on every startup check
+        whether the previous calendar month is present and, if not, backfill it the
+        same way /api/historic/reread-month already does manually. Runs BEFORE
+        invoice reconciliation below — reconcile_invoice() can only overwrite an
+        existing month row, not create one, so a pending invoice for a fully missing
+        month would otherwise silently fail to apply.
+        """
+        prev_y, prev_m = previous_month(date.today())
+        if month_present(historic_store.load(HISTORIC_PATH), prev_y, prev_m):
+            return
+        logger.warning(
+            'Startup: %d-%02d missing from historic.json (month-close prawdopodobnie nie '
+            'odpalił) — odtwarzam ze statystyk HA', prev_y, prev_m)
+        if _reread_month(prev_y, prev_m) is None:
+            logger.error(
+                'Startup catch-up: brak statystyk HA dla %d-%02d — miesiąc pozostaje pusty. '
+                'Uzupełnij ręcznie przez /api/historic/reread-month gdy recorder odzyska dane.',
+                prev_y, prev_m)
 
     def rcem_job() -> None:
         today = date.today()
@@ -574,7 +635,9 @@ def main() -> None:
 
     def month_close_job() -> None:
         try:
-            close_month(historic_path=HISTORIC_PATH, rcem_history_path=RCEM_HISTORY_PATH)
+            _peak_gross, _offpeak_gross = _tariff_rates_for(date.today())
+            close_month(historic_path=HISTORIC_PATH, rcem_history_path=RCEM_HISTORY_PATH,
+                       peak_gross=_peak_gross, offpeak_gross=_offpeak_gross)
             historic_store.reconcile_pending_invoices(INVOICE_PATH, HISTORIC_PATH)
             poll_and_publish()
             if MONTHLY_NOTIFY:
@@ -631,6 +694,9 @@ def main() -> None:
     logger.info('PV ROI Tracker v%s started — poll every %d min', __version__, POLL_INTERVAL)
 
     _backup_data()   # ensure /share copy is current on every start
+
+    # Startup: backfill the previous month if a missed month-close left it out
+    _catch_up_missing_month_close()
 
     # Startup: apply any invoices uploaded before their month was closed
     historic_store.reconcile_pending_invoices(INVOICE_PATH, HISTORIC_PATH)

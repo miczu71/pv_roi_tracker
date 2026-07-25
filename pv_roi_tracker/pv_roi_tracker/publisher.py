@@ -176,7 +176,10 @@ class MQTTPublisher:
         self._version = version
         self._connected = False
 
-        self._client = mqtt.Client(client_id=_DEVICE_ID, clean_session=True)
+        # Callback API v1 is deprecated in paho-mqtt 2.x and gone entirely in 3.x
+        # (see requirements.txt note) — v2 callback signatures below.
+        self._client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
+                                   client_id=_DEVICE_ID, clean_session=True)
         if user:
             self._client.username_pw_set(user, password)
         self._client.will_set(_AVAIL_TOPIC, 'offline', retain=True)
@@ -194,19 +197,20 @@ class MQTTPublisher:
         self._client.loop_stop()
         self._client.disconnect()
 
-    def _on_connect(self, client, userdata, flags, rc) -> None:
-        if rc == 0:
+    def _on_connect(self, client, userdata, connect_flags, reason_code, properties=None) -> None:
+        if reason_code == 0:
             self._connected = True
             logger.info('MQTT connected to %s:%d', self._host, self._port)
             self._publish_discovery()
             client.publish(_AVAIL_TOPIC, 'online', retain=True)
         else:
-            logger.error('MQTT connect failed (rc=%d)', rc)
+            logger.error('MQTT connect failed (reason_code=%s)', reason_code)
 
-    def _on_disconnect(self, client, userdata, rc) -> None:
+    def _on_disconnect(self, client, userdata, disconnect_flags, reason_code, properties=None) -> None:
         self._connected = False
-        if rc != 0:
-            logger.warning('MQTT unexpectedly disconnected (rc=%d) — paho will reconnect', rc)
+        if reason_code != 0:
+            logger.warning('MQTT unexpectedly disconnected (reason_code=%s) — paho will reconnect',
+                           reason_code)
 
     # ── Discovery ─────────────────────────────────────────────────────────────
 

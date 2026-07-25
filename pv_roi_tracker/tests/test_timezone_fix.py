@@ -66,6 +66,62 @@ def test_build_record_derived_fields():
     assert rec.rcem_status == 'confirmed'
 
 
+def test_build_record_uses_explicit_tariff_rates_over_env_fallback():
+    """v0.31.0 fix (B4): before this, buy_price/arbitrage always used the
+    zaszyte env TARIFF_PEAK_PRICE/TARIFF_OFFPEAK_PRICE (1.23/0.63) because
+    the config.yaml options that fed them were removed in 0.22.0 — a tariff
+    change in tariff_config.json was silently ignored for the current month
+    until an invoice arrived. peak_gross/offpeak_gross must now override."""
+    with patch.object(lr, '_get_state', side_effect=lambda eid: None):
+        rec = lr._build_record(
+            year=2026, month=6,
+            produced=850.0, exported=320.0, consumed=400.0,
+            peak=210.0, offpeak=190.0, arb_kwh=60.0, rcem_price=0.35,
+            peak_gross=1.50, offpeak_gross=0.70,
+        )
+    expected_buy = (210 * 1.50 + 190 * 0.70) / (210 + 190)
+    assert rec.buy_price_pln_kwh == pytest.approx(expected_buy, abs=0.001)
+    # Must differ from the old hardcoded-rate result — proves the override took effect.
+    old_buy = (210 * 1.23 + 190 * 0.63) / (210 + 190)
+    assert rec.buy_price_pln_kwh != pytest.approx(old_buy, abs=0.001)
+
+
+def test_build_record_falls_back_to_env_rates_when_not_given():
+    """No peak_gross/offpeak_gross passed → old hardcoded-fallback behavior
+    unchanged (cli.py and any caller that hasn't loaded tariff_config yet)."""
+    with patch.object(lr, '_get_state', side_effect=lambda eid: None):
+        rec = lr._build_record(
+            year=2026, month=6,
+            produced=850.0, exported=320.0, consumed=400.0,
+            peak=210.0, offpeak=190.0, arb_kwh=60.0, rcem_price=0.35,
+        )
+    expected_buy = (210 * 1.23 + 190 * 0.63) / (210 + 190)
+    assert rec.buy_price_pln_kwh == pytest.approx(expected_buy, abs=0.001)
+
+
+def test_read_current_month_forwards_tariff_rates_to_build_record():
+    """read_current_month must pass peak_gross/offpeak_gross through to
+    _build_record rather than silently dropping them."""
+    states = {
+        'sensor.inverter_yield_monthly': 200.0,
+        'sensor.power_meter_exported_energy_monthly': 80.0,
+        'sensor.house_consumption_energy_monthly': 250.0,
+        'sensor.monthly_energy_peak': 120.0,
+        'sensor.monthly_energy_offpeak': 100.0,
+        'sensor.battery_grid_charge_off_peak_monthly': 30.0,
+    }
+    with (
+        patch.object(lr, '_get_state', side_effect=lambda eid: states.get(eid, None)),
+        patch.object(lr, '_solcast_month_projection', return_value=None),
+        patch('pv_roi_tracker.live_reader.date') as mock_date,
+    ):
+        mock_date.today.return_value = date(2026, 7, 15)
+        result = lr.read_current_month(rcem_price=None, peak_gross=2.00, offpeak_gross=1.00)
+    assert result is not None
+    expected_buy = (120 * 2.00 + 100 * 1.00) / (120 + 100)
+    assert result.buy_price_pln_kwh == pytest.approx(expected_buy, abs=0.001)
+
+
 def test_build_record_no_rcem_pending():
     """Bez rcem_price rcem_status='pending' i feedin_revenue_pln=None."""
     with patch.object(lr, '_get_state', side_effect=lambda eid: None):

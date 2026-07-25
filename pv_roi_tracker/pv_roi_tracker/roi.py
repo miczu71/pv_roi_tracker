@@ -152,6 +152,15 @@ SYSTEM_KWP = 6.72
 # dane za 2023, publikacja 2024) — nadpisywalny opcją co2_factor_kg_kwh.
 CO2_FACTOR_KG_KWH = 0.597
 
+# Horyzont NPV/IRR — pełny cykl życia instalacji, nie tylko do nominalnej
+# spłaty. Truncating cashflows at payback makes total inflows equal the
+# outflow by construction (inflows = remaining_to_recover + total_savings =
+# gross_investment − subsidy = outflow), which pins NPV/IRR near zero
+# regardless of how well the system performs — nadpisywalne opcjami
+# asset_lifetime_years / panel_degradation_pct_year.
+ASSET_LIFETIME_YEARS = 25.0
+PANEL_DEGRADATION_PCT_YEAR = 0.5   # roczny spadek mocy paneli (typowa gwarancja)
+
 
 def _msav(r: MonthlyRecord) -> float:
     return (r.self_consumed_savings_pln or 0.0) + (r.feedin_revenue_pln or 0.0) + (r.battery_arbitrage_savings_pln or 0.0)
@@ -389,6 +398,8 @@ def calculate(
     inflation: float = 0.05,
     comparison_yield: float = 0.055,
     co2_factor: float = CO2_FACTOR_KG_KWH,
+    asset_lifetime_years: float = ASSET_LIFETIME_YEARS,
+    panel_degradation_pct_year: float = PANEL_DEGRADATION_PCT_YEAR,
 ) -> RoiResult:
     if today is None:
         today = date.today()
@@ -491,7 +502,9 @@ def calculate(
         real_total_return_v = round(real_sav + real_subsidy, 2)
         real_roi_pct_v = round(real_total_return_v / gross_investment * 100.0, 2) if gross_investment else None
 
-        # Build monthly cashflow vector from commissioning
+        # Build monthly cashflow vector from commissioning through the asset's
+        # full rated lifetime (not just until nominal payback — see the note
+        # on ASSET_LIFETIME_YEARS above). Mirrors battery_sim.summarize().
         net_inv = gross_investment - subsidy
         hist_by_ym = {(r.year, r.month): _msav(r) for r in complete}
         n_hist = (today.year - commissioning_date.year) * 12 + (today.month - commissioning_date.month)
@@ -499,15 +512,17 @@ def calculate(
         for i in range(1, n_hist + 1):
             d = commissioning_date + relativedelta(months=i)
             cfs.append(hist_by_ym.get((d.year, d.month), 0.0))
-        # Append projected forward months until P50 payback (max 120)
+
+        # Forward months out to the rated lifetime, degrading the trailing-
+        # 12-month average savings rate year over year (panel output decay).
+        horizon_months = round(asset_lifetime_years * 12)
+        fwd_months_needed = max(0, horizon_months - n_hist)
         fwd = today + relativedelta(months=1)
-        fwd_rem = remaining_to_recover
-        for _ in range(120):
-            if fwd_rem <= 0:
-                break
-            m_sav = max((monthly_avg_savings or 0.0) * factors.get(fwd.month, 1.0), 0.0)
+        for i in range(1, fwd_months_needed + 1):
+            years_out = i / 12.0
+            degr = (1.0 - panel_degradation_pct_year / 100.0) ** years_out
+            m_sav = max((monthly_avg_savings or 0.0) * factors.get(fwd.month, 1.0) * degr, 0.0)
             cfs.append(m_sav)
-            fwd_rem -= m_sav
             fwd = fwd + relativedelta(months=1)
 
         monthly_disc = discount_rate / 12.0

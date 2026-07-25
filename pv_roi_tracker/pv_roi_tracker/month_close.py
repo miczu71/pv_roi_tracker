@@ -18,10 +18,16 @@ logger = logging.getLogger(__name__)
 def close_month(
     historic_path: Optional[Path] = None,
     rcem_history_path: Optional[Path] = None,
+    peak_gross: Optional[float] = None,
+    offpeak_gross: Optional[float] = None,
 ) -> bool:
     """
     Snapshot the current month (date.today()) into historic.json.
     Returns True if a new entry was appended, False if already present.
+
+    peak_gross/offpeak_gross: bieżące stawki taryfy (zwykle z tariff_config,
+    patrz live_reader._build_record) — bez nich snapshot użyłby zaszytego
+    fallbacku 1,23/0,63 aż do nadejścia faktury.
     """
     from . import historic_store, live_reader, rcem_scraper
 
@@ -37,7 +43,8 @@ def close_month(
     # Pass None — the scraper will backfill it when available.
     rcem_price = rcem_scraper.get_current_month_rcem(rcem_history_path)
 
-    record = live_reader.read_current_month(rcem_price=rcem_price)
+    record = live_reader.read_current_month(rcem_price=rcem_price,
+                                             peak_gross=peak_gross, offpeak_gross=offpeak_gross)
     if record is None:
         logger.warning('Month-close: live_reader returned None — snapshot skipped for %d-%02d',
                        today.year, today.month)

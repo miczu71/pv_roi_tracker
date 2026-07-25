@@ -11,6 +11,7 @@ Tracks the return-on-investment of a residential photovoltaic system (Polish net
 | **11th–20th of each month, every 2 h 08–22 local** | Scrapes last month's RCEm feed-in price from the PSE website, back-fills `historic.json`, recomputes. |
 | **1st of each month, 06:00 UTC** | RCEm correction scan (PSE may amend prices up to 12 months back). |
 | **Last day of each month, 23:55 local** | Snapshots the current month into `historic.json` before utility meters reset; sends a Polish summary push via `notify.family` (optional, `monthly_notify`). |
+| **On every start** (od v0.31.0) | If the previous calendar month is missing from `historic.json` — the add-on wasn't running at 23:55 on month-close night (update, restart, host reboot) — it's backfilled automatically from HA long-term statistics, the same way `/api/historic/reread-month` does manually. Runs before invoice reconciliation so a pending invoice for that month can still apply. |
 | **16th of each month, 12:00 UTC** | Refreshes Polish CPI from GUS (inflation-adjusted ROI). |
 | **Daily, 02:00 UTC** | Backs up all `/data` files to `/share/pv_roi_tracker`. |
 
@@ -101,8 +102,8 @@ All sensors appear under one device **PV ROI Tracker** in HA Settings → Device
 | `pv_roi_tracker_projected_month_savings` | PV Projected Month Savings | PLN | Solcast × historic zł/kWh |
 | `pv_roi_tracker_real_total_savings` | PV Real Total Savings | PLN | CPI-deflated |
 | `pv_roi_tracker_real_roi_pct` | PV Real ROI | % | CPI-deflated |
-| `pv_roi_tracker_npv` | PV NPV | PLN | at `discount_rate_real` |
-| `pv_roi_tracker_irr_pct` | PV IRR | % | |
+| `pv_roi_tracker_npv` | PV NPV | PLN | at `discount_rate_real`, over the rated asset lifetime (`asset_lifetime_years`, default 25 yr) with yearly panel degradation (`panel_degradation_pct_year`, default 0.5 %/yr) — **not** truncated at nominal payback (a payback-truncated horizon makes inflows equal the outflow by construction, pinning NPV/IRR near zero regardless of performance; fixed in v0.31.0) |
+| `pv_roi_tracker_irr_pct` | PV IRR | % | same horizon as NPV above |
 | `pv_roi_tracker_vs_bond_delta` | PV vs Bond Delta | PLN | vs `comparison_yield_rate` |
 | `pv_roi_tracker_cumulative_inflation` | PV Cumulative Inflation | % | GUS CPI |
 | `pv_roi_tracker_self_consumption_rate` | PV Self-Consumption Rate | % | Σ self-consumed / Σ produced |
@@ -130,7 +131,7 @@ All sensors appear under one device **PV ROI Tracker** in HA Settings → Device
 | `exported_kwh` | `sensor.power_meter_exported_energy_monthly` (also hourly statistics for the RCE simulation) |
 | `purchased_kwh` | `sensor.monthly_energy_peak` + `sensor.monthly_energy_offpeak` |
 | `consumed_kwh` | `sensor.house_consumption_energy_monthly` |
-| `buy_price_pln_kwh` | blended from tariff options; fallback `sensor.srednia_cena_energii_w_miesiacu` |
+| `buy_price_pln_kwh` | blended peak/offpeak from `tariff_config.json` (od v0.31.0 — previously a hardcoded 1.23/0.63 fallback that never saw a tariff change until the invoice arrived); fallback `sensor.srednia_cena_energii_w_miesiacu` |
 | `feedin_price_pln_kwh` | scraped from PSE (RCEm) |
 | battery arbitrage | `sensor.battery_grid_charge_off_peak_monthly` (kWh) × (peak × efficiency − offpeak); fallback `sensor.battery_arbitrage_savings_monthly` |
 | Solcast projection | `sensor.solcast_pv_forecast_*` (7 days) |
@@ -167,6 +168,8 @@ Add `https://github.com/miczu71/pv_roi_tracker` in **Settings → Add-ons → Ad
 | `discount_rate_real` | `0.04` | Real discount rate for NPV |
 | `inflation_rate_assumption` | `0.05` | Fallback inflation when GUS CPI unavailable |
 | `comparison_yield_rate` | `0.055` | Alternative-investment yield (bond comparison) |
+| `asset_lifetime_years` | `25.0` | Horizon for the NPV/IRR cashflow projection (od v0.31.0) |
+| `panel_degradation_pct_year` | `0.5` | Assumed yearly panel output decay applied to projected NPV/IRR cashflows (od v0.31.0) |
 | `battery_roundtrip_efficiency` | `0.92` | Battery round-trip efficiency for arbitrage savings |
 | `monthly_notify` | `true` | Push a Polish month-close summary via `notify.family` |
 | `co2_factor_kg_kwh` | `0.597` | Grid CO₂ emission factor for the avoided-emissions sensor (KOBiZE, end-user electricity) |
@@ -223,7 +226,7 @@ pip install -r requirements.txt pytest
 python -m pytest -q
 ```
 
-336 tests covering the CSV parser, ROI engine, historic store, concatenator, invoice parser/layouts, RCE-hourly comparison, and timezone-fix regression.
+383 tests covering the CSV parser, ROI engine (incl. the v0.31.0 NPV/IRR-horizon regression), historic store (incl. crash-window safe-write regression), concatenator, invoice parser/layouts/store, RCE-hourly comparison, timezone-fix regression, and main.py's missed-month-close catch-up logic.
 
 ### CLI tools
 

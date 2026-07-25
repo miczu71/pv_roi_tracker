@@ -216,3 +216,34 @@ def test_effective_by_month_excludes_nota_keys(store_path):
     all_inv = invoice_store.load(store_path)
     eff = invoice_store.effective_by_month(all_inv)
     assert all('~nota~' not in k for k in eff)
+
+
+# ── Safe-write regression (same fix as historic_store — see its test file) ──
+
+def test_load_missing_with_bak_present_recovers_from_bak(store_path):
+    invoice_store.upsert(_data(), path=store_path)
+    bak = store_path.with_suffix('.json.bak')
+    bak.write_text(store_path.read_text())
+    store_path.unlink()   # simulate a crash that left only the .bak behind
+
+    loaded = invoice_store.load(store_path)
+    assert '2025-10' in loaded
+
+
+def test_save_does_not_delete_target_before_atomic_replace(store_path, monkeypatch):
+    """A crash mid-save must never leave invoices.json missing (see
+    historic_store's identical test for the full incident writeup)."""
+    invoice_store.upsert(_data(), path=store_path)
+
+    original_rename = Path.rename
+    seen_missing = []
+
+    def _spy_rename(self, target):
+        seen_missing.append(store_path.exists())
+        return original_rename(self, target)
+
+    monkeypatch.setattr(Path, 'rename', _spy_rename)
+    invoice_store.upsert(_data(year=2025, month=11), path=store_path)
+
+    assert seen_missing == [True]
+    assert store_path.with_suffix('.json.bak').exists()

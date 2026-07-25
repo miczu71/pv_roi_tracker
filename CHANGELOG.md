@@ -2,6 +2,62 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.31.0] — 2026-07-25
+
+Pełny przegląd kodu produkcyjnego (361 testów → wynik: kilka konkretnych
+defektów, z czego dwa dawały złe liczby lub groziły utratą danych). Ten
+release naprawia wszystkie ustalenia oznaczone jako krytyczne/wysokie/średnie
+w przeglądzie; kwestia interpretacji zegara przedawnienia depozytu (art. 4
+ust. 11 OZE) zostaje świadomie bez zmian do czasu potwierdzenia na fakturze.
+
+### Fixed
+
+- **NPV i IRR były matematycznie przypięte do zera** — wektor przepływów
+  urywał prognozę w chwili, gdy `remaining_to_recover` osiągał 0, więc
+  suma wpływów (`total_savings + remaining_to_recover`) była tożsamościowo
+  równa wypływowi (`gross_investment − subsidy`) — NPV zawsze ujemne,
+  IRR zawsze ~0%, niezależnie od tego, jak dobrze pracuje instalacja
+  (na żywych danych: NPV −2604 zł, IRR −0,61% przy ROI 81,89%). Teraz
+  przepływy liczone są w pełnym horyzoncie życia instalacji
+  (`asset_lifetime_years`, domyślnie 25 lat) z roczną degradacją mocy
+  paneli (`panel_degradation_pct_year`, domyślnie 0,5%/rok) — ten sam wzorzec
+  co już działający `battery_sim.summarize()`. `payback_date` bez zmian.
+  Sensory `pv_roi_tracker_npv` / `pv_roi_tracker_irr_pct` — nowe wartości
+  po restarcie.
+- **Okno cichej utraty całej historii przy crashu w trakcie zapisu** —
+  `historic.json`, `invoices.json` i `invoice_layouts.json` zapisywały się
+  przez `rename(plik → .bak)` PRZED zapisem nowej wersji: crash / OOM / kill
+  add-onu dokładnie w tym oknie zostawiał BRAK obu plików, a kolejny odczyt
+  cicho zwracał pustą historię — pierwszy zapis nadpisywał wtedy też `.bak`.
+  Kolejność odwrócona: kopia bieżącego pliku na `.bak` (oryginał
+  nietknięty), potem atomowy `rename(.tmp → plik)` — plik docelowy nigdy nie
+  znika. `_load_document`/`_load_doc` sięgają teraz po `.bak` też wtedy, gdy
+  plik w ogóle nie istnieje (dotąd tylko przy błędzie parsowania).
+- **Brak nadrabiania nieudanego month-close** — zamknięcie miesiąca odpalało
+  się wyłącznie o 23:55 ostatniego dnia; jeśli add-on akurat nie działał
+  (aktualizacja, restart HA, reboot hosta), miesiąc nigdy nie trafiał do
+  `historic.json`, a licznik zerował się o północy — luka była trwała. Przy
+  każdym starcie add-on sprawdza teraz, czy poprzedni miesiąc jest obecny,
+  i jeśli nie — odtwarza go ze statystyk długoterminowych HA (ta sama
+  ścieżka co ręczny `/api/historic/reread-month`), zanim ruszy rekonsyliacja
+  faktur (faktura dla brakującego miesiąca wcześniej nie miała czego
+  nadpisać).
+- **Bieżący miesiąc liczony po zaszytych stawkach 1,23/0,63 zł** — opcje
+  `tariff_peak_price`/`tariff_offpeak_price` zostały usunięte z `config.yaml`
+  w 0.22.0, ale `run.sh` nadal wpadał w zaszyty fallback dla `buy_price`
+  bieżącego miesiąca i stawki arbitrażu baterii. Każda zmiana taryfy
+  wpisana w zakładce Taryfa była więc po cichu ignorowana aż do nadejścia
+  faktury. Teraz stawki pochodzą z `tariff_config.effective_baseline()` —
+  tej samej ścieżki co symulacja magazynu i rekonsyliacja faktur.
+
+### Changed
+
+- **Zależności przypięte na sztywno** (`==`, nie `>=`) — `paho-mqtt>=1.6.1`
+  cicho rozwiązywał się do 2.1.0 i zgłaszał `DeprecationWarning: Callback
+  API version 1 is deprecated`; API v1 znika całkowicie w paho 3.x, więc
+  zwykły rebuild bez żadnej zmiany w kodzie własnym mógłby przestać
+  startować. Publisher zmigrowany na `CallbackAPIVersion.VERSION2`.
+
 ## [0.30.3] — 2026-07-16
 
 ### Fixed

@@ -167,3 +167,33 @@ class TestParserIntegration:
             assert data.imported_kwh == 175.0
         finally:
             _mod.set_layouts_provider(original_provider)
+
+
+# ── Safe-write regression (same fix as historic_store — see its test file) ──
+
+class TestSafeWrite:
+    def test_load_missing_with_bak_present_recovers_from_bak(self, tmp_path):
+        path = tmp_path / 'invoice_layouts.json'
+        add_patterns('imp_total', [r'SomePattern'], path)
+        bak = path.with_suffix('.json.bak')
+        bak.write_text(path.read_text())
+        path.unlink()   # simulate a crash that left only the .bak behind
+
+        assert learned_for('imp_total', path) == [r'SomePattern']
+
+    def test_save_does_not_delete_target_before_atomic_replace(self, tmp_path, monkeypatch):
+        path = tmp_path / 'invoice_layouts.json'
+        add_patterns('imp_total', [r'PatternA'], path)
+
+        original_rename = Path.rename
+        seen_missing = []
+
+        def _spy_rename(self, target):
+            seen_missing.append(path.exists())
+            return original_rename(self, target)
+
+        monkeypatch.setattr(Path, 'rename', _spy_rename)
+        add_patterns('imp_total', [r'PatternB'], path)
+
+        assert seen_missing == [True]
+        assert path.with_suffix('.json.bak').exists()

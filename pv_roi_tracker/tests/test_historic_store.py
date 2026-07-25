@@ -63,6 +63,57 @@ def test_corrupt_file_falls_back_to_bak(store):
     assert loaded[0].month == 5
 
 
+def test_save_does_not_delete_target_before_atomic_replace(store, monkeypatch):
+    """Regression guard: a crash mid-save must never leave `store` missing.
+
+    The old _save_document did `path.rename(.bak)` BEFORE writing the new
+    file — a crash between those two steps left neither file readable, and
+    the *next* load() silently returned an empty document (production
+    incident: 46 months of PV history at risk). The fix backs up via copy
+    (leaves the original intact) and only ever touches `store` itself via
+    the atomic os.rename inside _atomic_write."""
+    historic_store.save([_rec(2023, 5)], store)
+
+    original_rename = Path.rename
+    seen_missing = []
+
+    def _spy_rename(self, target):
+        # Called once, for the final tmp → store atomic replace. At the
+        # instant just before this call, `store` must still exist —
+        # otherwise there was a window where it didn't.
+        seen_missing.append(store.exists())
+        return original_rename(self, target)
+
+    monkeypatch.setattr(Path, 'rename', _spy_rename)
+    historic_store.save([_rec(2023, 6)], store)
+
+    assert seen_missing == [True], (
+        '`store` must exist right up until the atomic rename replaces it')
+    assert store.with_suffix('.json.bak').exists()
+    assert len(historic_store.load(store)) == 1
+    assert historic_store.load(store)[0].month == 6
+
+
+def test_load_missing_with_bak_present_recovers_from_bak(store):
+    """Reproduces the pre-fix crash window directly: `store` doesn't exist
+    but `.bak` holds a valid document — load() must recover from .bak
+    instead of silently returning an empty document."""
+    historic_store.save([_rec(2023, 5)], store)
+    bak = store.with_suffix('.json.bak')
+    bak.write_text(store.read_text())
+    store.unlink()   # simulate a crash that left only the .bak behind
+
+    loaded = historic_store.load(store)
+    assert len(loaded) == 1
+    assert loaded[0].month == 5
+
+
+def test_load_missing_with_no_bak_returns_empty(store):
+    """No file and no .bak — genuinely a fresh install, not a crash. Must
+    still return an empty document (unchanged pre-fix behavior)."""
+    assert historic_store.load(store) == []
+
+
 # ── append_month ───────────────────────────────────────────────────────────────────────────────────────
 
 def test_append_month_adds_new(store):

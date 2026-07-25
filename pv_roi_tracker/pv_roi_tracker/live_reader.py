@@ -319,6 +319,8 @@ def _build_record(
     rcem_price: Optional[float],
     projected_month_kwh: Optional[float] = None,
     projected_month_savings_pln: Optional[float] = None,
+    peak_gross: Optional[float] = None,
+    offpeak_gross: Optional[float] = None,
 ) -> MonthlyRecord:
     """
     Build a MonthlyRecord from raw kWh readings.
@@ -326,10 +328,20 @@ def _build_record(
     Called both from read_current_month() (live sensors) and
     read_month_from_statistics() (backfill from HA long-term stats).
     ``produced`` must be > 0 before calling this function.
+
+    peak_gross/offpeak_gross: bieżące stawki taryfy (PLN/kWh, brutto),
+    zwykle z tariff_config.effective_baseline() — ta sama ścieżka co
+    battery_job i rekonsyliacja faktur. None → fallback na zaszyte env
+    TARIFF_PEAK_PRICE/TARIFF_OFFPEAK_PRICE poniżej (opcje usunięte
+    z config.yaml w 0.22.0 — to tylko siatka bezpieczeństwa, np. dla cli.py
+    czy zanim tariff_config.json zostanie zasiany).
     """
+    peak_px    = peak_gross    if peak_gross    is not None else _TARIFF_PEAK_PRICE
+    offpeak_px = offpeak_gross if offpeak_gross is not None else _TARIFF_OFFPEAK_PRICE
+
     # Arbitraż baterii: kWh z sieci w dolinie × (peak_rate × eff − offpeak_rate)
     if arb_kwh is not None:
-        arb_rate = _TARIFF_PEAK_PRICE * _BATTERY_RT_EFF - _TARIFF_OFFPEAK_PRICE
+        arb_rate = peak_px * _BATTERY_RT_EFF - offpeak_px
         arbitrage: Optional[float] = arb_kwh * arb_rate
     else:
         arbitrage = _get_state('sensor.battery_arbitrage_savings_monthly')
@@ -337,7 +349,7 @@ def _build_record(
     # Cena zakupu: ważona z taryf szczyt/dolina, fallback na sensor HA.
     if peak is not None and offpeak is not None and (peak + offpeak) > 0:
         buy_price: Optional[float] = round(
-            (peak * _TARIFF_PEAK_PRICE + offpeak * _TARIFF_OFFPEAK_PRICE)
+            (peak * peak_px + offpeak * offpeak_px)
             / (peak + offpeak), 4)
     else:
         buy_price = _get_state('sensor.srednia_cena_energii_w_miesiacu')
@@ -382,6 +394,8 @@ def read_month_from_statistics(
     year: int,
     month: int,
     rcem_price: Optional[float] = None,
+    peak_gross: Optional[float] = None,
+    offpeak_gross: Optional[float] = None,
 ) -> Optional[MonthlyRecord]:
     """
     Zbuduj MonthlyRecord na podstawie długoterminowych statystyk HA (WebSocket
@@ -423,12 +437,14 @@ def read_month_from_statistics(
         month_key, produced, exported, peak, offpeak,
     )
     return _build_record(year, month, produced, exported, consumed, peak, offpeak,
-                         arb_kwh, rcem_price)
+                         arb_kwh, rcem_price, peak_gross=peak_gross, offpeak_gross=offpeak_gross)
 
 
 def read_current_month(
     rcem_price: Optional[float] = None,
     historic_records: Optional[list] = None,
+    peak_gross: Optional[float] = None,
+    offpeak_gross: Optional[float] = None,
 ) -> Optional[MonthlyRecord]:
     """
     Build a MonthlyRecord for the current calendar month from live HA values.
@@ -471,4 +487,5 @@ def read_current_month(
             projected_month_savings_pln = round(projected_month_kwh * spk, 2)
 
     return _build_record(year, month, produced, exported, consumed, peak, offpeak,
-                         arb_kwh, rcem_price, projected_month_kwh, projected_month_savings_pln)
+                         arb_kwh, rcem_price, projected_month_kwh, projected_month_savings_pln,
+                         peak_gross=peak_gross, offpeak_gross=offpeak_gross)

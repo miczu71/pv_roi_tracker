@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
@@ -23,11 +24,28 @@ def _atomic_write(path: Path, doc: dict) -> None:
     tmp.rename(path)
 
 
+def _empty_document() -> dict:
+    return {'schema_version': SCHEMA_VERSION, 'source': 'unknown',
+            'system_kwp': 6.72, 'months': []}
+
+
 def _load_document(path: Path) -> dict:
-    """Load the JSON document, falling back to .bak on parse error."""
+    """Load the JSON document, falling back to .bak on parse error OR if missing.
+
+    A missing path with a present .bak means a crash landed between the
+    backup step and the atomic rename in an older version of _save_document
+    (pre-fix: rename-then-write left a window where neither file existed) —
+    recover from .bak rather than silently returning an empty document.
+    """
     if not path.exists():
-        return {'schema_version': SCHEMA_VERSION, 'source': 'unknown',
-                'system_kwp': 6.72, 'months': []}
+        bak = path.with_suffix('.json.bak')
+        if bak.exists():
+            logger.error("%s missing but .bak present — loading .bak", path)
+            try:
+                return json.loads(bak.read_text(encoding='utf-8'))
+            except (json.JSONDecodeError, OSError):
+                logger.exception("%s.bak also unreadable — starting empty", path)
+        return _empty_document()
     try:
         return json.loads(path.read_text(encoding='utf-8'))
     except (json.JSONDecodeError, OSError) as exc:
@@ -39,8 +57,12 @@ def _load_document(path: Path) -> dict:
 
 
 def _save_document(doc: dict, path: Path) -> None:
+    # Back up via copy (not rename) so `path` never momentarily disappears —
+    # a crash between the backup and the write below must never leave
+    # neither file readable. The rename in _atomic_write is the only step
+    # that touches `path` itself, and POSIX rename is atomic.
     if path.exists():
-        path.rename(path.with_suffix('.json.bak'))
+        shutil.copy2(path, path.with_suffix('.json.bak'))
     _atomic_write(path, doc)
 
 

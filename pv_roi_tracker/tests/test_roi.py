@@ -335,3 +335,76 @@ def test_underperformance_custom_threshold():
                + [_prod_month(2026, 6, 552.0)])
     out = underperformance_analysis(records, today=date(2026, 7, 1), alert_threshold_pct=-15.0)
     assert out['flag'] == 'ok'
+
+
+# ── NPV / IRR horizon (v0.31.0 fix) ───────────────────────────────────────────
+#
+# Truncating cashflows at nominal payback makes total inflows equal the
+# outflow by construction: inflows = remaining_to_recover + total_savings
+# = gross_investment − subsidy = outflow. NPV/IRR then land near zero no
+# matter how well the system performs. The fix projects cashflows out to
+# the asset's rated lifetime instead.
+
+def _steady_history(n_months, today, savings=300.0, feedin=60.0):
+    """n_months of steady savings ending the month before `today`."""
+    records = []
+    y, m = today.year, today.month
+    for _ in range(n_months):
+        m -= 1
+        if m == 0:
+            y, m = y - 1, 12
+        records.append(month(y, m, savings=savings, feedin=feedin))
+    return records
+
+
+def test_npv_irr_not_pinned_to_zero_by_truncated_horizon():
+    """Regression guard for the truncated-at-payback bug: with a system that's
+    performing well (savings pace well above what's needed to hit payback),
+    NPV over the rated lifetime must clear zero, not sit pinned near it."""
+    today = date(2026, 7, 25)
+    records = _steady_history(46, today, savings=250.0, feedin=60.0)
+    r = calculate(records, today=today, gross_investment=51_900.0, subsidy=28_714.0,
+                  system_kwp=6.72, discount_rate=0.04,
+                  asset_lifetime_years=25.0, panel_degradation_pct_year=0.5)
+    assert r.commissioning_date is not None
+    assert r.npv is not None and r.npv > 10_000.0
+    assert r.irr_pct is not None and r.irr_pct > 5.0
+
+
+def test_npv_irr_horizon_is_asset_lifetime_not_payback():
+    """Two systems with identical history but different remaining_to_recover
+    (via gross_investment) must both get cashflows out to the full asset
+    lifetime — the old code capped the forward walk once remaining hit zero,
+    so a nearly-paid-off system got almost no forward cashflows at all."""
+    today = date(2026, 7, 25)
+    records = _steady_history(46, today, savings=250.0, feedin=60.0)
+    # Case A: already paid back (remaining_to_recover == 0)
+    r_paid = calculate(records, today=today, gross_investment=5_000.0, subsidy=0.0,
+                       asset_lifetime_years=25.0, panel_degradation_pct_year=0.5)
+    assert r_paid.remaining_to_recover == pytest.approx(0.0)
+    # Even fully paid back, 25 years of future savings must swamp NPV positive.
+    assert r_paid.npv is not None and r_paid.npv > 10_000.0
+
+
+def test_npv_irr_default_horizon_is_25_years():
+    from pv_roi_tracker.roi import ASSET_LIFETIME_YEARS, PANEL_DEGRADATION_PCT_YEAR
+    assert ASSET_LIFETIME_YEARS == pytest.approx(25.0)
+    assert PANEL_DEGRADATION_PCT_YEAR == pytest.approx(0.5)
+
+
+def test_npv_shrinks_with_higher_panel_degradation():
+    """A steeper assumed degradation rate must reduce projected future savings
+    and therefore NPV — sanity check that the parameter actually does something."""
+    today = date(2026, 7, 25)
+    records = _steady_history(46, today, savings=250.0, feedin=60.0)
+    r_low_degr = calculate(records, today=today, gross_investment=51_900.0, subsidy=28_714.0,
+                           panel_degradation_pct_year=0.1)
+    r_high_degr = calculate(records, today=today, gross_investment=51_900.0, subsidy=28_714.0,
+                            panel_degradation_pct_year=3.0)
+    assert r_high_degr.npv < r_low_degr.npv
+
+
+def test_npv_irr_none_without_commissioning_date():
+    r = calculate([])
+    assert r.npv is None
+    assert r.irr_pct is None
