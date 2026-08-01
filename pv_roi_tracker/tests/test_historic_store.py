@@ -138,6 +138,130 @@ def test_append_month_sorted(store):
     assert keys == sorted(keys)
 
 
+# ── has_energy_data ────────────────────────────────────────────────────────────────────────────────────
+
+def test_has_energy_data_true_for_positive_production():
+    assert historic_store.has_energy_data(862.02) is True
+
+
+def test_has_energy_data_false_for_none():
+    assert historic_store.has_energy_data(None) is False
+
+
+def test_has_energy_data_false_for_zero():
+    assert historic_store.has_energy_data(0.0) is False
+
+
+# ── append_month: overwrite-empty placeholder (incident 2026-08-01) ──────────────────────────────────────
+
+def _placeholder(year, month):
+    """A data-less row shaped like the ones a Google Sheets pivot CSV import
+    seeds for months that haven't happened yet — matches the real production
+    of the 2026-08-01 incident: every energy field None except a few derived
+    ones the parser reads as an explicit 0.0."""
+    return MonthlyRecord(
+        year=year, month=month,
+        self_consumed_kwh=0.0, self_consumed_savings_pln=0.0,
+        purchase_cost_pln=0.0, feedin_revenue_pln=0.0,
+        rcem_status='confirmed',
+    )
+
+
+def test_append_month_overwrites_empty_placeholder(store):
+    """Reproduces the 2026-08-01 incident directly: a placeholder row for the
+    month already exists (from an earlier CSV import), and month-close's
+    append_month must overwrite it with the real snapshot instead of skipping."""
+    historic_store.save([_placeholder(2026, 7)], store)
+
+    appended = historic_store.append_month(_rec(2026, 7, produced=862.02, exported=430.0), store)
+
+    assert appended is True
+    loaded = historic_store.load(store)
+    assert len(loaded) == 1
+    assert loaded[0].produced_kwh == pytest.approx(862.02)
+
+
+def test_append_month_does_not_overwrite_real_data(store):
+    """A month that already has a real snapshot must stay untouched (idempotent) —
+    overwrite-empty must never clobber a month that genuinely has data."""
+    historic_store.save([_rec(2026, 6, produced=888.35)], store)
+
+    appended = historic_store.append_month(_rec(2026, 6, produced=1.0), store)
+
+    assert appended is False
+    assert historic_store.load(store)[0].produced_kwh == pytest.approx(888.35)
+
+
+def test_append_month_overwrite_empty_false_preserves_old_behavior(store):
+    """overwrite_empty=False restores the pre-fix skip-if-exists behavior."""
+    historic_store.save([_placeholder(2026, 7)], store)
+
+    appended = historic_store.append_month(
+        _rec(2026, 7, produced=862.02), store, overwrite_empty=False)
+
+    assert appended is False
+    assert historic_store.load(store)[0].produced_kwh is None
+
+
+def test_append_month_overwrite_preserves_tariff_and_rcem_status(store):
+    """Mirrors replace_month's field-preservation contract: if the new record
+    doesn't carry tariff/rcem_status, keep whatever the placeholder already had."""
+    placeholder = _placeholder(2026, 7)
+    placeholder.tariff = 'G12W'
+    historic_store.save([placeholder], store)
+
+    new_rec = MonthlyRecord(year=2026, month=7, produced_kwh=862.02, rcem_status='pending')
+    historic_store.append_month(new_rec, store)
+
+    loaded = historic_store.load(store)[0]
+    assert loaded.tariff == 'G12W'
+    assert loaded.rcem_status == 'pending'
+
+
+# ── prune_future_months ───────────────────────────────────────────────────────────────────────────────
+
+def test_prune_future_months_removes_empty_placeholders(store):
+    from datetime import date
+    historic_store.save([_rec(2026, 6), _placeholder(2026, 7), _placeholder(2026, 8)], store)
+
+    removed = historic_store.prune_future_months(date(2026, 6, 15), store)
+
+    assert removed == 2
+    loaded = historic_store.load(store)
+    assert [(r.year, r.month) for r in loaded] == [(2026, 6)]
+
+
+def test_prune_future_months_keeps_past_and_current(store):
+    from datetime import date
+    historic_store.save([_rec(2026, 5), _rec(2026, 6)], store)
+
+    removed = historic_store.prune_future_months(date(2026, 6, 15), store)
+
+    assert removed == 0
+    assert len(historic_store.load(store)) == 2
+
+
+def test_prune_future_months_keeps_future_rows_with_data(store):
+    """A future row with real data (e.g. a pre-entered projection) must survive —
+    pruning only targets data-less placeholders."""
+    from datetime import date
+    historic_store.save([_rec(2026, 6), _rec(2026, 7, produced=500.0)], store)
+
+    removed = historic_store.prune_future_months(date(2026, 6, 15), store)
+
+    assert removed == 0
+    assert len(historic_store.load(store)) == 2
+
+
+def test_prune_future_months_idempotent_when_nothing_to_remove(store):
+    from datetime import date
+    historic_store.save([_rec(2026, 6)], store)
+
+    assert historic_store.prune_future_months(date(2026, 6, 15), store) == 0
+    # second call: still nothing to do, no error, no spurious .bak thrash
+    assert historic_store.prune_future_months(date(2026, 6, 15), store) == 0
+
+
 # ── backfill_rcem ──────────────────────────────────────────────────────────────────────────────────────
 
 def test_backfill_rcem_fills_revenue(store):

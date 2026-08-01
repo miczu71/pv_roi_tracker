@@ -64,6 +64,20 @@ def month_present(records, year: int, month: int) -> bool:
     return any(r.year == year and r.month == month for r in records)
 
 
+def month_has_data(records, year: int, month: int) -> bool:
+    """Czy dany rok/miesiąc ma realny odczyt produkcji — nie tylko pusty wiersz-placeholder.
+
+    Różni się od month_present(): placeholder (np. z importu CSV pivota Google Sheets,
+    który zasiewa po jednym wierszu na każdy miesiąc kalendarzowy roku, także przyszłe)
+    przechodzi month_present, bo klucz (rok, miesiąc) istnieje — ale nie ma w nim danych.
+    Właśnie to uśpiło startowy catch-up przy incydencie 2026-08-01: lipiec „istniał",
+    więc _catch_up_missing_month_close nie odpalił backfillu ze statystyk HA.
+    """
+    from . import historic_store
+    return any(r.year == year and r.month == month and historic_store.has_energy_data(r.produced_kwh)
+               for r in records)
+
+
 def _notify_ha(title: str, message: str) -> None:
     import requests as _req
     token = os.environ.get('SUPERVISOR_TOKEN', '')
@@ -591,17 +605,22 @@ def main() -> None:
         meters reset at midnight, so live sensors no longer hold the number.
 
         HA long-term statistics survive the meter reset, so on every startup check
-        whether the previous calendar month is present and, if not, backfill it the
+        whether the previous calendar month has real data and, if not, backfill it the
         same way /api/historic/reread-month already does manually. Runs BEFORE
         invoice reconciliation below — reconcile_invoice() can only overwrite an
         existing month row, not create one, so a pending invoice for a fully missing
         month would otherwise silently fail to apply.
+
+        Uses month_has_data(), not month_present(): a data-less placeholder row
+        (e.g. from a CSV import that pre-seeded a full calendar year) passes
+        month_present but must still trigger the backfill — this is what let
+        July 2026 stay silently empty through the 2026-08-01 restart.
         """
         prev_y, prev_m = previous_month(date.today())
-        if month_present(historic_store.load(HISTORIC_PATH), prev_y, prev_m):
+        if month_has_data(historic_store.load(HISTORIC_PATH), prev_y, prev_m):
             return
         logger.warning(
-            'Startup: %d-%02d missing from historic.json (month-close prawdopodobnie nie '
+            'Startup: %d-%02d brak w historic.json lub bez danych (month-close prawdopodobnie nie '
             'odpalił) — odtwarzam ze statystyk HA', prev_y, prev_m)
         if _reread_month(prev_y, prev_m) is None:
             logger.error(
@@ -642,11 +661,23 @@ def main() -> None:
         )
 
     def _monthly_summary_notification() -> None:
-        """Polskie podsumowanie zamkniętego miesiąca → notify.family."""
+        """Polskie podsumowanie zamkniętego miesiąca → notify.family.
+
+        Jeśli rekord brakuje lub nie ma danych produkcji, wysyła jawne
+        ostrzeżenie zamiast milczeć albo — gorzej — pokazywać mylące
+        „oszczędności 0 zł" tak jak przy incydencie 2026-08-01 (log
+        z 2026-07-31 23:55:20 brzmiał dokładnie tak, mimo że lipiec
+        faktycznie wyprodukował ponad 800 kWh — dane po prostu nie
+        trafiły na dysk).
+        """
         today = date.today()
         rec = next((r for r in historic_store.load(HISTORIC_PATH)
                     if r.year == today.year and r.month == today.month), None)
-        if rec is None:
+        if rec is None or not historic_store.has_energy_data(rec.produced_kwh):
+            _notify_ha(
+                f'⚠️ PV — {today.year}-{today.month:02d} bez danych',
+                'Zamknięcie miesiąca nie zapisało odczytu produkcji — sprawdź logi add-onu '
+                'i w razie potrzeby uzupełnij ręcznie przez /api/historic/reread-month.')
             return
         savings = ((rec.self_consumed_savings_pln or 0.0)
                    + (rec.feedin_revenue_pln or 0.0)
@@ -678,6 +709,34 @@ def main() -> None:
             logger.exception('Month-close error')
             _record_job('month_close', False, 'zamknięcie miesiąca nie powiodło się')
 
+    def month_close_verify_job() -> None:
+        """Bezpiecznik na wypadek, gdyby month_close_job w ogóle się nie odpalił
+        (add-on nie działał o 23:55 i restart nie nastąpił do 1. dnia miesiąca —
+        _catch_up_missing_month_close łapie ten przypadek tylko na starcie).
+
+        Odpala się dzień po zamknięciu miesiąca; jeśli poprzedni miesiąc wciąż
+        nie ma danych, odtwarza go ze statystyk HA tak samo jak startowy catch-up.
+        """
+        try:
+            prev_y, prev_m = previous_month(date.today())
+            if month_has_data(historic_store.load(HISTORIC_PATH), prev_y, prev_m):
+                _record_job('month_close_verify', True)
+                return
+            logger.warning(
+                'month_close_verify: %d-%02d nadal bez danych dzień po zamknięciu — '
+                'odtwarzam ze statystyk HA', prev_y, prev_m)
+            if _reread_month(prev_y, prev_m) is None:
+                _notify_ha(
+                    f'⚠️ PV — {prev_y}-{prev_m:02d} bez danych',
+                    'Zamknięcie miesiąca nie powiodło się i backfill ze statystyk HA też '
+                    'nie znalazł danych — uzupełnij ręcznie przez /api/historic/reread-month.')
+                _record_job('month_close_verify', False, f'{prev_y}-{prev_m:02d} pozostaje pusty')
+            else:
+                _record_job('month_close_verify', True)
+        except Exception:
+            logger.exception('month_close_verify error')
+            _record_job('month_close_verify', False, 'weryfikacja zamknięcia miesiąca nie powiodła się')
+
     # ── Scheduler setup ───────────────────────────────────────────────────────
     _tz_name = os.environ.get('TZ', 'Europe/Warsaw')
     scheduler = BlockingScheduler(timezone=ZoneInfo(_tz_name))
@@ -690,6 +749,12 @@ def main() -> None:
     # Month-close: last day of month at 23:55 local time
     scheduler.add_job(month_close_job, CronTrigger(day='last', hour=23, minute=55),
                       id='month_close', name='Month-close snapshot')
+
+    # Month-close verify: 1st of each month at 01:00 — catches a month-close that
+    # silently produced no data (e.g. a placeholder row blocked the write) even
+    # when the add-on kept running past 23:55 and the startup catch-up never fired.
+    scheduler.add_job(month_close_verify_job, CronTrigger(day=1, hour=1, minute=0),
+                      id='month_close_verify', name='Month-close verify')
 
     # RCEm: days 11–20, every 2 hours starting at 08:00 local time
     # Skips automatically once the previous month price is stored.
@@ -725,6 +790,13 @@ def main() -> None:
     logger.info('PV ROI Tracker v%s started — poll every %d min', __version__, POLL_INTERVAL)
 
     _backup_data()   # ensure /share copy is current on every start
+
+    # Startup: drop empty placeholder rows for months that haven't happened yet
+    # (e.g. left over from a CSV import that pre-seeded a full calendar year) —
+    # defense in depth alongside append_month's own overwrite-empty logic.
+    _pruned = historic_store.prune_future_months(date.today(), HISTORIC_PATH)
+    if _pruned:
+        logger.info('Startup pruned %d future placeholder month(s)', _pruned)
 
     # Startup: backfill the previous month if a missed month-close left it out
     _catch_up_missing_month_close()

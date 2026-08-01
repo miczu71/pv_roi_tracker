@@ -190,7 +190,7 @@ Add `https://github.com/miczu71/pv_roi_tracker` in **Settings → Add-ons → Ad
 
 | File | Description |
 |---|---|
-| `/data/historic.json` (+ `.bak`) | Frozen monthly records |
+| `/data/historic.json` (+ `.bak`) | Frozen monthly records. A row existing for a month does not by itself mean it has data — see `historic_store.has_energy_data()` (v0.34.0) |
 | `/data/rcem_history.json` | RCEm prices keyed `YYYY-MM` (PLN/kWh gross), last 60 months |
 | `/data/rcem_corrections.json` | History of PSE price corrections |
 | `/data/rce_hourly.json` | Hourly RCE price cache + frozen monthly RCE-vs-RCEm results |
@@ -208,6 +208,9 @@ All files are backed up daily to `/share/pv_roi_tracker`.
 ```
 First start
   CSV (Google Sheets) → parser → historic.json
+  (pivot export seeds one row per calendar month, including future ones —
+   append_month() must overwrite these placeholders once real data arrives,
+   not skip them; see the v0.34.0 incident note below)
 
 Every 30 min
   historic.json   ┐
@@ -218,9 +221,24 @@ Every 30 min
 23:55 last day of month
   live HA reader → historic.json (month-close) → notify.family summary
 
+01:00, 1st of month
+  month-close verify: previous month still data-less? → backfill from HA statistics
+
 Days 11–20 / 1st of month
   PSE website → rcem_history.json → backfill historic.json → recompute
+
+On startup
+  prune_future_months() → drop data-less rows for months that haven't happened yet
+  catch-up: previous month data-less? → backfill from HA long-term statistics
 ```
+
+**2026-08-01 incident:** a data-less placeholder row for July 2026 (seeded by
+the initial CSV import back in May) silently absorbed month-close's real
+snapshot, because the old `append_month()` only checked whether the
+`(year, month)` key existed — not whether the row actually carried a
+production reading. See [CHANGELOG.md](CHANGELOG.md#0340--2026-08-01) for the
+full root-cause writeup and the four layers of fix (overwrite-empty,
+data-aware catch-up, a monthly verify job, and startup pruning).
 
 ## Requirements
 
@@ -236,7 +254,7 @@ pip install -r requirements.txt pytest
 python -m pytest -q
 ```
 
-406 tests covering the CSV parser, ROI engine (incl. the v0.31.0 NPV/IRR-horizon regression and the v0.33.0 warranty-degradation / lifetime-forecast logic), historic store (incl. crash-window safe-write regression), concatenator, invoice parser/layouts/store, RCE-hourly comparison (incl. v0.33.0's deposit-aware switch advisor), timezone-fix regression, main.py's missed-month-close catch-up logic, and (v0.32.0) the static-asset routes/cache headers.
+421 tests covering the CSV parser, ROI engine (incl. the v0.31.0 NPV/IRR-horizon regression and the v0.33.0 warranty-degradation / lifetime-forecast logic), historic store (incl. crash-window safe-write regression and the v0.34.0 empty-placeholder-overwrite regression), concatenator, invoice parser/layouts/store, RCE-hourly comparison (incl. v0.33.0's deposit-aware switch advisor), timezone-fix regression, main.py's missed-month-close catch-up logic (incl. v0.34.0's data-aware `month_has_data` check), and (v0.32.0) the static-asset routes/cache headers.
 
 ### CLI tools
 

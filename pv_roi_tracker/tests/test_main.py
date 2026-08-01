@@ -8,7 +8,7 @@ isolation, without booting the rest of the add-on.
 """
 from datetime import date
 
-from pv_roi_tracker.main import previous_month, month_present
+from pv_roi_tracker.main import previous_month, month_present, month_has_data
 from pv_roi_tracker.models import MonthlyRecord
 
 
@@ -53,3 +53,35 @@ def test_month_present_distinguishes_year():
     guards against a year/month field mix-up in the caller."""
     records = [_rec(2025, 6)]
     assert month_present(records, 2026, 6) is False
+
+
+# ── month_has_data ────────────────────────────────────────────────────────────
+
+def _placeholder(year, month):
+    """A data-less row — same shape as the ones a CSV import pre-seeds for
+    future calendar months. See historic_store.has_energy_data."""
+    return MonthlyRecord(year=year, month=month, produced_kwh=None)
+
+
+def test_month_has_data_true_for_real_record():
+    records = [_rec(2026, 7)]
+    assert month_has_data(records, 2026, 7) is True
+
+
+def test_month_has_data_false_for_placeholder():
+    """Reproduces the 2026-08-01 incident: month_present() would say True here
+    (the row exists), but month_has_data() must say False — this is exactly
+    the distinction that should have triggered the startup catch-up backfill
+    for July 2026 instead of silently accepting the empty row."""
+    records = [_placeholder(2026, 7)]
+    assert month_present(records, 2026, 7) is True
+    assert month_has_data(records, 2026, 7) is False
+
+
+def test_month_has_data_false_when_missing_entirely():
+    assert month_has_data([], 2026, 7) is False
+
+
+def test_month_has_data_false_for_zero_production():
+    records = [MonthlyRecord(year=2026, month=7, produced_kwh=0.0)]
+    assert month_has_data(records, 2026, 7) is False

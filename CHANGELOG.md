@@ -2,6 +2,51 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.34.0] — 2026-08-01
+
+Incydent produkcyjny tego samego dnia: po restarcie add-onu (aktualizacja HAOS)
+z UI zniknęły dane za lipiec 2026 — ROI 82,06% → 81,48%, „pozostało do spłaty"
+9312 → 9611 zł.
+
+**Root cause:** `historic.json` od 2026-05-03 zawierał puste wiersze-placeholdery
+dla całego pozostałego kalendarzowego 2026 roku (lipiec–grudzień) — artefakt
+importu pivota CSV z Google Sheets, który zasiewa po jednym wierszu na każdy
+miesiąc roku, także przyszłe, z pustymi komórkami produkcji odczytanymi jako
+`None`. `historic_store.append_month()` sprawdzał tylko klucz `(rok, miesiąc)`,
+nie treść — `month_close_job` 2026-07-31 23:55 zobaczył, że wiersz „już
+istnieje" i pominął zapis prawdziwego odczytu (862 kWh produkcji). Do restartu
+UI pokazywało lipiec z pamięci procesu (`_last_current`); restart wyczyścił
+cache i pusty wiersz z pliku wypłynął na wierzch. Ten sam mechanizm czekał na
+sierpień i każdy kolejny miesiąc do grudnia. Dane za lipiec odtworzone ręcznie
+przez istniejący `/api/historic/reread-month` ze statystyk długoterminowych HA
+(przeżyły reset licznika) — zweryfikowane restartem add-onu.
+
+### Fixed
+
+- **`historic_store.append_month()` nadpisuje puste placeholdery** zamiast je
+  pomijać — nowy `has_energy_data()` odróżnia „wiersz istnieje" od „wiersz ma
+  dane"; `overwrite_empty=True` domyślnie. To jest właściwa poprawka błędu —
+  wszystkie inne zmiany poniżej to dodatkowe warstwy zabezpieczeń.
+- **Startowy catch-up (`_catch_up_missing_month_close`) używa nowego
+  `month_has_data()`** zamiast `month_present()` — placeholder przechodził
+  starą kontrolę obecności, więc backfill ze statystyk HA się nie odpalał.
+- **`historic_store.prune_future_months()`** — przy starcie usuwa puste
+  wiersze dla przyszłych miesięcy (obrona w głąb, na wypadek innej ścieżki
+  zapisu omijającej powyższą poprawkę).
+- **Nowy job „Month-close verify"** (1. dnia miesiąca, 01:00) — sprawdza, czy
+  poprzedni miesiąc rzeczywiście ma dane; jeśli nie, odtwarza je ze statystyk
+  HA tak jak startowy catch-up. Łapie przypadek, w którym add-on działał
+  ciągle przez 23:55, ale sam zapis się nie powiódł.
+- **Miesięczne powiadomienie o zamknięciu** wysyła teraz jawne ostrzeżenie,
+  gdy rekord miesiąca brakuje lub nie ma danych, zamiast mylącego
+  „oszczędności 0 zł" (dokładnie to pokazało powiadomienie z 2026-07-31
+  23:55:20, mimo że lipiec faktycznie wyprodukował ponad 800 kWh).
+
++15 testów (`test_historic_store.py`: `has_energy_data`, nadpisywanie
+placeholderów, `prune_future_months`; `test_main.py`: `month_has_data`,
+w tym test odtwarzający dokładnie scenariusz incydentu). 421 zielonych
+łącznie.
+
 ## [0.33.0] — 2026-07-25
 
 Etap 3 z przeglądu 0.31.0/0.32.0 — trzy funkcje "insight" oparte na module

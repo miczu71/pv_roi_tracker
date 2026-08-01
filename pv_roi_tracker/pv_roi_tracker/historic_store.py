@@ -101,20 +101,91 @@ def save(
     logger.info("Saved %d records to %s", len(records), path)
 
 
-def append_month(record: MonthlyRecord, path: Path = DEFAULT_PATH) -> bool:
-    """Append a month record to historic.json. Idempotent — returns False if already present."""
+def has_energy_data(produced_kwh: Optional[float]) -> bool:
+    """True if a month row carries an actual production reading, not a placeholder.
+
+    A row can exist in historic.json with every energy field null — e.g. a
+    Google Sheets pivot CSV import seeds one row per calendar month of the
+    year, including months that haven't happened yet, with blank kWh cells
+    parsed as None. Such a row is indistinguishable from a real zero-yield
+    month by key alone, which is exactly what let append_month's old
+    key-only existence check silently swallow July 2026's real snapshot
+    (incident 2026-08-01): the placeholder row was already there, so the
+    idempotency guard treated it as "already recorded" and skipped writing.
+    """
+    return produced_kwh is not None and produced_kwh > 0
+
+
+def append_month(record: MonthlyRecord, path: Path = DEFAULT_PATH,
+                 overwrite_empty: bool = True) -> bool:
+    """Append a month record to historic.json.
+
+    Idempotent for months that already carry real data — returns False and
+    leaves the row untouched. If a row for this month already exists but is
+    a data-less placeholder (see has_energy_data), overwrite_empty=True (the
+    default) replaces it in place instead of silently skipping — this is the
+    fix for the 2026-08-01 incident where a March-vintage CSV import had
+    pre-seeded empty rows for the rest of calendar 2026, and month-close's
+    skip-if-exists check dropped July's real snapshot on the floor.
+    """
     doc = _load_document(path)
     months: list[dict] = doc.get('months', [])
-    existing_keys = {(m['year'], m['month']) for m in months}
-    if record.key() in existing_keys:
-        logger.info("Month %d-%02d already in historic.json — skipping", record.year, record.month)
-        return False
+    existing_idx = next((i for i, m in enumerate(months)
+                         if (m['year'], m['month']) == record.key()), None)
+    if existing_idx is not None:
+        existing = months[existing_idx]
+        if not (overwrite_empty and not has_energy_data(existing.get('produced_kwh'))):
+            logger.info("Month %d-%02d already in historic.json — skipping", record.year, record.month)
+            return False
+        logger.warning(
+            "Month %d-%02d already in historic.json but has no energy data (placeholder) — "
+            "overwriting with real snapshot", record.year, record.month)
+        new_dict = record.to_dict()
+        for preserve_field in ('tariff', 'rcem_status'):
+            if new_dict.get(preserve_field) is None and existing.get(preserve_field) is not None:
+                new_dict[preserve_field] = existing[preserve_field]
+        months[existing_idx] = new_dict
+        _save_document(doc, path)
+        logger.info("Overwrote placeholder %d-%02d in historic.json", record.year, record.month)
+        return True
     months.append(record.to_dict())
     months.sort(key=lambda m: (m['year'], m['month']))
     doc['months'] = months
     _save_document(doc, path)
     logger.info("Appended %d-%02d to historic.json", record.year, record.month)
     return True
+
+
+def prune_future_months(today, path: Path = DEFAULT_PATH) -> int:
+    """Remove placeholder rows for months after `today` with no energy data.
+
+    A future month can only ever be a real snapshot once month-close actually
+    runs for it — until then any row for it is necessarily a placeholder
+    (e.g. from a Google Sheets pivot CSV import that seeds a full calendar
+    year at once). Left in place, such rows are invisible in the UI (the web
+    layer filters to <= current month) but still block append_month's
+    idempotency check the same way the 2026-08-01 incident's July row did,
+    if the overwrite-empty logic above is ever bypassed. Called at startup
+    as defense in depth; idempotent, no-op once a month is in the past or
+    has real data.
+    """
+    doc = _load_document(path)
+    months: list[dict] = doc.get('months', [])
+    current_ym = (today.year, today.month)
+    keep = []
+    removed = 0
+    for m in months:
+        if (m['year'], m['month']) > current_ym and not has_energy_data(m.get('produced_kwh')):
+            logger.warning('prune_future_months: removing empty placeholder row %d-%02d',
+                           m['year'], m['month'])
+            removed += 1
+            continue
+        keep.append(m)
+    if removed:
+        doc['months'] = keep
+        _save_document(doc, path)
+        logger.info('prune_future_months: removed %d placeholder row(s)', removed)
+    return removed
 
 
 def replace_month(record: MonthlyRecord, path: Path = DEFAULT_PATH) -> bool:
