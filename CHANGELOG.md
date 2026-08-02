@@ -2,6 +2,43 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.35.1] — 2026-08-02
+
+Poprawka na żądanie użytkownika po przejrzeniu wyników `simulate()` z 0.35.0:
+"for the past data that exists on the invoices and is reconciled - I want to
+keep it as final data, even if it's slightly off from inverter data. invoice
+should be always final."
+
+**Problem:** rebase 0.35.0 chronił przy `apply()` tylko pola faktycznie
+rozliczone fakturą (`historic_store._RECONCILE_FIELDS`: import/eksport/
+autokonsumpcja/ceny) — ale `produced_kwh`, `battery_charge_kwh`,
+`battery_discharge_kwh` i `specific_yield` i tak dostawały świeżo przeliczoną
+wartość z LTS, nawet dla miesięcy z rozliczoną fakturą. Symulacja na
+realnych danych (38 miesięcy, 2023-06 do 2026-06, wszystkie rozliczone)
+pokazała to wprost: `produced_kwh` zmieniało się mimo że miesiąc miał
+zamknięty rachunek.
+
+### Changed
+
+- **Miesiąc rozliczony fakturą jest teraz zamrożony w całości**, nie tylko
+  we wskazanych polach. `rebase._build()` w ogóle nie wywołuje już pełnego
+  przeliczenia z wielu encji (`fetch_month`/`read_month_from_statistics`)
+  dla takich miesięcy — zamiast tego kopiuje stary rekord bit w bit.
+  Jedyny wyjątek: `cross_family_produced_kwh` (i wyliczone z niego
+  `balance_residual_kwh`) — to pole diagnostyczne, nigdy nie było
+  rozliczane fakturą ani używane do żadnej kwoty, więc jego odświeżenie nie
+  narusza zasady "faktura jest ostateczna".
+- Nowa, tania funkcja `live_reader.fetch_cross_family_produced()` —
+  odczyt LTS dla jednej encji (`sensor.inverter_total_yield`) zamiast
+  pełnego zestawu ról Energy Dashboard, właśnie do tego odświeżenia.
+- Raport `simulate()`/`apply()` ma teraz pole `frozen: bool` na każdym
+  miesiącu, żeby jawnie widzieć, które miesiące zostały zamrożone przez
+  rozliczenie fakturą, a które przeszły pełny rebuild.
+- Przy okazji: `_fetch_lifetime_month_stats`/`get_ha_tariff_stats` mają teraz
+  ograniczony zakres zapytania (`[ten miesiąc, następny miesiąc)` zamiast
+  bez końca aż do "teraz") — zapobiega zapytaniom >30s przy przeliczaniu
+  starszych miesięcy z wieloma encjami naraz.
+
 ## [0.35.0] — 2026-08-02
 
 Audyt na żądanie użytkownika: "make sure every kWh is accounted". Diagnoza

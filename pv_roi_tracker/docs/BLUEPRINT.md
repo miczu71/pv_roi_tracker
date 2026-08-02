@@ -317,3 +317,73 @@ restart, not daily as designed.
   `__init__.py`. `rebase.apply()` has not been run against the real
   `historic.json` — only `simulate()`-equivalent dry checks via
   `read_month_from_statistics()` directly.
+
+## 0.35.1 — invoice is always final, not just the billed fields
+
+0.35.0 shipped and was released. `simulate()` was then run against the real
+`historic.json` (38 months, 2023-06 through 2026-06, all invoice-reconciled)
+via an ad-hoc script from the shell (the add-on's own
+`/api/historic/simulate-rebase` endpoint kept hitting the Supervisor proxy's
+30s cap on a full 38-month, multi-entity-per-month LTS sweep). First run had
+a real bug — `reconciled_months` was passed as an empty set, so all 37
+reconciled months' billed data got discarded and replaced with flat fallback
+tariff rates, producing a misleading ROI drop (13826→8198 PLN). Retracted;
+re-run with the correct reconciled-months set gave sensible near-flat
+results.
+
+Reviewing that correct run's diff surfaced the actual problem the user then
+named directly: even for reconciled months, `produced_kwh`/`battery_charge_kwh`/
+`battery_discharge_kwh`/`specific_yield` were still being overwritten by the
+fresh LTS rebuild — only the fields in `historic_store._RECONCILE_FIELDS`
+(import/export/self-consumption/pricing) were protected. User's instruction:
+"for the past data that exists on the invoices and is reconciled - I want to
+keep it as final data, even if it's slightly off from inverter data. invoice
+should be always final."
+
+**Redesign:** `rebase._build()` now branches before doing any fetch. For a
+reconciled month it never calls the full multi-entity `fetch_month()` at
+all — it copies the old record unchanged (`_freeze_month()`) and only
+refreshes `cross_family_produced_kwh` via a new one-entity call,
+`live_reader.fetch_cross_family_produced()` (single LTS query against
+`sensor.inverter_total_yield`, not the whole Energy Dashboard role set).
+That field is a read-only diagnostic — never billed, never a stored "true"
+production figure — so refreshing it doesn't compromise the "invoice is
+final" guarantee. `balance_residual_kwh` is recomputed from it for the same
+reason. Non-reconciled months are untouched by this change: they still take
+the full `_merge_month()` rebuild exactly as in 0.35.0.
+
+Side benefit: since 37 of 38 months in the real historic.json are
+reconciled, this also fixes most of the timeout problem — a full rebase run
+now does 37 cheap single-entity queries plus 1 full multi-entity query
+instead of 38 full multi-entity queries.
+
+`_MERGE_FIELDS`/`_merge_month()` no longer take a `protect_reconcile` flag —
+there was nothing left for `_merge_month()` to protect once reconciled
+months bypass it entirely, so the old `_RECONCILE_FIELDS` restore-and-
+recompute-consumed_kwh logic inside `_merge_month()` was deleted along with
+it. `historic_store._RECONCILE_FIELDS` itself is unchanged and still used by
+`historic_store.reconcile_invoice()` (unrelated code path).
+
+Report shape gained a `frozen: bool` per month so simulate/apply output (and
+any future UI) can show which months were frozen vs rebuilt.
+
+Also shipped in this release: the query-bounding fix already implemented in
+0.35.0's working tree but not yet released — `_fetch_lifetime_month_stats`/
+`get_ha_tariff_stats` bound their LTS query to `[this month, next month)`
+instead of leaving the end open (HA's default queries to "now"), which
+measurably risked >30s multi-entity queries against a 2.2GB recorder
+database for older months.
+
+`tests/test_rebase.py` rewritten: the two tests asserting reconciled-month
+behavior now assert `produced_kwh`/`consumed_kwh`/etc. stay at the **old**
+value (not the rebuilt one), plus a new stub for `fetch_cross_family` and
+assertions on the `frozen` flag. 478 tests passing.
+
+**Still pending:** release checklist (bump done: 0.35.0→0.35.1 in both
+`config.yaml` and `__init__.py`; CHANGELOG.md/README.md updated), commit,
+push to GitHub via the two-repo workflow, publish GH release, trigger
+Supervisor update, verify. Re-run `simulate()` against the real
+`historic.json` once more after this change lands to confirm reconciled
+months now show `frozen: true` with zero delta on all but the diagnostic
+field. `apply()` has still never been run against the real `historic.json`
+— needs explicit user approval before that step.

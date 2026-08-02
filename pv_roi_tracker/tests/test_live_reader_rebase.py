@@ -246,7 +246,7 @@ def test_read_month_from_statistics_uses_dashboard_resolved_entities():
     with (
         patch.object(lr, 'get_energy_dashboard_sources', return_value=_fixed_sources()),
         patch.object(lr, 'get_ha_monthly_stats',
-                    side_effect=lambda entity_ids, start_month=None:
+                    side_effect=lambda entity_ids, start_month=None, end_month=None:
                         {eid: lts_values.get(eid, {}) for eid in entity_ids}),
     ):
         rec = lr.read_month_from_statistics(2026, 3, rcem_price=0.35)
@@ -266,7 +266,7 @@ def test_read_month_from_statistics_none_when_solar_missing():
     with (
         patch.object(lr, 'get_energy_dashboard_sources', return_value=_fixed_sources()),
         patch.object(lr, 'get_ha_monthly_stats',
-                    side_effect=lambda entity_ids, start_month=None: {eid: {} for eid in entity_ids}),
+                    side_effect=lambda entity_ids, start_month=None, end_month=None: {eid: {} for eid in entity_ids}),
     ):
         rec = lr.read_month_from_statistics(2026, 3, rcem_price=0.35)
     assert rec is None

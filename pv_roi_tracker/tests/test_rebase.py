@@ -43,6 +43,13 @@ def _fetch_stub(reachable: dict):
     return _fetch
 
 
+def _cross_family_stub(values: dict = None):
+    values = values or {}
+    def _fetch(year, month):
+        return values.get((year, month))
+    return _fetch
+
+
 # ── simulate ──────────────────────────────────────────────────────────────────
 
 def test_simulate_diffs_consumed_kwh_correctly():
@@ -98,32 +105,36 @@ def test_simulate_reports_roi_before_and_after():
     assert report['roi_after']['total_produced_kwh'] > report['roi_before']['total_produced_kwh']
 
 
-# ── invoice-reconciled months protected ──────────────────────────────────────
+# ── invoice-reconciled months frozen wholesale ───────────────────────────────
 
-def test_simulate_protects_reconciled_fields():
-    """A billed month's exported/purchased/self_consumed/savings/revenue must
-    survive the rebase untouched — the invoice outranks any sensor.
-    produced_kwh (never billed) takes the rebuilt value. consumed_kwh is also
-    never billed, but it's recomputed as self_consumed_kwh + purchased_kwh
-    using the just-restored billed values (not left at the freshly-rebuilt
-    LTS figure) — otherwise it would silently disagree with the very fields
-    sitting next to it on the same record."""
+def test_simulate_freezes_reconciled_month_entirely():
+    """An invoice-reconciled month is final, full stop — not just the billed
+    fields but produced_kwh/consumed_kwh/self_consumed_kwh too, even though
+    the fresh LTS rebuild disagrees with the old row on all of them. The
+    fetch_month() full rebuild is never even called for this month; only the
+    cheap cross-family diagnostic is refreshed."""
     fetch = _fetch_stub({(2026, 7): _july_new()})
-    report = rebase.simulate([_JULY_OLD], reconciled_months={(2026, 7)}, fetch_month=fetch)
+    cross_family = _cross_family_stub({(2026, 7): 900.0})
+    report = rebase.simulate([_JULY_OLD], reconciled_months={(2026, 7)},
+                             fetch_month=fetch, fetch_cross_family=cross_family)
     m = report['months'][0]
-    assert m['after']['exported_kwh'] == pytest.approx(430.00)   # billed value preserved
-    assert m['after']['purchased_kwh'] == pytest.approx(84.32)   # billed value preserved
-    assert m['after']['self_consumed_kwh'] == pytest.approx(432.02)  # billed value preserved
-    assert m['after']['produced_kwh'] == pytest.approx(867.11)   # rebuilt (never billed)
-    assert m['after']['consumed_kwh'] == pytest.approx(432.02 + 84.32)  # recomputed from restored fields
+    assert m['frozen'] is True
+    assert m['after']['exported_kwh'] == pytest.approx(430.00)
+    assert m['after']['purchased_kwh'] == pytest.approx(84.32)
+    assert m['after']['self_consumed_kwh'] == pytest.approx(432.02)
+    assert m['after']['consumed_kwh'] == pytest.approx(945.94)
+    assert m['after']['produced_kwh'] == pytest.approx(862.02)  # untouched, NOT the rebuilt 867.11
+    assert m['after']['cross_family_produced_kwh'] == pytest.approx(900.0)  # diagnostic only, refreshed
 
 
 def test_simulate_unreconciled_month_takes_full_rebuild():
     fetch = _fetch_stub({(2026, 7): _july_new()})
     report = rebase.simulate([_JULY_OLD], reconciled_months=set(), fetch_month=fetch)
     m = report['months'][0]
+    assert m['frozen'] is False
     assert m['after']['exported_kwh'] == pytest.approx(431.56)
     assert m['after']['self_consumed_kwh'] == pytest.approx(435.55)
+    assert m['after']['produced_kwh'] == pytest.approx(867.11)
 
 
 # ── apply ─────────────────────────────────────────────────────────────────────
@@ -151,16 +162,19 @@ def test_apply_writes_rebased_records_and_snapshots_first(store):
     assert july.produced_kwh == pytest.approx(867.11)
 
 
-def test_apply_preserves_reconciled_fields_on_disk(store):
+def test_apply_freezes_reconciled_month_on_disk(store):
     historic_store.save([_JULY_OLD], store)
     fetch = _fetch_stub({(2026, 7): _july_new()})
+    cross_family = _cross_family_stub({(2026, 7): 900.0})
 
-    rebase.apply(path=store, reconciled_months={(2026, 7)}, fetch_month=fetch)
+    rebase.apply(path=store, reconciled_months={(2026, 7)}, fetch_month=fetch,
+                fetch_cross_family=cross_family)
 
     records = historic_store.load(store)
     july = next(r for r in records if r.month == 7)
-    assert july.exported_kwh == pytest.approx(430.00)  # billed, untouched
-    assert july.produced_kwh == pytest.approx(867.11)  # rebuilt
+    assert july.exported_kwh == pytest.approx(430.00)   # billed, untouched
+    assert july.produced_kwh == pytest.approx(862.02)   # untouched, NOT the rebuilt 867.11
+    assert july.cross_family_produced_kwh == pytest.approx(900.0)  # diagnostic refreshed
 
 
 def test_apply_leaves_unavailable_months_untouched(store):

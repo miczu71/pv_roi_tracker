@@ -11,10 +11,21 @@ Two-step workflow — nothing is written until apply() is explicitly called:
                live_reader.read_month_from_statistics (lifetime meters) and
                diff every kWh field plus the ROI headline figures.
   apply()    — snapshot historic.json, then write the rebased records,
-               keeping invoice-reconciled fields authoritative (a bill
-               outranks any sensor — see historic_store._RECONCILE_FIELDS)
-               and leaving tariff/rcem_status/projected_* untouched exactly
-               as replace_month() already does.
+               leaving tariff/rcem_status/projected_* untouched exactly as
+               replace_month() already does.
+
+Invoice-reconciled months are frozen, not merely field-protected: once a
+month has a reconciled invoice, that record is the final word — including
+produced_kwh/battery_*/specific_yield, fields an invoice never bills but
+which the old design still let the LTS rebuild overwrite. The user made
+this explicit: "for the past data that exists on the invoices and is
+reconciled - I want to keep it as final data, even if it's slightly off
+from inverter data. invoice should be always final." So reconciled months
+skip the full multi-entity LTS refetch entirely and pass through byte-for-
+byte, except for a cheap single-entity refresh of cross_family_produced_kwh
+(and the balance_residual_kwh derived from it) — a read-only diagnostic
+overlay, never a billed or produced figure, so refreshing it doesn't
+compromise finality.
 """
 from __future__ import annotations
 
@@ -29,10 +40,13 @@ from .models import MonthlyRecord
 logger = logging.getLogger(__name__)
 
 FetchMonth = Callable[[int, int], Optional[MonthlyRecord]]
+FetchCrossFamily = Callable[[int, int], Optional[float]]
 
-# Fields the LTS rebuild is allowed to overwrite. Everything else on the old
-# row (tariff, rcem_status, projected_month_kwh, projected_month_savings_pln,
-# feedin_price_pln_kwh, rcem_status) passes through untouched.
+# Fields the LTS rebuild is allowed to overwrite for non-reconciled months.
+# Everything else on the old row (tariff, rcem_status, projected_month_kwh,
+# projected_month_savings_pln, feedin_price_pln_kwh, rcem_status) passes
+# through untouched. Reconciled months never reach this list at all — see
+# module docstring.
 _MERGE_FIELDS = (
     'produced_kwh', 'exported_kwh', 'purchased_kwh', 'purchased_kwh_peak',
     'purchased_kwh_offpeak', 'consumed_kwh', 'self_consumed_kwh',
@@ -48,37 +62,31 @@ def _default_fetch(year: int, month: int) -> Optional[MonthlyRecord]:
     return live_reader.read_month_from_statistics(year, month)
 
 
-def _merge_month(old: dict, new: MonthlyRecord, protect_reconcile: bool) -> dict:
-    """Build the rebased dict for one month.
+def _default_fetch_cross_family(year: int, month: int) -> Optional[float]:
+    from . import live_reader
+    return live_reader.fetch_cross_family_produced(year, month)
 
-    Starts from the old row (preserves tariff/rcem_status/projected_* as-is),
-    overlays the LTS rebuild's kWh fields, then — for invoice-reconciled
-    months — restores the billed fields (historic_store._RECONCILE_FIELDS)
-    since an invoice outranks any sensor reading. produced_kwh/battery_*/
-    specific_yield are never touched by invoice reconciliation, so they
-    always take the freshly rebuilt value even for reconciled months.
 
-    consumed_kwh is NOT in _RECONCILE_FIELDS (invoices never billed it) but
-    live_reader._build_record() always derives it as self_consumed_kwh +
-    purchased_kwh — so once self_consumed_kwh/purchased_kwh are restored to
-    their billed values below, consumed_kwh must be recomputed from those
-    same restored values, or it's left holding the freshly-rebuilt (LTS)
-    self_consumed + imported instead, silently inconsistent with the billed
-    figures sitting right next to it on the same record.
-    """
+def _merge_month(old: dict, new: MonthlyRecord) -> dict:
+    """Build the rebased dict for a non-reconciled month: start from the old
+    row (preserves tariff/rcem_status/projected_* as-is) and overlay the LTS
+    rebuild's kWh fields. Never called for reconciled months — those are
+    frozen wholesale in _build() instead."""
     merged = dict(old)
     new_dict = new.to_dict()
     for f in _MERGE_FIELDS:
         merged[f] = new_dict.get(f)
-    if protect_reconcile:
-        for f in historic_store._RECONCILE_FIELDS:
-            if old.get(f) is not None:
-                merged[f] = old[f]
-        if merged.get('self_consumed_kwh') is not None and merged.get('purchased_kwh') is not None:
-            merged['consumed_kwh'] = round(merged['self_consumed_kwh'] + merged['purchased_kwh'], 3)
-        # Recompute the residual against the restored (billed) fields, not
-        # the just-overwritten LTS ones — the stored residual must describe
-        # the record that actually ends up on disk.
+    return merged
+
+
+def _freeze_month(old: dict, cross_family_produced_kwh: Optional[float]) -> dict:
+    """Build the rebased dict for an invoice-reconciled month: every field
+    passes through unchanged except cross_family_produced_kwh (a read-only
+    diagnostic, refreshed cheaply) and the balance_residual_kwh derived from
+    it. Nothing billed, produced, or stored-as-final is touched."""
+    merged = dict(old)
+    if cross_family_produced_kwh is not None:
+        merged['cross_family_produced_kwh'] = cross_family_produced_kwh
         merged['balance_residual_kwh'] = balance.residual_kwh(MonthlyRecord.from_dict(merged))
     return merged
 
@@ -101,6 +109,7 @@ def _build(
     records: list[MonthlyRecord],
     reconciled_months: set,
     fetch_month: FetchMonth,
+    fetch_cross_family: FetchCrossFamily,
     roi_kwargs: dict,
 ) -> tuple[dict, list[dict]]:
     """Shared core for simulate()/apply(). Returns (report, rebased_month_dicts)."""
@@ -117,14 +126,18 @@ def _build(
             rebased_records.append(r)
             continue
 
-        new = fetch_month(r.year, r.month)
-        if new is None:
-            unavailable.append(f'{r.year}-{r.month:02d}')
-            rebased_dicts.append(old_dict)
-            rebased_records.append(r)
-            continue
+        is_reconciled = (r.year, r.month) in reconciled_months
+        if is_reconciled:
+            merged_dict = _freeze_month(old_dict, fetch_cross_family(r.year, r.month))
+        else:
+            new = fetch_month(r.year, r.month)
+            if new is None:
+                unavailable.append(f'{r.year}-{r.month:02d}')
+                rebased_dicts.append(old_dict)
+                rebased_records.append(r)
+                continue
+            merged_dict = _merge_month(old_dict, new)
 
-        merged_dict = _merge_month(old_dict, new, (r.year, r.month) in reconciled_months)
         merged = MonthlyRecord.from_dict(merged_dict)
         rebased_dicts.append(merged_dict)
         rebased_records.append(merged)
@@ -137,7 +150,7 @@ def _build(
             if isinstance(before.get(f), (int, float)) and isinstance(after.get(f), (int, float))
         }
         months_out.append({'ym': f'{r.year}-{r.month:02d}', 'before': before,
-                          'after': after, 'delta': delta})
+                          'after': after, 'delta': delta, 'frozen': is_reconciled})
 
         b = balance.compute_balance(merged)
         if b['reason'] == 'breach':
@@ -160,18 +173,22 @@ def simulate(
     records: list[MonthlyRecord],
     reconciled_months: Optional[set] = None,
     fetch_month: Optional[FetchMonth] = None,
+    fetch_cross_family: Optional[FetchCrossFamily] = None,
     roi_kwargs: Optional[dict] = None,
 ) -> dict:
     """Read-only dry run — never touches historic.json.
 
-    Returns {'months': [{'ym', 'before', 'after', 'delta'}], 'unavailable':
-    [...], 'still_broken': [...], 'roi_before': {...}, 'roi_after': {...}}.
-    'unavailable' months had no LTS data yet and were left untouched.
-    'still_broken' months fail the balance check even after rebase — they
-    need investigation, not blind acceptance of the rebuild.
+    Returns {'months': [{'ym', 'before', 'after', 'delta', 'frozen'}],
+    'unavailable': [...], 'still_broken': [...], 'roi_before': {...},
+    'roi_after': {...}}. 'unavailable' months had no LTS data yet and were
+    left untouched. 'still_broken' months fail the balance check even after
+    rebase — they need investigation, not blind acceptance of the rebuild.
+    'frozen' months are invoice-reconciled: only cross_family_produced_kwh/
+    balance_residual_kwh were refreshed, every other field is byte-for-byte
+    the old value (see module docstring — invoice is always final).
     """
     report, _ = _build(records, reconciled_months or set(), fetch_month or _default_fetch,
-                       roi_kwargs or {})
+                       fetch_cross_family or _default_fetch_cross_family, roi_kwargs or {})
     return report
 
 
@@ -179,6 +196,7 @@ def apply(
     path: Path = historic_store.DEFAULT_PATH,
     reconciled_months: Optional[set] = None,
     fetch_month: Optional[FetchMonth] = None,
+    fetch_cross_family: Optional[FetchCrossFamily] = None,
     roi_kwargs: Optional[dict] = None,
 ) -> dict:
     """Snapshot historic.json, then write the rebased records in place.
@@ -195,7 +213,9 @@ def apply(
     records = [MonthlyRecord.from_dict(m) for m in doc.get('months', [])]
 
     report, rebased_dicts = _build(records, reconciled_months or set(),
-                                   fetch_month or _default_fetch, roi_kwargs or {})
+                                   fetch_month or _default_fetch,
+                                   fetch_cross_family or _default_fetch_cross_family,
+                                   roi_kwargs or {})
 
     snapshot_path = None
     if path.exists():

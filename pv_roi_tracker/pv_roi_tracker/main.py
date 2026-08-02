@@ -278,8 +278,10 @@ def main() -> None:
         return healed
 
     def _reconciled_months() -> set:
-        """(year, month) miesięcy rozliczonych fakturą — te pola wygrywają z
-        LTS przy rebase (rachunek jest bardziej autorytatywny niż sensor)."""
+        """(year, month) miesięcy rozliczonych fakturą — cały rekord dla
+        tych miesięcy jest zamrożony przy rebase (faktura jest zawsze
+        ostateczna, nawet jeśli produced_kwh/battery_* nieznacznie różni się
+        od świeżego odczytu licznika)."""
         out = set()
         for rec in invoice_store.load(INVOICE_PATH).values():
             if rec.get('reconciled', False) and rec.get('doc_type', 'rozliczeniowa') == 'rozliczeniowa':

@@ -259,11 +259,16 @@ On startup
   same sweep as month-close verify, across every month since the first with data
 ```
 
-Dry-run rebase (od v0.35.0): `POST /api/historic/simulate-rebase` re-fetches
-every historic month from the Energy-Dashboard-matched lifetime meters and
-diffs every field against what's stored, without writing anything;
-`POST /api/historic/apply-rebase` snapshots `historic.json` and writes the
-rebased records, keeping invoice-reconciled fields authoritative.
+Dry-run rebase (od v0.35.0, freeze semantics od v0.35.1): `POST
+/api/historic/simulate-rebase` re-fetches every historic month from the
+Energy-Dashboard-matched lifetime meters and diffs every field against
+what's stored, without writing anything; `POST /api/historic/apply-rebase`
+snapshots `historic.json` and writes the rebased records. Invoice-reconciled
+months are **frozen wholesale**, not just on the billed fields — an invoice
+is always final, even where it slightly disagrees with a fresh inverter
+reading (e.g. `produced_kwh`). The only thing still refreshed for a
+reconciled month is the read-only `cross_family_produced_kwh` diagnostic
+(single cheap LTS query), never a billed or stored-as-final figure.
 
 **2026-08-01 incident:** a data-less placeholder row for July 2026 (seeded by
 the initial CSV import back in May) silently absorbed month-close's real

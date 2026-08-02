@@ -248,6 +248,7 @@ def get_ha_tariff_stats(
     entity_ids: list,
     start: str,
     period: str = 'day',
+    end: Optional[str] = None,
 ) -> dict:
     """
     Fetch HA long-term statistics via WebSocket for the given entity_ids.
@@ -258,8 +259,18 @@ def get_ha_tariff_stats(
       'hour'  → 'YYYY-MM-DDTHH'
 
     Uses 'change' stat type (monthly/daily variable cost for utility_meters).
-    'start' timestamps from HA are epoch milliseconds in UTC — converted to local
-    time for bucketing (container TZ = Europe/Warsaw).
+    'start'/'end' are 'YYYY-MM-DD' — converted to local midnight for bucketing
+    (container TZ = Europe/Warsaw).
+
+    end: pass this whenever the caller only needs a narrow window (notably
+    _fetch_lifetime_month_stats, one target month). Leaving it unset queries
+    from 'start' all the way to *now* — confirmed to reliably exceed HA's
+    default statistics_during_period response time (>30s, every time) once
+    'start' is more than roughly a year in the past and several entities are
+    requested at once (e.g. every month rebase.simulate() touches for a
+    3-year history). Callers that intentionally want the whole open range —
+    main.py's tariff-stats fetch, which reads a dict of many months at once
+    from a fixed early start — must keep end=None.
     """
     result = {eid: {} for eid in entity_ids}
     try:
@@ -275,7 +286,11 @@ def get_ha_tariff_stats(
         # historical bucket.
         y, m, d = (int(p) for p in start.split('-'))
         local_midnight = _dt(y, m, d, tzinfo=ZoneInfo(_TZ_NAME))
-        data = _ws_statistics(entity_ids, local_midnight.isoformat(), period)
+        end_iso = None
+        if end is not None:
+            ey, em, ed = (int(p) for p in end.split('-'))
+            end_iso = _dt(ey, em, ed, tzinfo=ZoneInfo(_TZ_NAME)).isoformat()
+        data = _ws_statistics(entity_ids, local_midnight.isoformat(), period, end_iso=end_iso)
         for eid in entity_ids:
             for entry in data.get(eid, []):
                 start_ms = entry.get('start')
@@ -347,12 +362,17 @@ def get_hourly_energy(start_iso: str, end_iso: Optional[str] = None) -> dict:
         return {}
 
 
-def get_ha_monthly_stats(entity_ids: list, start_month: str = '2024-12-01') -> dict:
+def get_ha_monthly_stats(entity_ids: list, start_month: str = '2024-12-01',
+                         end_month: Optional[str] = None) -> dict:
     """
     Thin wrapper around get_ha_tariff_stats for monthly statistics.
     Returns {entity_id: {YYYY-MM: float}}.
+
+    end_month: see get_ha_tariff_stats' end= — pass this for a single-month
+    lookup (_fetch_lifetime_month_stats); leave unset for the intentionally
+    open-ended "every month since X" queries elsewhere in this codebase.
     """
-    return get_ha_tariff_stats(entity_ids, start=start_month, period='month')
+    return get_ha_tariff_stats(entity_ids, start=start_month, period='month', end=end_month)
 
 
 def _fetch_lifetime_month_stats(year: int, month: int, entity_ids: list) -> dict:
@@ -362,6 +382,12 @@ def _fetch_lifetime_month_stats(year: int, month: int, entity_ids: list) -> dict
     'change' for the current incomplete period, updated on its normal compile
     cadence (a few minutes' lag at worst, fine at a 30-minute poll interval).
 
+    Bounds the query to [this month, next month) — confirmed that an
+    unbounded query (this month to *now*, HA's default when no end_time is
+    given) reliably exceeds 30s once the target month is more than roughly a
+    year old and several entities are requested at once, e.g. every month
+    rebase.simulate() touches across a 3-year history.
+
     Returns {entity_id: float | None}. None means missing OR a negative
     'change' — some monthly-resetting helper sensors (confirmed on
     sensor.inverter_yield_self_use_monthly: -148.06 for a real month) produce
@@ -370,7 +396,9 @@ def _fetch_lifetime_month_stats(year: int, month: int, entity_ids: list) -> dict
     as 0.0, not treated as missing.
     """
     start = f'{year}-{month:02d}-01'
-    stats = get_ha_monthly_stats(entity_ids, start_month=start)
+    next_year, next_month = (year + 1, 1) if month == 12 else (year, month + 1)
+    end = f'{next_year}-{next_month:02d}-01'
+    stats = get_ha_monthly_stats(entity_ids, start_month=start, end_month=end)
     month_key = f'{year}-{month:02d}'
     out: dict = {}
     for eid in entity_ids:
@@ -705,6 +733,19 @@ def read_month_from_statistics(
         source='lts',
         cross_family_produced_kwh=vals.get(_TEMPLATE_PRODUCED_METER),
     )
+
+
+def fetch_cross_family_produced(year: int, month: int) -> Optional[float]:
+    """Single-entity LTS lookup of the cross-family production meter only.
+
+    Used by rebase.py for invoice-reconciled months: those records are
+    otherwise left 100% untouched (the invoice is final), but the balance
+    check's diagnostic 'other family' figure is still worth refreshing, and
+    a 1-entity query is cheap enough to do every simulate/apply run without
+    the full multi-entity read_month_from_statistics() fetch.
+    """
+    vals = _fetch_lifetime_month_stats(year, month, [_TEMPLATE_PRODUCED_METER])
+    return vals.get(_TEMPLATE_PRODUCED_METER)
 
 
 def read_current_month(
