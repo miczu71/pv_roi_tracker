@@ -48,7 +48,6 @@ def test_build_record_derived_fields():
             year=2026, month=6,
             produced=850.0,
             exported=320.0,
-            consumed=400.0,
             peak=210.0,
             offpeak=190.0,
             arb_kwh=60.0,
@@ -75,7 +74,7 @@ def test_build_record_uses_explicit_tariff_rates_over_env_fallback():
     with patch.object(lr, '_get_state', side_effect=lambda eid: None):
         rec = lr._build_record(
             year=2026, month=6,
-            produced=850.0, exported=320.0, consumed=400.0,
+            produced=850.0, exported=320.0,
             peak=210.0, offpeak=190.0, arb_kwh=60.0, rcem_price=0.35,
             peak_gross=1.50, offpeak_gross=0.70,
         )
@@ -92,7 +91,7 @@ def test_build_record_falls_back_to_env_rates_when_not_given():
     with patch.object(lr, '_get_state', side_effect=lambda eid: None):
         rec = lr._build_record(
             year=2026, month=6,
-            produced=850.0, exported=320.0, consumed=400.0,
+            produced=850.0, exported=320.0,
             peak=210.0, offpeak=190.0, arb_kwh=60.0, rcem_price=0.35,
         )
     expected_buy = (210 * 1.23 + 190 * 0.63) / (210 + 190)
@@ -105,7 +104,6 @@ def test_read_current_month_forwards_tariff_rates_to_build_record():
     states = {
         'sensor.inverter_yield_monthly': 200.0,
         'sensor.power_meter_exported_energy_monthly': 80.0,
-        'sensor.house_consumption_energy_monthly': 250.0,
         'sensor.monthly_energy_peak': 120.0,
         'sensor.monthly_energy_offpeak': 100.0,
         'sensor.battery_grid_charge_off_peak_monthly': 30.0,
@@ -113,6 +111,8 @@ def test_read_current_month_forwards_tariff_rates_to_build_record():
     with (
         patch.object(lr, '_get_state', side_effect=lambda eid: states.get(eid, None)),
         patch.object(lr, '_solcast_month_projection', return_value=None),
+        patch.object(lr, 'get_energy_dashboard_sources', return_value=dict(lr._FALLBACK_ENERGY_SOURCES)),
+        patch.object(lr, '_fetch_lifetime_month_stats', return_value={}),
         patch('pv_roi_tracker.live_reader.date') as mock_date,
     ):
         mock_date.today.return_value = date(2026, 7, 15)
@@ -127,7 +127,7 @@ def test_build_record_no_rcem_pending():
     with patch.object(lr, '_get_state', side_effect=lambda eid: None):
         rec = lr._build_record(
             year=2026, month=6,
-            produced=400.0, exported=100.0, consumed=None,
+            produced=400.0, exported=100.0,
             peak=None, offpeak=None, arb_kwh=None,
             rcem_price=None,
         )
@@ -168,11 +168,12 @@ def test_read_current_month_returns_none_when_low_produced_day1():
 
 
 def test_read_current_month_ok_when_produced_above_threshold():
-    """produced=200 kWh w day=1 — prawdziwy odczyt, nie reset."""
+    """produced=200 kWh w day=1 — prawdziwy odczyt, nie reset. LTS correction
+    unavailable here (mocked to {}), so produced/exported fall back to the
+    live REST readings — exactly what this test is checking."""
     states = {
         'sensor.inverter_yield_monthly': 200.0,
         'sensor.power_meter_exported_energy_monthly': 80.0,
-        'sensor.house_consumption_energy_monthly': 250.0,
         'sensor.monthly_energy_peak': 120.0,
         'sensor.monthly_energy_offpeak': 100.0,
         'sensor.battery_grid_charge_off_peak_monthly': 30.0,
@@ -180,6 +181,8 @@ def test_read_current_month_ok_when_produced_above_threshold():
     with (
         patch.object(lr, '_get_state', side_effect=lambda eid: states.get(eid, None)),
         patch.object(lr, '_solcast_month_projection', return_value=None),
+        patch.object(lr, 'get_energy_dashboard_sources', return_value=dict(lr._FALLBACK_ENERGY_SOURCES)),
+        patch.object(lr, '_fetch_lifetime_month_stats', return_value={}),
         patch('pv_roi_tracker.live_reader.date') as mock_date,
     ):
         mock_date.today.return_value = date(2026, 7, 1)
@@ -193,13 +196,16 @@ def test_read_current_month_ok_after_day1():
     with (
         patch.object(lr, '_get_state', return_value=3.0),
         patch.object(lr, '_solcast_month_projection', return_value=None),
+        patch.object(lr, 'get_energy_dashboard_sources', return_value=dict(lr._FALLBACK_ENERGY_SOURCES)),
+        patch.object(lr, '_fetch_lifetime_month_stats', return_value={}),
         patch('pv_roi_tracker.live_reader.date') as mock_date,
     ):
         mock_date.today.return_value = date(2026, 7, 15)
         result = lr.read_current_month(rcem_price=None)
     # produced=3.0 > 0 i day≠1, więc NIE powinno zwrócić None z powodu guardu
     # (może zwrócić None jeśli _build_record daje None z innych powodów, ale nie z guardu)
-    # Sprawdzamy że guard nie zadziałał — produced wraca jako 3.0
+    # Sprawdzamy że guard nie zadziałał — produced wraca jako 3.0 (fallback z REST,
+    # bo LTS correction jest zamockowana na {})
     assert result is not None
     assert result.produced_kwh == 3.0
 

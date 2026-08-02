@@ -508,9 +508,15 @@ def calculate(
     # ── Autokonsumpcja / autarkia / CO2 / degradacja ─────────────────────────
     total_self_consumed = sum(r.self_consumed_kwh or 0.0 for r in records)
     total_consumed = sum(r.consumed_kwh or 0.0 for r in records)
-    self_consumption_rate = (round(total_self_consumed / total_produced * 100.0, 1)
+    # Clamped to 100%: self_consumed_kwh and consumed_kwh are computed from
+    # produced/exported/imported (see live_reader.py — this installation has
+    # no independent whole-house meter to measure them against), so a mix of
+    # un-rebased legacy records with a different provenance, or a transient
+    # sensor glitch, could otherwise publish a >100% autarky/self-consumption
+    # figure with no indication anything was wrong.
+    self_consumption_rate = (round(min(total_self_consumed / total_produced * 100.0, 100.0), 1)
                              if total_produced > 0 else None)
-    autarky = (round(total_self_consumed / total_consumed * 100.0, 1)
+    autarky = (round(min(total_self_consumed / total_consumed * 100.0, 100.0), 1)
                if total_consumed > 0 else None)
     co2_avoided = round(total_produced * co2_factor, 1)
     yoy_delta = degradation_analysis(records, system_kwp, today)['yoy_delta_pct']

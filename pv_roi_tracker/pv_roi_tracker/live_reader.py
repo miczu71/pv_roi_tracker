@@ -11,6 +11,7 @@ import os
 from datetime import date, datetime as _dt, timedelta, timezone as _tz
 from statistics import mean
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import requests
 import websocket as _ws
@@ -27,9 +28,60 @@ _SYSTEM_KWP           = float(os.environ.get('SYSTEM_KWP', '6.72'))
 _TARIFF_PEAK_PRICE    = float(os.environ.get('TARIFF_PEAK_PRICE', '1.23'))
 _TARIFF_OFFPEAK_PRICE = float(os.environ.get('TARIFF_OFFPEAK_PRICE', '0.63'))
 _BATTERY_RT_EFF       = float(os.environ.get('BATTERY_ROUNDTRIP_EFFICIENCY', '0.92'))
+_TZ_NAME              = os.environ.get('TZ', 'Europe/Warsaw')
+
+# Lifetime total_increasing meters — the canonical kWh basis since v0.35.0
+# (see docs/pv_roi_energy_rebase plan). Unlike the monthly utility_meter
+# helpers below, these never reset, so a long-term-statistics 'change' over a
+# calendar month is an exact total.
+#
+# WHICH entity is canonical for each role is NOT hardcoded by name — it is
+# read at runtime from HA's own Energy Dashboard configuration (the same
+# .storage/energy prefs Settings -> Energy reads), via
+# get_energy_dashboard_sources() below. An earlier version of this file
+# guessed sensor.inverter_total_yield for production by name-matching; that
+# guess disagreed with what the Energy Dashboard is actually configured to
+# use (sensor.energy_pv) by ~6.5% for March 2026. _FALLBACK_ENERGY_SOURCES is
+# used only if the Energy Dashboard isn't configured or the WS call fails.
+_FALLBACK_ENERGY_SOURCES: dict = {
+    'solar':             ['sensor.inverter_total_yield'],
+    'grid_import':       ['sensor.power_meter_consumption'],
+    'grid_export':       ['sensor.power_meter_exported'],
+    'battery_charge':    ['sensor.battery_total_charge'],
+    'battery_discharge': ['sensor.battery_total_discharge'],
+}
+
+# The OTHER production-tracking family, used only for the balance.py
+# cross-family plausibility check (never to compute produced_kwh itself) —
+# see balance.py module docstring for why this, not a same-record residual,
+# is the one signal on this installation that carries real information.
+_TEMPLATE_PRODUCED_METER = 'sensor.inverter_total_yield'
+
+# Zone-tariff split for billing (peak/off-peak) — not modeled by HA's Energy
+# Dashboard schema at all (that's a tariff-billing concept layered on top via
+# utility_meter tariffs), so these stay directly named rather than discovered.
+# Chosen to match what the Energy Dashboard's own grid entries reference
+# (sensor.daily_energy_peak/offpeak), not the old sensor.monthly_energy_peak/
+# offpeak guess, so the total import these split also lines up with the
+# dashboard's own grid-import total.
+_ZONE_PEAK_METER    = 'sensor.daily_energy_peak'
+_ZONE_OFFPEAK_METER = 'sensor.daily_energy_offpeak'
+
+# Minimalna produkcja miesięczna uznawana za „licznik po resecie".
+# Nawet pochmurny czerwiec w Polsce produkuje >5 kWh — poniżej tej wartości
+# zakładamy, że utility_meter właśnie się zresetował i odczyt jest fałszywy.
+# Dotyczy tylko read_current_month() (sensor.inverter_yield_monthly, resetujący
+# się co miesiąc, wciąż używany jako prowizoryczne zabezpieczenie) — lifetime
+# liczniki użyte w read_month_from_statistics() nigdy się nie resetują, więc
+# nie potrzebują tego zabezpieczenia.
+_MIN_PRODUCED_KWH = 5.0
 
 # Ostatni znany stan dostępności Solcast — None dopóki nie próbowano odczytu.
 _solcast_available: Optional[bool] = None
+
+# Cache dla get_energy_dashboard_sources() — preferencje Energy Dashboard
+# rzadko się zmieniają; odświeżane raz na start + raz dziennie (patrz main.py).
+_energy_prefs_cache: Optional[dict] = None
 
 
 def solcast_available() -> Optional[bool]:
@@ -62,6 +114,27 @@ def _get_state_raw(entity_id: str) -> Optional[str]:
         return None
 
 
+def _ws_connect_authed(timeout: int = 30):
+    """Open an authenticated HA WebSocket connection (auth handshake done).
+    Caller owns the connection and must close it. Raises on any failure."""
+    ws = _ws.create_connection('ws://supervisor/core/websocket', timeout=timeout)
+
+    def _recv() -> dict:
+        return _json.loads(ws.recv())
+
+    msg = _recv()  # auth_required
+    if msg.get('type') != 'auth_required':
+        ws.close()
+        raise RuntimeError(f'Unexpected handshake message: {msg.get("type")}')
+
+    ws.send(_json.dumps({'type': 'auth', 'access_token': _TOKEN}))
+    auth_reply = _recv()
+    if auth_reply.get('type') != 'auth_ok':
+        ws.close()
+        raise RuntimeError(f'WebSocket auth failed: {auth_reply.get("message")}')
+    return ws
+
+
 def _ws_statistics(
     statistic_ids: list,
     start_iso: str,
@@ -78,20 +151,7 @@ def _ws_statistics(
     """
     ws = None
     try:
-        ws = _ws.create_connection('ws://supervisor/core/websocket', timeout=timeout)
-
-        def _recv() -> dict:
-            return _json.loads(ws.recv())
-
-        msg = _recv()  # auth_required
-        if msg.get('type') != 'auth_required':
-            raise RuntimeError(f'Unexpected handshake message: {msg.get("type")}')
-
-        ws.send(_json.dumps({'type': 'auth', 'access_token': _TOKEN}))
-        auth_reply = _recv()
-        if auth_reply.get('type') != 'auth_ok':
-            raise RuntimeError(f'WebSocket auth failed: {auth_reply.get("message")}')
-
+        ws = _ws_connect_authed(timeout=timeout)
         req: dict = {
             'id': 1,
             'type': 'recorder/statistics_during_period',
@@ -103,7 +163,7 @@ def _ws_statistics(
         if end_iso:
             req['end_time'] = end_iso
         ws.send(_json.dumps(req))
-        stats_reply = _recv()
+        stats_reply = _json.loads(ws.recv())
         if not stats_reply.get('success'):
             raise RuntimeError(f'statistics_during_period failed: {stats_reply}')
         return stats_reply.get('result', {})
@@ -113,6 +173,75 @@ def _ws_statistics(
                 ws.close()
             except Exception:
                 pass
+
+
+def get_energy_dashboard_sources(force_refresh: bool = False) -> dict:
+    """Read HA's actual Energy Dashboard configuration (.storage/energy — the
+    same prefs Settings -> Energy / the energy/get_prefs WebSocket command
+    reads) so pv_roi_tracker always tracks whatever the user has configured
+    there, instead of guessing an entity by name. An earlier version of this
+    module picked sensor.inverter_total_yield for solar production by
+    name-matching; that guess disagreed with what the Energy Dashboard is
+    actually configured to use (sensor.energy_pv) by ~6.5% for March 2026.
+
+    Returns {'solar': [...], 'grid_import': [...], 'grid_export': [...],
+    'battery_charge': [...], 'battery_discharge': [...]} — lists because HA
+    allows multiple entries per role (this installation has 3 grid entries:
+    one dead/legacy 'from' entity plus two live peak/off-peak entities —
+    summed for the role total, same as the Energy Dashboard itself does).
+
+    Cached in-process after the first successful fetch (prefs rarely change);
+    pass force_refresh=True to bypass. Falls back to _FALLBACK_ENERGY_SOURCES
+    per-role if the WS call fails or a role has nothing configured, so the
+    add-on still works on an install without an Energy Dashboard set up.
+    """
+    global _energy_prefs_cache
+    if _energy_prefs_cache is not None and not force_refresh:
+        return _energy_prefs_cache
+
+    result = {role: [] for role in _FALLBACK_ENERGY_SOURCES}
+    ws = None
+    try:
+        ws = _ws_connect_authed(timeout=15)
+        ws.send(_json.dumps({'id': 1, 'type': 'energy/get_prefs'}))
+        reply = _json.loads(ws.recv())
+        if not reply.get('success'):
+            raise RuntimeError(f'energy/get_prefs failed: {reply}')
+
+        for src in reply.get('result', {}).get('energy_sources', []):
+            stype = src.get('type')
+            if stype == 'solar' and src.get('stat_energy_from'):
+                result['solar'].append(src['stat_energy_from'])
+            elif stype == 'grid':
+                if src.get('stat_energy_from'):
+                    result['grid_import'].append(src['stat_energy_from'])
+                if src.get('stat_energy_to'):
+                    result['grid_export'].append(src['stat_energy_to'])
+            elif stype == 'battery':
+                if src.get('stat_energy_from'):
+                    result['battery_discharge'].append(src['stat_energy_from'])
+                if src.get('stat_energy_to'):
+                    result['battery_charge'].append(src['stat_energy_to'])
+    except Exception as exc:
+        logger.warning('get_energy_dashboard_sources: energy/get_prefs failed (%s) — '
+                       'using fallback defaults for every role', exc)
+        result = {role: [] for role in _FALLBACK_ENERGY_SOURCES}
+    finally:
+        if ws is not None:
+            try:
+                ws.close()
+            except Exception:
+                pass
+
+    for role, fallback in _FALLBACK_ENERGY_SOURCES.items():
+        if not result[role]:
+            logger.warning('Energy Dashboard: brak skonfigurowanego źródła dla %s — fallback na %s',
+                          role, fallback)
+            result[role] = fallback
+
+    _energy_prefs_cache = result
+    logger.info('Energy Dashboard sources resolved: %s', result)
+    return result
 
 
 def get_ha_tariff_stats(
@@ -134,7 +263,19 @@ def get_ha_tariff_stats(
     """
     result = {eid: {} for eid in entity_ids}
     try:
-        data = _ws_statistics(entity_ids, f'{start}T00:00:00+00:00', period)
+        # 'start' must be LOCAL midnight, not UTC midnight: HA computes the
+        # first returned bucket's 'change' relative to the cumulative sum at
+        # start_time, so `f'{start}T00:00:00+00:00'` (02:00 CEST / 01:00 CET
+        # local) silently drops the month's first 1-2 local hours from every
+        # caller that queries a target month as its own start (notably
+        # read_month_from_statistics) — squarely inside the G12W off-peak
+        # window (22:00-06:00) and night battery charging. Callers that pass
+        # a fixed early start_month (e.g. '2024-12-01') and read a later
+        # month_key from the result are unaffected except for that first
+        # historical bucket.
+        y, m, d = (int(p) for p in start.split('-'))
+        local_midnight = _dt(y, m, d, tzinfo=ZoneInfo(_TZ_NAME))
+        data = _ws_statistics(entity_ids, local_midnight.isoformat(), period)
         for eid in entity_ids:
             for entry in data.get(eid, []):
                 start_ms = entry.get('start')
@@ -185,9 +326,20 @@ def get_hourly_energy(start_iso: str, end_iso: Optional[str] = None) -> dict:
                 change = entry.get('change')
                 if start_ms is None or change is None:
                     continue
+                change_f = float(change)
+                if change_f < 0:
+                    logger.warning(
+                        'get_hourly_energy: change ujemny dla %s @ %s: %.3f — '
+                        'pomijam (prawdopodobnie źle wykryty reset licznika)',
+                        eid, start_ms, change_f)
+                    continue
+                # Local hour string can collide on the autumn DST fall-back day
+                # (two distinct UTC hours both map to local 02:00) — accumulate
+                # rather than overwrite, or the second entry silently discards
+                # the first (one real hour of export/import lost every autumn).
                 key = _dt.fromtimestamp(start_ms / 1000).strftime('%Y-%m-%dT%H')
                 cur = hours.setdefault(key, [0.0, 0.0])
-                cur[idx] = max(float(change), 0.0)
+                cur[idx] += change_f
         logger.info('get_hourly_energy: %d godzin od %s', len(hours), start_iso)
         return {k: (v[0], v[1]) for k, v in hours.items()}
     except Exception as exc:
@@ -201,6 +353,54 @@ def get_ha_monthly_stats(entity_ids: list, start_month: str = '2024-12-01') -> d
     Returns {entity_id: {YYYY-MM: float}}.
     """
     return get_ha_tariff_stats(entity_ids, start=start_month, period='month')
+
+
+def _fetch_lifetime_month_stats(year: int, month: int, entity_ids: list) -> dict:
+    """Fetch one calendar month's kWh 'change' for lifetime total_increasing
+    meters via HA long-term statistics. Works for a closed month AND for the
+    current in-progress month — HA's statistics compiler keeps a running
+    'change' for the current incomplete period, updated on its normal compile
+    cadence (a few minutes' lag at worst, fine at a 30-minute poll interval).
+
+    Returns {entity_id: float | None}. None means missing OR a negative
+    'change' — some monthly-resetting helper sensors (confirmed on
+    sensor.inverter_yield_self_use_monthly: -148.06 for a real month) produce
+    garbage negative deltas that must never be silently coerced into 0 or
+    accepted at face value; a genuine reading of exactly 0.0 is preserved
+    as 0.0, not treated as missing.
+    """
+    start = f'{year}-{month:02d}-01'
+    stats = get_ha_monthly_stats(entity_ids, start_month=start)
+    month_key = f'{year}-{month:02d}'
+    out: dict = {}
+    for eid in entity_ids:
+        v = stats.get(eid, {}).get(month_key)
+        if v is None:
+            out[eid] = None
+        elif v < 0:
+            logger.warning(
+                'LTS change ujemny dla %s %s: %.2f — traktuję jako brak danych '
+                '(prawdopodobnie źle wykryty reset licznika)', eid, month_key, v)
+            out[eid] = None
+        else:
+            out[eid] = v
+    return out
+
+
+def _sum_role_month(vals: dict, entities: list) -> Optional[float]:
+    """Sum the already-fetched per-entity LTS 'change' values (from
+    _fetch_lifetime_month_stats) for one Energy Dashboard role (e.g. multiple
+    grid-import meters). Returns None only if EVERY entity for this role is
+    missing/negative; a partial read (some entities present) still sums what
+    is available — the Energy Dashboard itself likewise just adds up
+    whatever statistics exist for each of its configured sources.
+    """
+    if not entities:
+        return None
+    available = [vals[e] for e in entities if vals.get(e) is not None]
+    if not available:
+        return None
+    return sum(available)
 
 
 def get_ha_history_7d(entity_ids: list) -> dict:
@@ -312,7 +512,6 @@ def _build_record(
     month: int,
     produced: float,
     exported: Optional[float],
-    consumed: Optional[float],
     peak: Optional[float],
     offpeak: Optional[float],
     arb_kwh: Optional[float],
@@ -321,6 +520,11 @@ def _build_record(
     projected_month_savings_pln: Optional[float] = None,
     peak_gross: Optional[float] = None,
     offpeak_gross: Optional[float] = None,
+    imported: Optional[float] = None,
+    battery_charge_kwh: Optional[float] = None,
+    battery_discharge_kwh: Optional[float] = None,
+    source: Optional[str] = None,
+    cross_family_produced_kwh: Optional[float] = None,
 ) -> MonthlyRecord:
     """
     Build a MonthlyRecord from raw kWh readings.
@@ -335,6 +539,23 @@ def _build_record(
     TARIFF_PEAK_PRICE/TARIFF_OFFPEAK_PRICE poniżej (opcje usunięte
     z config.yaml w 0.22.0 — to tylko siatka bezpieczeństwa, np. dla cli.py
     czy zanim tariff_config.json zostanie zasiany).
+
+    v0.35.0 kWh-rebase notes:
+      consumed_kwh is NOT a parameter here anymore — this installation has no
+      independent whole-house meter (see balance.py module docstring), so it
+      is always computed as self_consumed_kwh + imported, never read from a
+      separate sensor.
+      imported:   authoritative total import, dynamically resolved from HA's
+                  Energy Dashboard config (get_energy_dashboard_sources()),
+                  via LTS. None → purchased_kwh falls back to peak + offpeak
+                  (may half-sum if only one zone sensor answered).
+      battery_charge_kwh/battery_discharge_kwh: real battery throughput,
+                  dynamically resolved the same way — stored for display,
+                  not yet priced.
+      source:     provenance tag stored on the record ('live' | 'lts' | None).
+      cross_family_produced_kwh: the OTHER production-tracking family's own
+                  figure for this month (see balance.py) — purely diagnostic,
+                  never used to compute produced_kwh itself.
     """
     peak_px    = peak_gross    if peak_gross    is not None else _TARIFF_PEAK_PRICE
     offpeak_px = offpeak_gross if offpeak_gross is not None else _TARIFF_OFFPEAK_PRICE
@@ -346,7 +567,10 @@ def _build_record(
     else:
         arbitrage = _get_state('sensor.battery_arbitrage_savings_monthly')
 
-    # Cena zakupu: ważona z taryf szczyt/dolina, fallback na sensor HA.
+    # Cena zakupu: ważona z taryf szczyt/dolina (surowe odczyty stref —
+    # niezależnie od tego, czy purchased_kwh_peak/offpeak poniżej są
+    # przeskalowane do sumy `imported`, ta sama ważona średnia wychodzi,
+    # bo skalowanie zachowuje proporcję peak:offpeak).
     if peak is not None and offpeak is not None and (peak + offpeak) > 0:
         buy_price: Optional[float] = round(
             (peak * peak_px + offpeak * offpeak_px)
@@ -354,21 +578,52 @@ def _build_record(
     else:
         buy_price = _get_state('sensor.srednia_cena_energii_w_miesiacu')
 
-    purchased = (peak or 0.0) + (offpeak or 0.0) if (peak is not None or offpeak is not None) else None
+    # purchased_kwh: authoritative import total when available (imported=
+    # resolved Energy-Dashboard grid-import role via LTS), else the pre-0.35.0
+    # fallback of summing the two zone sensors — which silently half-sums when
+    # only one zone answered. Ratio-split the authoritative total across zones
+    # so purchased_kwh_peak + purchased_kwh_offpeak always == purchased_kwh.
+    if imported is not None:
+        purchased: Optional[float] = imported
+        if peak is not None and offpeak is not None and (peak + offpeak) > 0:
+            split = peak / (peak + offpeak)
+            purchased_kwh_peak: Optional[float] = round(purchased * split, 3)
+            purchased_kwh_offpeak: Optional[float] = round(purchased - purchased_kwh_peak, 3)
+        else:
+            purchased_kwh_peak = peak
+            purchased_kwh_offpeak = offpeak
+    else:
+        purchased = (peak or 0.0) + (offpeak or 0.0) if (peak is not None or offpeak is not None) else None
+        purchased_kwh_peak = peak
+        purchased_kwh_offpeak = offpeak
 
-    self_consumed_kwh         = max(0.0, produced - (exported or 0.0)) if exported is not None else None
+    # self_consumed_kwh / consumed_kwh: always derived. No independent
+    # whole-house meter exists on this installation (see balance.py) — every
+    # "self-use" or "house consumption" sensor HA exposes is itself just this
+    # same subtraction/addition over produced/exported/imported, so reading
+    # one of those instead would add nothing but a different name.
+    if exported is not None:
+        self_consumed_kwh: Optional[float] = max(0.0, produced - exported)
+        self_consumed_source: Optional[str] = 'derived'
+    else:
+        self_consumed_kwh = None
+        self_consumed_source = None
+
+    consumed = (self_consumed_kwh + imported
+               if (self_consumed_kwh is not None and imported is not None) else None)
+
     self_consumed_savings_pln = round(self_consumed_kwh * buy_price, 2) if (self_consumed_kwh is not None and buy_price is not None) else None
     purchase_cost_pln         = round(purchased * buy_price, 2)         if (purchased is not None and buy_price is not None) else None
     feedin_revenue_pln        = round((exported or 0.0) * rcem_price, 2) if (exported is not None and rcem_price is not None) else None
     specific_yield            = round(produced / _SYSTEM_KWP, 1)         if _SYSTEM_KWP else None
 
-    return MonthlyRecord(
+    record = MonthlyRecord(
         year=year, month=month,
         produced_kwh=produced,
         consumed_kwh=consumed,
         purchased_kwh=purchased,
-        purchased_kwh_peak=peak,
-        purchased_kwh_offpeak=offpeak,
+        purchased_kwh_peak=purchased_kwh_peak,
+        purchased_kwh_offpeak=purchased_kwh_offpeak,
         exported_kwh=exported,
         self_consumed_kwh=self_consumed_kwh,
         buy_price_pln_kwh=buy_price,
@@ -381,13 +636,26 @@ def _build_record(
         rcem_status='confirmed' if rcem_price is not None else 'pending',
         projected_month_kwh=projected_month_kwh,
         projected_month_savings_pln=projected_month_savings_pln,
+        self_consumed_source=self_consumed_source,
+        battery_charge_kwh=battery_charge_kwh,
+        battery_discharge_kwh=battery_discharge_kwh,
+        source=source,
+        cross_family_produced_kwh=cross_family_produced_kwh,
     )
+    from . import balance as _balance
+    record.balance_residual_kwh = _balance.residual_kwh(record)
+    return record
 
 
-# Minimalna produkcja miesięczna uznawana za „licznik po resecie".
-# Nawet pochmurny czerwiec w Polsce produkuje >5 kWh — poniżej tej wartości
-# zakładamy, że utility_meter właśnie się zresetował i odczyt jest fałszywy.
-_MIN_PRODUCED_KWH = 5.0
+def _all_role_entities(sources: dict) -> list:
+    """Flat, de-duplicated list of every entity_id across all Energy
+    Dashboard roles, for a single batched LTS fetch."""
+    seen: list = []
+    for entities in sources.values():
+        for e in entities:
+            if e not in seen:
+                seen.append(e)
+    return seen
 
 
 def read_month_from_statistics(
@@ -399,45 +667,44 @@ def read_month_from_statistics(
 ) -> Optional[MonthlyRecord]:
     """
     Zbuduj MonthlyRecord na podstawie długoterminowych statystyk HA (WebSocket
-    recorder/statistics_during_period). Używane do backfillu miesiąca, gdy
-    utility_meter już się zresetował (np. naprawa po błędzie strefy czasowej).
+    recorder/statistics_during_period), z lifetime (never-resetting) liczników
+    jako kanoniczną podstawą kWh — dynamicznie odczytanych z konfiguracji HA
+    Energy Dashboard (get_energy_dashboard_sources()), a nie z resetujących
+    się co miesiąc utility_meter ani z odgadniętej po nazwie encji (patrz
+    docstring modułu / plan docs/pv_roi_energy_rebase).
 
-    Zwraca None, jeśli statystyki są niedostępne lub produkcja ≤ 0.
+    Zwraca None, jeśli statystyki produkcji są niedostępne.
     """
-    start = f'{year}-{month:02d}-01'
-    entity_ids = [
-        'sensor.inverter_yield_monthly',
-        'sensor.power_meter_exported_energy_monthly',
-        'sensor.house_consumption_energy_monthly',
-        'sensor.monthly_energy_peak',
-        'sensor.monthly_energy_offpeak',
-        'sensor.battery_grid_charge_off_peak_monthly',
-    ]
-    stats = get_ha_monthly_stats(entity_ids, start_month=start)
+    sources = get_energy_dashboard_sources()
+    entity_ids = (_all_role_entities(sources)
+                 + [_ZONE_PEAK_METER, _ZONE_OFFPEAK_METER,
+                    'sensor.battery_grid_charge_off_peak_monthly', _TEMPLATE_PRODUCED_METER])
+    vals = _fetch_lifetime_month_stats(year, month, entity_ids)
     month_key = f'{year}-{month:02d}'
 
-    def _val(eid: str) -> Optional[float]:
-        v = stats.get(eid, {}).get(month_key)
-        return v if v is not None and v > 0 else None
-
-    produced = _val('sensor.inverter_yield_monthly')
+    produced = _sum_role_month(vals, sources['solar'])
     if produced is None:
         logger.warning(
             'read_month_from_statistics: brak danych produkcji dla %s w statystykach HA', month_key)
         return None
 
-    exported = _val('sensor.power_meter_exported_energy_monthly')
-    consumed = _val('sensor.house_consumption_energy_monthly')
-    peak     = _val('sensor.monthly_energy_peak')
-    offpeak  = _val('sensor.monthly_energy_offpeak')
-    arb_kwh  = _val('sensor.battery_grid_charge_off_peak_monthly')
-
+    exported = _sum_role_month(vals, sources['grid_export'])
+    imported = _sum_role_month(vals, sources['grid_import'])
     logger.info(
-        'read_month_from_statistics %s: produced=%.1f exported=%s peak=%s offpeak=%s',
-        month_key, produced, exported, peak, offpeak,
+        'read_month_from_statistics %s: produced=%.1f exported=%s importowano=%s',
+        month_key, produced, exported, imported,
     )
-    return _build_record(year, month, produced, exported, consumed, peak, offpeak,
-                         arb_kwh, rcem_price, peak_gross=peak_gross, offpeak_gross=offpeak_gross)
+    return _build_record(
+        year, month, produced, exported,
+        vals.get(_ZONE_PEAK_METER), vals.get(_ZONE_OFFPEAK_METER),
+        vals.get('sensor.battery_grid_charge_off_peak_monthly'), rcem_price,
+        peak_gross=peak_gross, offpeak_gross=offpeak_gross,
+        imported=imported,
+        battery_charge_kwh=_sum_role_month(vals, sources['battery_charge']),
+        battery_discharge_kwh=_sum_role_month(vals, sources['battery_discharge']),
+        source='lts',
+        cross_family_produced_kwh=vals.get(_TEMPLATE_PRODUCED_METER),
+    )
 
 
 def read_current_month(
@@ -447,36 +714,75 @@ def read_current_month(
     offpeak_gross: Optional[float] = None,
 ) -> Optional[MonthlyRecord]:
     """
-    Build a MonthlyRecord for the current calendar month from live HA values.
+    Build a MonthlyRecord for the current (in-progress) calendar month.
 
-    Returns None if the primary production sensor is unavailable OR if the reading
-    looks like a freshly-reset utility_meter (produced <= _MIN_PRODUCED_KWH on the
-    first day of the month, i.e. meters have just rolled over).
+    This record is provisional by design — it is superseded once the month
+    closes and gets read via read_month_from_statistics() (lifetime meters,
+    exact). The day-1 reset guard below still keys on the old monthly-
+    resetting sensor.inverter_yield_monthly (fast REST read, always
+    available) purely as a trip-wire; the actual produced/exported/imported/
+    peak/offpeak figures reported are then corrected against the Energy-
+    Dashboard-resolved lifetime meters via one supplementary long-term-
+    statistics call — if that extra call fails (WS/recorder hiccup), this
+    degrades gracefully to the old provisional REST readings rather than
+    aborting the poll.
+
+    peak/offpeak specifically must come from the LTS call, not a raw REST
+    read of _ZONE_PEAK_METER/_ZONE_OFFPEAK_METER (sensor.daily_energy_peak/
+    offpeak): those reset every day, so _get_state() on them only ever
+    returns today's import, not the month's — confirmed live 2 days into
+    August 2026 (monthly_energy_offpeak=7.58 kWh vs daily_energy_offpeak=
+    2.49 kWh, already diverged). The REST fallback below reads the old
+    monthly-cycle sensors instead, which do carry a month-to-date total.
+
+    Returns None if the primary production sensor is unavailable OR if the
+    reading looks like a freshly-reset utility_meter (produced <= 5 kWh on
+    the first day of the month, i.e. meters have just rolled over).
     """
     today = date.today()
     year, month = today.year, today.month
 
-    produced  = _get_state('sensor.inverter_yield_monthly')
-    exported  = _get_state('sensor.power_meter_exported_energy_monthly')
-    consumed  = _get_state('sensor.house_consumption_energy_monthly')
-    peak      = _get_state('sensor.monthly_energy_peak')
-    offpeak   = _get_state('sensor.monthly_energy_offpeak')
-    arb_kwh   = _get_state('sensor.battery_grid_charge_off_peak_monthly')
+    produced_live = _get_state('sensor.inverter_yield_monthly')
+    exported_live = _get_state('sensor.power_meter_exported_energy_monthly')
+    peak_live     = _get_state('sensor.monthly_energy_peak')
+    offpeak_live  = _get_state('sensor.monthly_energy_offpeak')
+    arb_kwh       = _get_state('sensor.battery_grid_charge_off_peak_monthly')
 
-    if produced is None:
+    if produced_live is None:
         logger.warning('sensor.inverter_yield_monthly unavailable — skipping current-month record')
         return None
 
     # Zabezpieczenie: jeśli produced ≤ _MIN_PRODUCED_KWH w pierwszym dniu miesiąca,
     # liczniki właśnie się zresetowały (month_close strzelił po północy lokalnej).
     # Nie twórz fałszywego zerowego rekordu.
-    if produced <= _MIN_PRODUCED_KWH and today.day == 1:
+    if produced_live <= _MIN_PRODUCED_KWH and today.day == 1:
         logger.warning(
             'read_current_month: produced=%.2f kWh ≤ %.1f kWh i today.day=1 — '
             'utility_meter prawdopodobnie po resecie; pomijam snapshot %d-%02d.',
-            produced, _MIN_PRODUCED_KWH, year, month,
+            produced_live, _MIN_PRODUCED_KWH, year, month,
         )
         return None
+
+    sources = get_energy_dashboard_sources()
+    entity_ids = (_all_role_entities(sources)
+                 + [_TEMPLATE_PRODUCED_METER, _ZONE_PEAK_METER, _ZONE_OFFPEAK_METER])
+    vals = _fetch_lifetime_month_stats(year, month, entity_ids)
+
+    produced = _sum_role_month(vals, sources['solar'])
+    if produced is None:
+        produced = produced_live
+    exported = _sum_role_month(vals, sources['grid_export'])
+    if exported is None:
+        exported = exported_live
+    peak = vals.get(_ZONE_PEAK_METER)
+    if peak is None:
+        peak = peak_live
+    offpeak = vals.get(_ZONE_OFFPEAK_METER)
+    if offpeak is None:
+        offpeak = offpeak_live
+    imported = _sum_role_month(vals, sources['grid_import'])
+    battery_charge_kwh = _sum_role_month(vals, sources['battery_charge'])
+    battery_discharge_kwh = _sum_role_month(vals, sources['battery_discharge'])
 
     projected_month_kwh = _solcast_month_projection(today, produced)
 
@@ -486,6 +792,11 @@ def read_current_month(
         if spk is not None:
             projected_month_savings_pln = round(projected_month_kwh * spk, 2)
 
-    return _build_record(year, month, produced, exported, consumed, peak, offpeak,
+    return _build_record(year, month, produced, exported, peak, offpeak,
                          arb_kwh, rcem_price, projected_month_kwh, projected_month_savings_pln,
-                         peak_gross=peak_gross, offpeak_gross=offpeak_gross)
+                         peak_gross=peak_gross, offpeak_gross=offpeak_gross,
+                         imported=imported,
+                         battery_charge_kwh=battery_charge_kwh,
+                         battery_discharge_kwh=battery_discharge_kwh,
+                         source='live',
+                         cross_family_produced_kwh=vals.get(_TEMPLATE_PRODUCED_METER))

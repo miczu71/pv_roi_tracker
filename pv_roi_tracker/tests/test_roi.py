@@ -164,6 +164,21 @@ def test_ratios_none_without_data():
     assert r.autarky_pct is None
 
 
+def test_autarky_and_self_consumption_clamped_to_100pct():
+    """self_consumed_kwh and consumed_kwh are independently measured
+    (v0.35.0 — see live_reader.py), not one derived from the other, so a
+    transient sensor glitch or an un-rebased legacy record could otherwise
+    push either ratio above 100% with no indication anything was wrong."""
+    rec = MonthlyRecord(year=2025, month=5, produced_kwh=600.0,
+                        consumed_kwh=100.0, self_consumed_kwh=240.0)
+    r = calculate([rec])
+    assert r.autarky_pct == 100.0
+    rec2 = MonthlyRecord(year=2025, month=6, produced_kwh=100.0,
+                         consumed_kwh=400.0, self_consumed_kwh=240.0)
+    r2 = calculate([rec2])
+    assert r2.self_consumption_rate_pct == 100.0
+
+
 def test_co2_avoided_uses_factor():
     records = [month(2023, 5, produced=1000.0)]
     r = calculate(records, co2_factor=0.6)

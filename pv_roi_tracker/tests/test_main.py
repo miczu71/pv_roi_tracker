@@ -8,7 +8,10 @@ isolation, without booting the rest of the add-on.
 """
 from datetime import date
 
-from pv_roi_tracker.main import previous_month, month_present, month_has_data
+from pv_roi_tracker.main import (
+    previous_month, month_present, month_has_data,
+    _months_since_commissioning, _heal_month_if_needed,
+)
 from pv_roi_tracker.models import MonthlyRecord
 
 
@@ -85,3 +88,65 @@ def test_month_has_data_false_when_missing_entirely():
 def test_month_has_data_false_for_zero_production():
     records = [MonthlyRecord(year=2026, month=7, produced_kwh=0.0)]
     assert month_has_data(records, 2026, 7) is False
+
+
+# ── _months_since_commissioning (v0.35.0 multi-month healer scan) ────────────
+
+def test_months_since_commissioning_spans_full_range():
+    records = [_rec(2026, 3), _rec(2026, 4), _rec(2026, 5)]
+    months = _months_since_commissioning(records, date(2026, 7, 15))
+    assert months == [(2026, 3), (2026, 4), (2026, 5), (2026, 6)]
+
+
+def test_months_since_commissioning_wraps_year_boundary():
+    records = [_rec(2025, 11)]
+    months = _months_since_commissioning(records, date(2026, 2, 1))
+    assert months == [(2025, 11), (2025, 12), (2026, 1)]
+
+
+def test_months_since_commissioning_ignores_placeholders():
+    """A future data-less placeholder must not push the scan window forward."""
+    records = [_rec(2026, 5), _placeholder(2026, 12)]
+    months = _months_since_commissioning(records, date(2026, 7, 1))
+    assert months == [(2026, 5), (2026, 6)]
+
+
+def test_months_since_commissioning_empty_when_no_data():
+    assert _months_since_commissioning([_placeholder(2026, 1)], date(2026, 7, 1)) == []
+
+
+# ── _heal_month_if_needed ─────────────────────────────────────────────────────
+
+def _balanced_rec(year, month):
+    """March 2026 figures — dashboard-family produced within normal
+    cross-family drift of the template-family figure (see balance.py)."""
+    return MonthlyRecord(year=year, month=month, produced_kwh=643.98, exported_kwh=307.0,
+                         self_consumed_kwh=336.98, consumed_kwh=670.88, purchased_kwh=35.0,
+                         cross_family_produced_kwh=685.53)
+
+
+def test_heal_month_if_needed_none_for_missing_key():
+    assert _heal_month_if_needed({}, 2026, 7) == 'brak danych'
+
+
+def test_heal_month_if_needed_none_for_placeholder():
+    by_key = {(2026, 7): _placeholder(2026, 7)}
+    assert _heal_month_if_needed(by_key, 2026, 7) == 'brak danych'
+
+
+def test_heal_month_if_needed_none_when_balanced():
+    by_key = {(2026, 7): _balanced_rec(2026, 7)}
+    assert _heal_month_if_needed(by_key, 2026, 7) is None
+
+
+def test_heal_month_if_needed_flags_balance_breach():
+    """A month whose two production-tracking families diverge well beyond
+    the normal ~0.6-6.5% drift must be flagged for repair even though the
+    row isn't a data-less placeholder."""
+    broken = MonthlyRecord(year=2026, month=7, produced_kwh=500.0, exported_kwh=430.00,
+                           self_consumed_kwh=70.0, consumed_kwh=154.32, purchased_kwh=84.32,
+                           cross_family_produced_kwh=650.0)
+    by_key = {(2026, 7): broken}
+    reason = _heal_month_if_needed(by_key, 2026, 7)
+    assert reason is not None
+    assert 'bilans' in reason

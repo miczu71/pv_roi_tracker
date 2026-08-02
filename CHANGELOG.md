@@ -2,6 +2,123 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.35.0] — 2026-08-02
+
+Audyt na żądanie użytkownika: "make sure every kWh is accounted". Diagnoza
+przeszła przez kilka poprawek własnego rozumowania po drodze — udokumentowane
+tu w całości, łącznie z tym co się okazało nieprawdą, bo to ważne dla
+zrozumienia dlaczego add-on teraz czyta encje inaczej.
+
+**Co się potwierdziło:** `sensor.house_consumption_energy_monthly` (dotąd
+źródło `consumed_kwh`) rozjeżdża się z własnym źródłem
+`sensor.house_consumption_energy_total` o +12% do +82% w zależności od
+miesiąca (gorzej w miesiącach z większą aktywnością baterii oddającej do
+sieci). Przyczyna: `house_consumption_energy_total` to `state_class: total`
+(nie `total_increasing`) — może chwilowo spadać, gdy bateria oddaje do sieci
+szybciej niż rośnie produkcja. `utility_meter` HA traktuje każdy spadek
+źródła jako "reset licznika" i po prostu kontynuuje sumowanie od nowej,
+niższej wartości zamiast odjąć różnicę — więc każdy taki spadek w ciągu
+miesiąca dolicza się na plus. Potwierdzone przez porównanie `utility_meter`
+z jego własnym źródłem (nie z danymi historycznymi) dla tych samych miesięcy.
+
+**Co się NIE potwierdziło (wycofane w trakcie sesji):** początkowa teza, że
+`produced_kwh` był zaniżony nawet o 40% w niektórych miesiącach — to był
+artefakt porównania *starych zapisanych danych* z *aktualnym stanem
+sensorów*, nie uczciwe porównanie. Sprawdzone poprawnie (ten sam `utility_meter`
+vs jego własne źródło, na żywo) różnica to normalne 0,6-6,5%.
+
+**Największa korekta — dlaczego dobór encji się zmienił.** Pierwotna wersja
+tej zmiany wybrała `sensor.inverter_total_yield` jako kanoniczne źródło
+produkcji, dopasowując po nazwie. To było zgadywanie — `ha_manage_energy_prefs`
+pokazał, że rzeczywisty HA Energy Dashboard używa **innej** encji
+(`sensor.energy_pv`, różni się od `inverter_total_yield` o ~6,5% dla marca
+2026 — to inny sensor integrujący inny odczyt mocy, nie "błąd"). Add-on teraz
+**czyta konfigurację Energy Dashboard w czasie działania**
+(`energy/get_prefs` przez WebSocket) zamiast zgadywać encję po nazwie — więc
+zawsze podąża za tym, co użytkownik ma skonfigurowane, także po zmianie.
+
+### Added
+
+- `live_reader.get_energy_dashboard_sources()` — dynamicznie odczytuje role
+  solar/grid_import/grid_export/battery_charge/battery_discharge z
+  `.storage/energy`; fallback per-rola jeśli Energy Dashboard nie jest
+  skonfigurowany. Odświeżane raz na start + raz dziennie (03:00,
+  `energy_prefs_refresh_job`).
+- `balance.py` — nowy, jedyny realny cross-check w tym kodzie: porównuje
+  `produced_kwh` (rodzina Energy Dashboard) z `cross_family_produced_kwh`
+  (rodzina `inverter_total_yield`) tego samego miesiąca; rozjazd >10%
+  przełącza `sensor.pv_roi_tracker_pv_roi_tracker_health` na `degraded`.
+  (Pierwsza wersja tego modułu liczyła dwa rezydua z `produced/exported/
+  self_consumed/consumed/purchased` na jednym rekordzie — okazało się to
+  tautologią: `self_consumed`/`consumed` są algebraicznie wyliczane z tych
+  samych trzech wielkości co reszta, więc rezyduum zawsze wychodziło zero.)
+- `rebase.py` — `simulate()`/`apply()`: przelicza każdy miesiąc z
+  `historic.json` z liczników lifetime (dopasowanych do Energy Dashboard),
+  pokazuje diff przed zapisem. `apply()` robi snapshot przed nadpisaniem i
+  chroni pola rozliczone fakturą (faktura > sensor).
+- Nowe endpointy `/api/historic/simulate-rebase` i `/api/historic/apply-rebase`.
+- Nowy scheduled job `month_close_reconcile` (1. dnia miesiąca, 00:05) —
+  bezwarunkowo nadpisuje prowizoryczny snapshot z 23:55 autorytatywnym
+  odczytem z liczników lifetime.
+- `misfire_grace_time=3600, coalesce=True` na każdym cron jobie (domyślny
+  1 sekunda w APScheduler oznaczał, że każdy zator schedulera == pominięty
+  bieg, bez ostrzeżenia).
+- Healery (`_catch_up_missing_month_close`, `month_close_verify`) przelatują
+  teraz WSZYSTKIE miesiące od pierwszego z danymi, nie tylko poprzedni —
+  awaria trwająca ≥2 miesiące nie zostawia już starszej luki na zawsze.
+- Nowe pola `MonthlyRecord` (schema_version 1→2, bez migracji — stare
+  rekordy po prostu czytają się z tymi polami jako `None`):
+  `self_consumed_source`, `balance_residual_kwh`, `battery_charge_kwh`,
+  `battery_discharge_kwh`, `source`, `cross_family_produced_kwh`.
+
+### Fixed
+
+- **`consumed_kwh` już nie czyta się z `sensor.house_consumption_energy_monthly`**
+  — liczony jako `self_consumed_kwh + purchased_kwh` z wielkości dopasowanych
+  do Energy Dashboard. `self_consumed_kwh` jest teraz zawsze jawnie wyliczane
+  (`produced − exported`), nie ma tu żadnego "zmierzonego" wariantu — ta
+  instalacja nie ma osobnego licznika całego domu.
+- Podział szczyt/pozaszczyt zakupu przełączony z `sensor.monthly_energy_peak`/
+  `offpeak` na `sensor.daily_energy_peak`/`offpeak` (to one faktycznie
+  odpowiadają wpisom `grid` w Energy Dashboard), więc suma podziału zgadza
+  się z autorytatywnym importem co do grosza.
+- `get_ha_tariff_stats` pytał statystyki HA od **północy UTC**, nie lokalnej
+  — dla `Europe/Warsaw` to 01:00/02:00 czasu lokalnego, więc każdy
+  odtworzony miesiąc tracił pierwsze 1-2 godziny (akurat w oknie taryfy
+  pozaszczytowej i nocnego ładowania baterii).
+- `get_hourly_energy`: ujemny `change` jest odrzucany (nie ucinany do zera),
+  a godziny w dzień zmiany czasu na zimowy są sumowane, nie nadpisywane
+  (dawniej gubiła się jedna godzina eksportu/importu co jesień).
+- `_last_current` (cache ostatniego udanego odczytu bieżącego miesiąca) jest
+  teraz przypięty do `(rok, miesiąc)` — nie może już podmienić właśnie
+  zamkniętego, ewentualnie rozliczonego fakturą wiersza historycznego po
+  przejściu na nowy miesiąc.
+- Autarkia/wskaźnik autokonsumpcji ograniczone do 100% — przy mieszanych
+  danych (stare nie przeliczone + nowe) mogłyby wcześniej pokazać >100% bez
+  żadnego ostrzeżenia.
+
+### Fixed (znalezione podczas własnego code review przed commitem)
+
+- `read_current_month()` czytał szczyt/pozaszczyt z sensorów **dobowych**
+  (`sensor.daily_energy_peak`/`offpeak`) przez zwykły odczyt stanu zamiast z
+  LTS — te resetują się co dobę, więc odczyt dawał tylko "dziś", nie "od
+  początku miesiąca". Potwierdzone na żywo 2 dni w sierpień 2026:
+  `monthly_energy_offpeak`=7,58 kWh vs `daily_energy_offpeak`=2,49 kWh.
+  Naprawione: te same liczniki dobowe, ale przez LTS `period=month` (co
+  poprawnie integruje niezależnie od własnego cyklu resetu sensora), z
+  fallbackiem na stare liczniki miesięczne gdy LTS zawiedzie.
+- `rebase._merge_month()` zostawiał `consumed_kwh` niespójne z przywróconym
+  (rozliczonym fakturą) `self_consumed_kwh`/`purchased_kwh` — te dwa pola są
+  w `historic_store._RECONCILE_FIELDS` i wracają do wartości z faktury, ale
+  `consumed_kwh` zostawało przy świeżo przeliczonej wartości z LTS, więc
+  432,02+84,32 ≠ 520,20 dla przykładowego lipca. Naprawione: `consumed_kwh`
+  jest teraz przeliczane z przywróconych wartości.
+- `rebase.apply()` nie przyjmował `roi_kwargs` — `roi_before`/`roi_after` w
+  raporcie po cichu używały domyślnych `GROSS_INVESTMENT`/`SUBSIDY` z `roi.py`
+  zamiast realnie skonfigurowanych opcji add-onu.
+
+478 testów (421 bazowych + 57 nowych), wszystkie zielone.
+
 ## [0.34.0] — 2026-08-01
 
 Incydent produkcyjny tego samego dnia: po restarcie add-onu (aktualizacja HAOS)

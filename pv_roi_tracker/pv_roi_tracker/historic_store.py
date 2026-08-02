@@ -13,7 +13,14 @@ from .models import MonthlyRecord
 logger = logging.getLogger(__name__)
 
 DEFAULT_PATH = Path('/data/historic.json')
-SCHEMA_VERSION = 1
+
+# v1 → v2 (0.35.0): kWh basis moved from monthly utility_meter snapshots to
+# lifetime total_increasing meters (see live_reader.py module docstring).
+# No migration step needed on read — the new MonthlyRecord fields are all
+# Optional with default None, so v1 documents deserialize unchanged via
+# MonthlyRecord.from_dict()'s known-fields filter; they simply read as
+# un-rebased until /api/historic/apply-rebase runs (see rebase.py).
+SCHEMA_VERSION = 2
 
 
 # ── Internal helpers ─────────────────────────────────────────────────────────
@@ -226,6 +233,7 @@ _PATCHABLE_FIELDS = {
     'self_consumed_savings_pln', 'feedin_revenue_pln',
     'purchased_kwh_peak', 'purchased_kwh_offpeak',
     'battery_arbitrage_savings_pln', 'purchase_cost_pln',
+    'battery_charge_kwh', 'battery_discharge_kwh',
 }
 
 # Fields overwritten by reconcile_invoice — captured for revert snapshots

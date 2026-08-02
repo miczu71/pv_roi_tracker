@@ -32,6 +32,8 @@ _reread_month_callback = None
 _invoice_reconcile_callback = None
 _invoice_remove_callback = None
 _invoice_train_callback = None
+_simulate_rebase_callback = None
+_apply_rebase_callback = None
 _invoice_path = None
 _layouts_path = None
 _tariff_config_path = None
@@ -50,6 +52,16 @@ def set_historic_patch_callback(fn) -> None:
 def set_reread_month_callback(fn) -> None:
     global _reread_month_callback
     _reread_month_callback = fn
+
+
+def set_simulate_rebase_callback(fn) -> None:
+    global _simulate_rebase_callback
+    _simulate_rebase_callback = fn
+
+
+def set_apply_rebase_callback(fn) -> None:
+    global _apply_rebase_callback
+    _apply_rebase_callback = fn
 
 
 def set_invoice_reconcile_callback(fn) -> None:
@@ -1204,6 +1216,53 @@ def historic_reread_month():
                         'rcem_status': result.rcem_status})
     except Exception as exc:
         log.exception('Reread-month failed')
+        return jsonify({'ok': False, 'error': str(exc)}), 500
+
+
+@app.route('/api/historic/simulate-rebase', methods=['POST'])
+def historic_simulate_rebase():
+    """
+    v0.35.0 dry run: re-fetch every historic month from HA's lifetime
+    (never-resetting) meters, dynamically resolved from the HA Energy
+    Dashboard's own configuration (see live_reader.get_energy_dashboard_sources),
+    and diff every kWh field + the ROI headline figures against what's
+    currently stored — WITHOUT writing anything.
+
+    See docs/pv_roi_energy_rebase (plan) for why: the monthly utility_meter
+    sensors this add-on read before 0.35.0 disagree with the Energy
+    Dashboard's own configured production source by several percent some
+    months, and consumed_kwh (previously read from
+    sensor.house_consumption_energy_monthly) is now computed from
+    produced/exported/imported directly — that sensor measured +82% high for
+    July 2026 due to a utility_meter/non-monotonic-source interaction (see
+    balance.py). Review the report, then call /api/historic/apply-rebase to
+    actually rewrite historic.json.
+    """
+    if _simulate_rebase_callback is None:
+        return jsonify({'ok': False, 'error': 'not initialized'}), 503
+    try:
+        report = _simulate_rebase_callback()
+        return jsonify({'ok': True, **report})
+    except Exception as exc:
+        log.exception('Simulate-rebase failed')
+        return jsonify({'ok': False, 'error': str(exc)}), 500
+
+
+@app.route('/api/historic/apply-rebase', methods=['POST'])
+def historic_apply_rebase():
+    """
+    Write the v0.35.0 kWh rebase to historic.json. Snapshots the pre-rebase
+    file first (historic.pre-rebase-<timestamp>.json) and keeps any
+    invoice-reconciled month's billed fields authoritative — see rebase.py.
+    Always run /api/historic/simulate-rebase first and review the diff.
+    """
+    if _apply_rebase_callback is None:
+        return jsonify({'ok': False, 'error': 'not initialized'}), 503
+    try:
+        report = _apply_rebase_callback()
+        return jsonify({'ok': True, **report})
+    except Exception as exc:
+        log.exception('Apply-rebase failed')
         return jsonify({'ok': False, 'error': str(exc)}), 500
 
 

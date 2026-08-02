@@ -42,7 +42,10 @@ def test_load_missing_file_returns_empty(store):
 def test_schema_version_written(store):
     historic_store.save([_rec(2023, 5)], store)
     doc = json.loads(store.read_text())
-    assert doc['schema_version'] == 1
+    # v0.35.0 bumped 1 -> 2 (kWh basis moved to lifetime meters) — no reader
+    # migration needed, see historic_store.SCHEMA_VERSION docstring.
+    assert doc['schema_version'] == historic_store.SCHEMA_VERSION
+    assert doc['schema_version'] == 2
 
 
 # ── Atomic write + backup ──────────────────────────────────────────────────────────────────────────────────

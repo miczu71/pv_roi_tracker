@@ -10,10 +10,13 @@ Tracks the return-on-investment of a residential photovoltaic system (Polish net
 | **Every 30 min** | Reads live HA sensors for the current month, runs the ROI calculation, publishes MQTT sensors, refreshes the tariff comparison and the RCE-hourly simulation, publishes the health sensor. |
 | **11th–20th of each month, every 2 h 08–22 local** | Scrapes last month's RCEm feed-in price from the PSE website, back-fills `historic.json`, recomputes. |
 | **1st of each month, 06:00 UTC** | RCEm correction scan (PSE may amend prices up to 12 months back). |
-| **Last day of each month, 23:55 local** | Snapshots the current month into `historic.json` before utility meters reset; sends a Polish summary push via `notify.family` (optional, `monthly_notify`). |
-| **On every start** (od v0.31.0) | If the previous calendar month is missing from `historic.json` — the add-on wasn't running at 23:55 on month-close night (update, restart, host reboot) — it's backfilled automatically from HA long-term statistics, the same way `/api/historic/reread-month` does manually. Runs before invoice reconciliation so a pending invoice for that month can still apply. |
+| **Last day of each month, 23:55 local** | Snapshots the current month into `historic.json` before utility meters reset (provisional — reads the monthly-resetting utility_meter sensors); sends a Polish summary push via `notify.family` (optional, `monthly_notify`). |
+| **1st of each month, 00:05 local** (od v0.35.0) | Unconditionally overwrites the 23:55 provisional snapshot with an authoritative reread from HA long-term statistics (lifetime, never-resetting meters, matched to the Energy Dashboard's configured sources). |
+| **1st of each month, 01:00 local** | Month-close verify: sweeps every month from the earliest one with data (not just the previous month, od v0.35.0) and repairs anything missing OR failing the cross-family production plausibility check. |
+| **On every start** (od v0.31.0, broadened v0.35.0) | Same sweep as month-close verify runs at startup, so an outage spanning multiple months doesn't leave older gaps unnoticed. Runs before invoice reconciliation so a pending invoice for that month can still apply. |
 | **16th of each month, 12:00 UTC** | Refreshes Polish CPI from GUS (inflation-adjusted ROI). |
 | **Daily, 02:00 UTC** | Backs up all `/data` files to `/share/pv_roi_tracker`. |
+| **Daily, 03:00 UTC** (od v0.35.0) | Refreshes the Energy Dashboard source configuration (in case you've reconfigured Settings → Energy). |
 
 ## Web UI (ingress)
 
@@ -135,19 +138,34 @@ All sensors appear under one device **PV ROI Tracker** in HA Settings → Device
 
 ## Live HA sensor mapping (current month)
 
-| Field | HA entity |
+Since v0.35.0, `produced_kwh`/`exported_kwh`/`purchased_kwh` and battery
+throughput are **not** hardcoded by entity name — they're resolved at
+runtime from whatever HA's own **Energy Dashboard** (Settings → Energy) is
+configured to use (`energy/get_prefs`), so the add-on always tracks the same
+production/import/export figures the Energy Dashboard shows, including if
+you reconfigure it later. Falls back to the entities below if no Energy
+Dashboard is set up, refreshed once at startup and daily at 03:00.
+
+| Field | Source |
 |---|---|
-| `produced_kwh` | `sensor.inverter_yield_monthly` |
-| `exported_kwh` | `sensor.power_meter_exported_energy_monthly` (also hourly statistics for the RCE simulation) |
-| `purchased_kwh` | `sensor.monthly_energy_peak` + `sensor.monthly_energy_offpeak` |
-| `consumed_kwh` | `sensor.house_consumption_energy_monthly` |
+| `produced_kwh` | Energy Dashboard's configured **solar** source (fallback: `sensor.inverter_total_yield`) |
+| `exported_kwh` | Energy Dashboard's configured **grid export** source(s), summed (fallback: `sensor.power_meter_exported`; also used for hourly statistics in the RCE simulation) |
+| `purchased_kwh` | Energy Dashboard's configured **grid import** source(s), summed (fallback: `sensor.power_meter_consumption`) |
+| `purchased_kwh_peak` / `purchased_kwh_offpeak` | `sensor.daily_energy_peak` / `sensor.daily_energy_offpeak` — ratio-split of the authoritative `purchased_kwh` total (not an Energy Dashboard concept; a tariff-billing split layered on top) |
+| battery charge/discharge | Energy Dashboard's configured **battery** source(s) (fallback: `sensor.battery_total_charge` / `sensor.battery_total_discharge`) |
+| `consumed_kwh` | **Derived**: `self_consumed_kwh + purchased_kwh` — this installation has no independent whole-house meter (see `balance.py`) |
+| `self_consumed_kwh` | **Derived**: `max(0, produced_kwh − exported_kwh)` |
 | `buy_price_pln_kwh` | blended peak/offpeak from `tariff_config.json` (od v0.31.0 — previously a hardcoded 1.23/0.63 fallback that never saw a tariff change until the invoice arrived); fallback `sensor.srednia_cena_energii_w_miesiacu` |
 | `feedin_price_pln_kwh` | scraped from PSE (RCEm) |
 | battery arbitrage | `sensor.battery_grid_charge_off_peak_monthly` (kWh) × (peak × efficiency − offpeak); fallback `sensor.battery_arbitrage_savings_monthly` |
 | Solcast projection | `sensor.solcast_pv_forecast_*` (7 days) |
 | RCE today | `sensor.rce_pse_price` (attribute `prices`, integracja `rce_pse`) |
 
-Derived fields (`self_consumed_kwh`, `self_consumed_savings_pln`, `purchase_cost_pln`, `feedin_revenue_pln`, `specific_yield`) are calculated inside the add-on.
+Since closed months are always rebuilt from HA long-term statistics (never-
+resetting meters), a second, independently-sourced production figure
+(`sensor.inverter_total_yield`'s own reading) is also fetched purely as a
+plausibility cross-check — see `balance.py` and the `energy_balance` entry
+in the health sensor's attributes.
 
 ## Installation
 
@@ -213,24 +231,39 @@ First start
    not skip them; see the v0.34.0 incident note below)
 
 Every 30 min
-  historic.json   ┐
-  live HA reader  ├→ concat → ROI engine → MQTT publisher → HA sensors
-  rcem_history    ┘            ├→ tariff_analysis (HA statistics)
-                               └→ rce_hourly (PSE API + rce_pse + HA statistics)
+  Energy Dashboard prefs (cached) ┐
+  historic.json                  ┤
+  live HA reader                 ├→ concat → ROI engine → MQTT publisher → HA sensors
+  rcem_history                   ┘            ├→ balance.py (cross-family plausibility check)
+                                              ├→ tariff_analysis (HA statistics)
+                                              └→ rce_hourly (PSE API + rce_pse + HA statistics)
 
 23:55 last day of month
-  live HA reader → historic.json (month-close) → notify.family summary
+  live HA reader → historic.json (month-close, provisional) → notify.family summary
+
+00:05, 1st of month (od v0.35.0)
+  unconditional reread from HA long-term statistics → overwrite provisional snapshot
 
 01:00, 1st of month
-  month-close verify: previous month still data-less? → backfill from HA statistics
+  month-close verify: sweep every month since the first with data →
+  backfill/repair anything missing or failing the balance check
 
 Days 11–20 / 1st of month
   PSE website → rcem_history.json → backfill historic.json → recompute
 
+Daily 03:00 (od v0.35.0)
+  refresh Energy Dashboard prefs cache (energy/get_prefs)
+
 On startup
   prune_future_months() → drop data-less rows for months that haven't happened yet
-  catch-up: previous month data-less? → backfill from HA long-term statistics
+  same sweep as month-close verify, across every month since the first with data
 ```
+
+Dry-run rebase (od v0.35.0): `POST /api/historic/simulate-rebase` re-fetches
+every historic month from the Energy-Dashboard-matched lifetime meters and
+diffs every field against what's stored, without writing anything;
+`POST /api/historic/apply-rebase` snapshots `historic.json` and writes the
+rebased records, keeping invoice-reconciled fields authoritative.
 
 **2026-08-01 incident:** a data-less placeholder row for July 2026 (seeded by
 the initial CSV import back in May) silently absorbed month-close's real

@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
+from typing import Optional
 from zoneinfo import ZoneInfo
 
 logging.basicConfig(
@@ -76,6 +77,58 @@ def month_has_data(records, year: int, month: int) -> bool:
     from . import historic_store
     return any(r.year == year and r.month == month and historic_store.has_energy_data(r.produced_kwh)
                for r in records)
+
+
+def _months_since_commissioning(records, today) -> list:
+    """Wszystkie (rok, miesiąc) od najwcześniejszego miesiąca z danymi do
+    poprzedniego miesiąca kalendarzowego (włącznie).
+
+    Dawne healery (_catch_up_missing_month_close, month_close_verify_job)
+    sprawdzały wyłącznie previous_month(today) — awaria trwająca ≥2 miesiące
+    (dłuższy przestój add-onu) zostawiała starsze luki na zawsze niezauważone,
+    bo nic nigdy nie patrzyło dalej niż jeden miesiąc wstecz. Ograniczone do
+    zakresu z realnymi danymi — sprawdzenie kilku-kilkunastu lat miesięcy
+    jest tanie przy każdym starcie/weryfikacji.
+    """
+    from . import historic_store
+    dated = [(r.year, r.month) for r in records if historic_store.has_energy_data(r.produced_kwh)]
+    if not dated:
+        return []
+    start_y, start_m = min(dated)
+    end_y, end_m = previous_month(today)
+    months = []
+    y, m = start_y, start_m
+    while (y, m) <= (end_y, end_m):
+        months.append((y, m))
+        m += 1
+        if m == 13:
+            m = 1
+            y += 1
+    return months
+
+
+def _heal_month_if_needed(records_by_key: dict, year: int, month: int) -> Optional[str]:
+    """Zwraca krótki powód naprawy (string) jeśli miesiąc (rok, month) jej
+    wymaga — brak danych LUB nadmierna rozbieżność między dwoma niezależnymi
+    śledzeniami produkcji (patrz balance.py) — albo None jeśli miesiąc jest
+    w porządku.
+
+    Cross-check to jedyny realny sygnał w tym kodzie: dawne healery
+    sprawdzały tylko obecność danych (has_energy_data), więc miesiąc z
+    prawdopodobnie błędnymi, ale niepustymi, wartościami przechodził bez
+    naprawy. balance.py porównuje produced_kwh (rodzina Energy Dashboard) z
+    cross_family_produced_kwh (rodzina inverter_total_yield) — normalny
+    rozjazd to 0,6-6,5%; duży rozjazd bywa wart uwagi, choć nie dowodzi
+    który sensor jest "zły".
+    """
+    from . import historic_store, balance
+    rec = records_by_key.get((year, month))
+    if rec is None or not historic_store.has_energy_data(rec.produced_kwh):
+        return 'brak danych'
+    b = balance.compute_balance(rec)
+    if b['reason'] == 'breach':
+        return f"niespójny bilans produkcji — rozjazd rodzin ({b['diff_kwh']} kWh, {b['diff_pct']}%)"
+    return None
 
 
 def _notify_ha(title: str, message: str) -> None:
@@ -154,7 +207,7 @@ def main() -> None:
     from apscheduler.schedulers.blocking import BlockingScheduler
     from apscheduler.triggers.cron import CronTrigger
 
-    from . import concat, historic_store, live_reader, rcem_scraper, roi, cpi_fetcher
+    from . import concat, historic_store, live_reader, rcem_scraper, roi, cpi_fetcher, balance
     from . import invoice_store, invoice_layouts, invoice_parser
     from .month_close import close_month
     from .publisher import MQTTPublisher
@@ -201,6 +254,63 @@ def main() -> None:
         return record
 
     _web.set_reread_month_callback(_reread_month)
+
+    def _scan_and_heal_all_months() -> list:
+        """Przeleć każdy miesiąc od pierwszego z danymi do poprzedniego
+        miesiąca kalendarzowego (nie tylko previous_month(today) jak dawne
+        healery) i napraw każdy z brakiem danych LUB niespójnym bilansem
+        energii (_heal_month_if_needed / balance.py) przez ponowny odczyt z
+        lifetime liczników HA. Zwraca listę napisów 'YYYY-MM' naprawionych
+        miesięcy (pusta jeśli nic nie wymagało naprawy)."""
+        records = historic_store.load(HISTORIC_PATH)
+        records_by_key = {(r.year, r.month): r for r in records}
+        healed = []
+        for y, m in _months_since_commissioning(records, date.today()):
+            reason = _heal_month_if_needed(records_by_key, y, m)
+            if reason is None:
+                continue
+            logger.warning('%d-%02d wymaga naprawy (%s) — odtwarzam ze statystyk HA', y, m, reason)
+            record = _reread_month(y, m)
+            if record is None:
+                logger.error('Nie udało się naprawić %d-%02d — brak danych LTS dla tego miesiąca', y, m)
+            else:
+                healed.append(f'{y}-{m:02d}')
+        return healed
+
+    def _reconciled_months() -> set:
+        """(year, month) miesięcy rozliczonych fakturą — te pola wygrywają z
+        LTS przy rebase (rachunek jest bardziej autorytatywny niż sensor)."""
+        out = set()
+        for rec in invoice_store.load(INVOICE_PATH).values():
+            if rec.get('reconciled', False) and rec.get('doc_type', 'rozliczeniowa') == 'rozliczeniowa':
+                y, m = rec.get('year'), rec.get('month')
+                if y is not None and m is not None:
+                    out.add((y, m))
+        return out
+
+    def _roi_kwargs() -> dict:
+        return dict(gross_investment=GROSS_INVESTMENT, subsidy=SUBSIDY,
+                   system_kwp=SYSTEM_KWP, discount_rate=DISCOUNT_RATE,
+                   inflation=INFLATION_RATE, comparison_yield=COMPARISON_YIELD,
+                   co2_factor=CO2_FACTOR, asset_lifetime_years=ASSET_LIFETIME_YEARS,
+                   panel_degradation_pct_year=PANEL_DEGRADATION_PCT_YEAR)
+
+    def _simulate_rebase() -> dict:
+        from . import rebase as _rebase
+        records = historic_store.load(HISTORIC_PATH)
+        return _rebase.simulate(records, reconciled_months=_reconciled_months(),
+                                roi_kwargs=_roi_kwargs())
+
+    _web.set_simulate_rebase_callback(_simulate_rebase)
+
+    def _apply_rebase() -> dict:
+        from . import rebase as _rebase
+        report = _rebase.apply(path=HISTORIC_PATH, reconciled_months=_reconciled_months(),
+                               roi_kwargs=_roi_kwargs())
+        poll_and_publish()
+        return report
+
+    _web.set_apply_rebase_callback(_apply_rebase)
 
     # Inject learned layouts into the parser at startup
     invoice_parser.set_layouts_provider(
@@ -425,23 +535,35 @@ def main() -> None:
     from .tariff_analysis import compute_tariff_tab
 
     _last: dict = {'result': None}
-    _last_current: dict = {'record': None}
+    _last_current: dict = {'record': None, 'key': None}
 
     def poll_and_publish() -> None:
         try:
             historic = historic_store.load(HISTORIC_PATH)
             rcem_price = rcem_scraper.get_current_month_rcem(RCEM_HISTORY_PATH)
-            _peak_gross, _offpeak_gross = _tariff_rates_for(date.today())
+            _today = date.today()
+            _current_key = (_today.year, _today.month)
+            _peak_gross, _offpeak_gross = _tariff_rates_for(_today)
             current = live_reader.read_current_month(
                 rcem_price=rcem_price, historic_records=historic,
                 peak_gross=_peak_gross, offpeak_gross=_offpeak_gross)
             if current is not None:
                 _last_current['record'] = current
-            elif _last_current['record'] is not None:
+                _last_current['key'] = _current_key
+            elif _last_current['record'] is not None and _last_current['key'] == _current_key:
+                # Scoped to the current (year, month): a cached record from a
+                # PRIOR month must never be reused across the month boundary —
+                # it would silently override the just-closed, possibly
+                # invoice-reconciled historic row for hours until the next
+                # successful live read (concat.concat prefers `current` for
+                # its own (year, month) key over the historic entry).
                 logger.warning(
                     'sensor.inverter_yield_monthly niedostępny — używam ostatniego odczytu bieżącego miesiąca'
                 )
                 current = _last_current['record']
+            elif _last_current['key'] != _current_key:
+                _last_current['record'] = None
+                _last_current['key'] = None
             all_records = concat.concat(historic, current)
             result = roi.calculate(all_records,
                                    gross_investment=GROSS_INVESTMENT,
@@ -453,6 +575,20 @@ def main() -> None:
                                    co2_factor=CO2_FACTOR,
                                    asset_lifetime_years=ASSET_LIFETIME_YEARS,
                                    panel_degradation_pct_year=PANEL_DEGRADATION_PCT_YEAR)
+
+            # --- Cross-family produkcji: jedyny realny sygnał w tym kodzie ---
+            # produced_kwh (rodzina Energy Dashboard) vs cross_family_produced_kwh
+            # (rodzina inverter_total_yield) — patrz balance.py; przekracza health
+            # sensor do 'degraded' zamiast być niewidoczny tak jak przed 0.35.0.
+            try:
+                balance_check = balance.check_all(all_records)
+                _record_job('energy_balance', balance_check['ok'],
+                           '; '.join(f"{b['ym']}: diff={b['diff_kwh']} kWh ({b['diff_pct']}%)"
+                                     for b in balance_check['breaches'][:5]))
+            except Exception:
+                logger.exception('Energy balance check failed — continuing')
+                _record_job('energy_balance', False, 'sprawdzenie bilansu energii nie powiodło się')
+
             _now = date.today()
             month_closed = any(r.year == _now.year and r.month == _now.month for r in historic)
             current_month_savings = (
@@ -604,29 +740,19 @@ def main() -> None:
         the month never lands in historic.json, and the gap is permanent: utility
         meters reset at midnight, so live sensors no longer hold the number.
 
-        HA long-term statistics survive the meter reset, so on every startup check
-        whether the previous calendar month has real data and, if not, backfill it the
-        same way /api/historic/reread-month already does manually. Runs BEFORE
-        invoice reconciliation below — reconcile_invoice() can only overwrite an
-        existing month row, not create one, so a pending invoice for a fully missing
-        month would otherwise silently fail to apply.
-
-        Uses month_has_data(), not month_present(): a data-less placeholder row
-        (e.g. from a CSV import that pre-seeded a full calendar year) passes
-        month_present but must still trigger the backfill — this is what let
-        July 2026 stay silently empty through the 2026-08-01 restart.
+        HA long-term statistics survive the meter reset, so on every startup sweep
+        every month from the earliest one with data through the previous calendar
+        month (_scan_and_heal_all_months — not just the single previous month, so
+        an outage spanning ≥2 months doesn't leave the older gap unnoticed forever)
+        and backfill anything missing OR balance-inconsistent the same way
+        /api/historic/reread-month already does manually. Runs BEFORE invoice
+        reconciliation below — reconcile_invoice() can only overwrite an existing
+        month row, not create one, so a pending invoice for a fully missing month
+        would otherwise silently fail to apply.
         """
-        prev_y, prev_m = previous_month(date.today())
-        if month_has_data(historic_store.load(HISTORIC_PATH), prev_y, prev_m):
-            return
-        logger.warning(
-            'Startup: %d-%02d brak w historic.json lub bez danych (month-close prawdopodobnie nie '
-            'odpalił) — odtwarzam ze statystyk HA', prev_y, prev_m)
-        if _reread_month(prev_y, prev_m) is None:
-            logger.error(
-                'Startup catch-up: brak statystyk HA dla %d-%02d — miesiąc pozostaje pusty. '
-                'Uzupełnij ręcznie przez /api/historic/reread-month gdy recorder odzyska dane.',
-                prev_y, prev_m)
+        healed = _scan_and_heal_all_months()
+        if healed:
+            logger.info('Startup: naprawiono %d miesiąc(e/y): %s', len(healed), ', '.join(healed))
 
     def rcem_job() -> None:
         today = date.today()
@@ -698,41 +824,76 @@ def main() -> None:
     def month_close_job() -> None:
         try:
             _peak_gross, _offpeak_gross = _tariff_rates_for(date.today())
-            close_month(historic_path=HISTORIC_PATH, rcem_history_path=RCEM_HISTORY_PATH,
-                       peak_gross=_peak_gross, offpeak_gross=_offpeak_gross)
+            appended = close_month(historic_path=HISTORIC_PATH, rcem_history_path=RCEM_HISTORY_PATH,
+                                   peak_gross=_peak_gross, offpeak_gross=_offpeak_gross)
             historic_store.reconcile_pending_invoices(INVOICE_PATH, HISTORIC_PATH)
             poll_and_publish()
             if MONTHLY_NOTIFY:
                 _monthly_summary_notification()
-            _record_job('month_close', True)
+            # appended=False means close_month() skipped (row already present)
+            # or live_reader returned None (sensor unavailable at 23:55) — not
+            # itself an error (month_close_reconcile/verify pick up either
+            # case), but worth keeping visible rather than always reporting
+            # True regardless of what actually happened.
+            _record_job('month_close', True,
+                       '' if appended else 'snapshot pominięty (już istniał lub sensor niedostępny)')
         except Exception:
             logger.exception('Month-close error')
             _record_job('month_close', False, 'zamknięcie miesiąca nie powiodło się')
 
-    def month_close_verify_job() -> None:
-        """Bezpiecznik na wypadek, gdyby month_close_job w ogóle się nie odpalił
-        (add-on nie działał o 23:55 i restart nie nastąpił do 1. dnia miesiąca —
-        _catch_up_missing_month_close łapie ten przypadek tylko na starcie).
-
-        Odpala się dzień po zamknięciu miesiąca; jeśli poprzedni miesiąc wciąż
-        nie ma danych, odtwarza go ze statystyk HA tak samo jak startowy catch-up.
+    def month_close_reconcile_job() -> None:
+        """Nadpisuje prowizoryczny snapshot z 23:55 autorytatywnym odczytem z
+        lifetime liczników (LTS) — bezwarunkowo, niezależnie od tego czy
+        23:55 już zapisał dane. 23:55 czyta liczniki resetujące się co
+        miesiąc: ucinają ostatnie ~5 minut miesiąca i (zmierzone dla lipca
+        2026) niedoszacowują produkcję o ~0,6% względem lifetime liczników
+        (patrz live_reader.py docstring / plan docs/pv_roi_energy_rebase).
+        Odpala się krótko po północy 1. dnia miesiąca — jeśli statystyki HA
+        za poprzedni miesiąc nie są jeszcze skompilowane, `_reread_month`
+        zwraca None i prowizoryczny snapshot zostaje; month_close_verify
+        (01:00) i _scan_and_heal_all_months (każdy start/weryfikacja) łapią
+        to później przez sprawdzenie bilansu energii.
         """
         try:
             prev_y, prev_m = previous_month(date.today())
-            if month_has_data(historic_store.load(HISTORIC_PATH), prev_y, prev_m):
-                _record_job('month_close_verify', True)
-                return
-            logger.warning(
-                'month_close_verify: %d-%02d nadal bez danych dzień po zamknięciu — '
-                'odtwarzam ze statystyk HA', prev_y, prev_m)
-            if _reread_month(prev_y, prev_m) is None:
+            record = _reread_month(prev_y, prev_m)
+            if record is None:
+                logger.warning(
+                    'month_close_reconcile: brak jeszcze statystyk HA dla %d-%02d — '
+                    'prowizoryczny snapshot z 23:55 pozostaje na razie', prev_y, prev_m)
+                _record_job('month_close_reconcile', False,
+                           f'{prev_y}-{prev_m:02d}: statystyki HA jeszcze niedostępne')
+            else:
+                logger.info(
+                    'month_close_reconcile: %d-%02d nadpisany autorytatywnym odczytem LTS '
+                    '(produkcja=%.1f kWh)', prev_y, prev_m, record.produced_kwh)
+                _record_job('month_close_reconcile', True)
+        except Exception:
+            logger.exception('month_close_reconcile error')
+            _record_job('month_close_reconcile', False, 'reconciliacja zamknięcia miesiąca nie powiodła się')
+
+    def month_close_verify_job() -> None:
+        """Bezpiecznik na wypadek, gdyby month_close_job w ogóle się nie odpalił
+        (add-on nie działał o 23:55 i restart nie nastąpił do 1. dnia miesiąca —
+        _catch_up_missing_month_close łapie ten przypadek tylko na starcie) LUB
+        gdyby month_close_reconcile (00:05) nie zdążył jeszcze pobrać statystyk.
+
+        Odpala się dzień po zamknięciu miesiąca; przelatuje WSZYSTKIE miesiące
+        od pierwszego z danymi (_scan_and_heal_all_months — nie tylko
+        poprzedni), naprawiając zarówno braki jak i niespójności bilansu.
+        """
+        try:
+            healed = _scan_and_heal_all_months()
+            prev_y, prev_m = previous_month(date.today())
+            if not month_has_data(historic_store.load(HISTORIC_PATH), prev_y, prev_m):
                 _notify_ha(
                     f'⚠️ PV — {prev_y}-{prev_m:02d} bez danych',
                     'Zamknięcie miesiąca nie powiodło się i backfill ze statystyk HA też '
                     'nie znalazł danych — uzupełnij ręcznie przez /api/historic/reread-month.')
                 _record_job('month_close_verify', False, f'{prev_y}-{prev_m:02d} pozostaje pusty')
             else:
-                _record_job('month_close_verify', True)
+                _record_job('month_close_verify', True,
+                           f'naprawiono: {", ".join(healed)}' if healed else '')
         except Exception:
             logger.exception('month_close_verify error')
             _record_job('month_close_verify', False, 'weryfikacja zamknięcia miesiąca nie powiodła się')
@@ -742,33 +903,67 @@ def main() -> None:
     scheduler = BlockingScheduler(timezone=ZoneInfo(_tz_name))
     logger.info('Scheduler timezone: %s', _tz_name)
 
+    # misfire_grace_time/coalesce on every job below: APScheduler's default
+    # misfire_grace_time is 1 SECOND, so any scheduler stall past a job's
+    # trigger time (GC pause, event-loop backlog, container CPU throttling)
+    # silently skips that run entirely — including month_close at 23:55,
+    # where a skip means the month is never snapshotted at all until the
+    # next healer catches it. A generous 1h grace window with coalesce=True
+    # (collapse multiple missed runs into one) makes a brief stall harmless.
+    _JOB_DEFAULTS = dict(misfire_grace_time=3600, coalesce=True)
+
     # Poll every N minutes
     scheduler.add_job(poll_and_publish, 'interval', minutes=POLL_INTERVAL,
-                      id='poll', name='ROI poll + MQTT publish')
+                      id='poll', name='ROI poll + MQTT publish', **_JOB_DEFAULTS)
 
-    # Month-close: last day of month at 23:55 local time
+    # Month-close: last day of month at 23:55 local time — provisional only
+    # (reads the monthly-resetting utility_meter sensors; superseded below).
     scheduler.add_job(month_close_job, CronTrigger(day='last', hour=23, minute=55),
-                      id='month_close', name='Month-close snapshot')
+                      id='month_close', name='Month-close snapshot', **_JOB_DEFAULTS)
 
-    # Month-close verify: 1st of each month at 01:00 — catches a month-close that
-    # silently produced no data (e.g. a placeholder row blocked the write) even
-    # when the add-on kept running past 23:55 and the startup catch-up never fired.
+    # Month-close reconcile: 1st of each month at 00:05 — unconditionally
+    # overwrites the 23:55 provisional snapshot with an authoritative reread
+    # from the lifetime (never-resetting) meters via long-term statistics,
+    # fixing the ~5-minute truncation and the ~0.6% monthly-meter drift
+    # measured against the lifetime totals (see live_reader.py docstring).
+    scheduler.add_job(month_close_reconcile_job, CronTrigger(day=1, hour=0, minute=5),
+                      id='month_close_reconcile', name='Month-close LTS reconcile', **_JOB_DEFAULTS)
+
+    # Month-close verify: 1st of each month at 01:00 — catches a month-close
+    # (and reconcile) that silently produced no data, or any earlier month
+    # left with a balance-inconsistent record (_scan_and_heal_all_months).
     scheduler.add_job(month_close_verify_job, CronTrigger(day=1, hour=1, minute=0),
-                      id='month_close_verify', name='Month-close verify')
+                      id='month_close_verify', name='Month-close verify', **_JOB_DEFAULTS)
 
     # RCEm: days 11–20, every 2 hours starting at 08:00 local time
     # Skips automatically once the previous month price is stored.
     scheduler.add_job(rcem_job, CronTrigger(day='11-20', hour='8,10,12,14,16,18,20,22', minute=0),
-                      id='rcem_scrape', name='RCEm price scrape')
+                      id='rcem_scrape', name='RCEm price scrape', **_JOB_DEFAULTS)
 
     # RCEm correction scan: 1st of each month at 06:00 — catches skorygowana corrections
     # that appear after the 20th-day retry window (PSE allows corrections up to 12 months later)
     scheduler.add_job(rcem_correction_job, CronTrigger(day=1, hour=6, minute=0),
-                      id='rcem_correction_scan', name='RCEm correction scan')
+                      id='rcem_correction_scan', name='RCEm correction scan', **_JOB_DEFAULTS)
 
     # Daily backup to /share so data survives accidental add-on removal
     scheduler.add_job(_backup_data, CronTrigger(hour=2, minute=0),
-                      id='backup', name='Daily data backup')
+                      id='backup', name='Daily data backup', **_JOB_DEFAULTS)
+
+    # Daily Energy Dashboard prefs refresh: get_energy_dashboard_sources() is
+    # cached in-process after its first successful fetch (at startup, via the
+    # first poll), so a user reconfiguring Settings -> Energy wouldn't be
+    # picked up until the next add-on restart without this — prefs rarely
+    # change, but a daily force_refresh is cheap and keeps that window short.
+    def energy_prefs_refresh_job() -> None:
+        try:
+            live_reader.get_energy_dashboard_sources(force_refresh=True)
+            _record_job('energy_prefs_refresh', True)
+        except Exception:
+            logger.exception('Energy Dashboard prefs refresh failed')
+            _record_job('energy_prefs_refresh', False, 'odświeżenie konfiguracji Energy Dashboard nie powiodło się')
+
+    scheduler.add_job(energy_prefs_refresh_job, CronTrigger(hour=3, minute=0),
+                      id='energy_prefs_refresh', name='Energy Dashboard prefs refresh', **_JOB_DEFAULTS)
 
     # Monthly CPI refresh: day 16 at 12:00 (GUS publishes prev-month CPI ~15th)
     def cpi_job() -> None:
@@ -780,12 +975,12 @@ def main() -> None:
             _record_job('cpi', False, 'odświeżenie CPI z GUS nie powiodło się')
 
     scheduler.add_job(cpi_job, CronTrigger(day=16, hour=12, minute=0),
-                      id='cpi_refresh', name='Monthly CPI refresh')
+                      id='cpi_refresh', name='Monthly CPI refresh', **_JOB_DEFAULTS)
 
     # Symulacja rozbudowy magazynu: raz dziennie (LTS zmienia się co godzinę,
     # a wynik miesięczny — wolno); pierwszy przebieg w tle przy starcie.
     scheduler.add_job(battery_job, CronTrigger(hour=5, minute=15),
-                      id='battery_sim', name='Battery expansion simulation')
+                      id='battery_sim', name='Battery expansion simulation', **_JOB_DEFAULTS)
 
     logger.info('PV ROI Tracker v%s started — poll every %d min', __version__, POLL_INTERVAL)
 
