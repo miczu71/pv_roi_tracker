@@ -107,11 +107,17 @@ def _months_since_commissioning(records, today) -> list:
     return months
 
 
-def _heal_month_if_needed(records_by_key: dict, year: int, month: int) -> Optional[str]:
-    """Zwraca krótki powód naprawy (string) jeśli miesiąc (rok, month) jej
-    wymaga — brak danych LUB nadmierna rozbieżność między dwoma niezależnymi
+def _heal_month_if_needed(records_by_key: dict, year: int, month: int) -> Optional[tuple[str, str]]:
+    """Zwraca (kod_powodu, opis) jeśli miesiąc (rok, month) wymaga naprawy —
+    brak danych LUB nadmierna rozbieżność między dwoma niezależnymi
     śledzeniami produkcji (patrz balance.py) — albo None jeśli miesiąc jest
     w porządku.
+
+    kod_powodu to 'no_data' albo 'balance_breach' — stabilny identyfikator,
+    nie tekst do dopasowania przez wywołującego (dawniej ta funkcja zwracała
+    gołe zdanie po polsku; _scan_and_heal_all_months() musi teraz odróżnić te
+    dwa przypadki, żeby zdecydować czy w ogóle wolno naprawiać rozliczony
+    fakturą miesiąc — patrz tam).
 
     Cross-check to jedyny realny sygnał w tym kodzie: dawne healery
     sprawdzały tylko obecność danych (has_energy_data), więc miesiąc z
@@ -124,11 +130,42 @@ def _heal_month_if_needed(records_by_key: dict, year: int, month: int) -> Option
     from . import historic_store, balance
     rec = records_by_key.get((year, month))
     if rec is None or not historic_store.has_energy_data(rec.produced_kwh):
-        return 'brak danych'
+        return ('no_data', 'brak danych')
     b = balance.compute_balance(rec)
     if b['reason'] == 'breach':
-        return f"niespójny bilans produkcji — rozjazd rodzin ({b['diff_kwh']} kWh, {b['diff_pct']}%)"
+        return ('balance_breach',
+               f"niespójny bilans produkcji — rozjazd rodzin ({b['diff_kwh']} kWh, {b['diff_pct']}%)")
     return None
+
+
+def _heal_action(reason: Optional[tuple[str, str]], reconciled: bool) -> str:
+    """Decide what _scan_and_heal_all_months() should do for one month,
+    given _heal_month_if_needed()'s reason and whether that month is
+    invoice-reconciled. Pure decision function, split out from the healer
+    loop so the actual regression (0.35.1's rebase armed a pre-existing
+    startup healer that had no reconciled check — see docs/BLUEPRINT.md
+    0.35.2) is testable without booting the scheduler/live_reader.
+
+    Returns:
+      'ok'                — nothing wrong, do nothing.
+      'skip_reconciled'   — balance breach, but the month is invoice-
+                             reconciled: never touch it, the invoice is
+                             final (see rebase.py). Only cross_family_produced_kwh
+                             may ever diverge here, which is a diagnostic
+                             field, not grounds to rebuild billed data.
+      'heal'              — call _reread_month(): either a genuine
+                             balance breach on a NOT-yet-reconciled month, or
+                             missing data ('no_data') — even on a reconciled
+                             month, since an empty row has nothing final to
+                             lose and reconcile_pending_invoices() reapplies
+                             the billed fields right after, same startup.
+    """
+    if reason is None:
+        return 'ok'
+    code, _detail = reason
+    if code == 'balance_breach' and reconciled:
+        return 'skip_reconciled'
+    return 'heal'
 
 
 def _notify_ha(title: str, message: str) -> None:
@@ -255,27 +292,50 @@ def main() -> None:
 
     _web.set_reread_month_callback(_reread_month)
 
-    def _scan_and_heal_all_months() -> list:
+    def _scan_and_heal_all_months() -> tuple[list, list]:
         """Przeleć każdy miesiąc od pierwszego z danymi do poprzedniego
         miesiąca kalendarzowego (nie tylko previous_month(today) jak dawne
         healery) i napraw każdy z brakiem danych LUB niespójnym bilansem
         energii (_heal_month_if_needed / balance.py) przez ponowny odczyt z
-        lifetime liczników HA. Zwraca listę napisów 'YYYY-MM' naprawionych
-        miesięcy (pusta jeśli nic nie wymagało naprawy)."""
+        lifetime liczników HA.
+
+        Wyjątek: miesiąc rozliczony fakturą (_reconciled_months()) z powodem
+        'balance_breach' NIE jest naprawiany — faktura jest ostateczna
+        (patrz rebase.py i docs/BLUEPRINT.md, sekcja 0.35.2), a ten healer
+        działa automatycznie na każdym starcie/weryfikacji, więc bez tego
+        wyjątku cyklicznie nadpisywałby produced_kwh/battery_*/specific_yield
+        rozliczonych miesięcy przy każdym restarcie. 'no_data' wciąż jest
+        naprawiane nawet dla rozliczonych miesięcy — pusty wiersz nie ma nic
+        finalnego do stracenia, a reconcile_pending_invoices() i tak od razu
+        po tym healerze ponownie nakłada rozliczone pola na ten sam starcie.
+
+        Zwraca (healed, skipped) — listy napisów 'YYYY-MM'; obie puste, jeśli
+        nic nie wymagało naprawy."""
         records = historic_store.load(HISTORIC_PATH)
         records_by_key = {(r.year, r.month): r for r in records}
+        reconciled = _reconciled_months()
         healed = []
+        skipped = []
         for y, m in _months_since_commissioning(records, date.today()):
             reason = _heal_month_if_needed(records_by_key, y, m)
-            if reason is None:
+            action = _heal_action(reason, (y, m) in reconciled)
+            if action == 'ok':
                 continue
-            logger.warning('%d-%02d wymaga naprawy (%s) — odtwarzam ze statystyk HA', y, m, reason)
+            if action == 'skip_reconciled':
+                _code, detail = reason
+                logger.warning(
+                    '%d-%02d rozliczony fakturą i niespójny bilans (%s) — '
+                    'POMIJAM naprawę, faktura jest ostateczna', y, m, detail)
+                skipped.append(f'{y}-{m:02d}')
+                continue
+            _code, detail = reason
+            logger.warning('%d-%02d wymaga naprawy (%s) — odtwarzam ze statystyk HA', y, m, detail)
             record = _reread_month(y, m)
             if record is None:
                 logger.error('Nie udało się naprawić %d-%02d — brak danych LTS dla tego miesiąca', y, m)
             else:
                 healed.append(f'{y}-{m:02d}')
-        return healed
+        return healed, skipped
 
     def _reconciled_months() -> set:
         """(year, month) miesięcy rozliczonych fakturą — cały rekord dla
@@ -752,9 +812,12 @@ def main() -> None:
         month row, not create one, so a pending invoice for a fully missing month
         would otherwise silently fail to apply.
         """
-        healed = _scan_and_heal_all_months()
+        healed, skipped = _scan_and_heal_all_months()
         if healed:
             logger.info('Startup: naprawiono %d miesiąc(e/y): %s', len(healed), ', '.join(healed))
+        if skipped:
+            logger.info('Startup: pominięto naprawę %d rozliczonego fakturą miesiąc(a/ów): %s',
+                       len(skipped), ', '.join(skipped))
 
     def rcem_job() -> None:
         today = date.today()
@@ -885,7 +948,7 @@ def main() -> None:
         poprzedni), naprawiając zarówno braki jak i niespójności bilansu.
         """
         try:
-            healed = _scan_and_heal_all_months()
+            healed, skipped = _scan_and_heal_all_months()
             prev_y, prev_m = previous_month(date.today())
             if not month_has_data(historic_store.load(HISTORIC_PATH), prev_y, prev_m):
                 _notify_ha(
@@ -894,8 +957,12 @@ def main() -> None:
                     'nie znalazł danych — uzupełnij ręcznie przez /api/historic/reread-month.')
                 _record_job('month_close_verify', False, f'{prev_y}-{prev_m:02d} pozostaje pusty')
             else:
-                _record_job('month_close_verify', True,
-                           f'naprawiono: {", ".join(healed)}' if healed else '')
+                detail_parts = []
+                if healed:
+                    detail_parts.append(f'naprawiono: {", ".join(healed)}')
+                if skipped:
+                    detail_parts.append(f'pominięto (rozliczone fakturą): {", ".join(skipped)}')
+                _record_job('month_close_verify', True, '; '.join(detail_parts))
         except Exception:
             logger.exception('month_close_verify error')
             _record_job('month_close_verify', False, 'weryfikacja zamknięcia miesiąca nie powiodła się')

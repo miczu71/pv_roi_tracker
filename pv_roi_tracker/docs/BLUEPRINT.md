@@ -387,3 +387,85 @@ Supervisor update, verify. Re-run `simulate()` against the real
 months now show `frozen: true` with zero delta on all but the diagnostic
 field. `apply()` has still never been run against the real `historic.json`
 — needs explicit user approval before that step.
+
+**Update:** `simulate()` re-run confirmed the fix — 37 months `frozen: true`
+with zero delta on every field but the diagnostic, 1 unfrozen (2026-07,
+correctly not yet reconciled). ROI barely moved (82.06%→82.05%). 7 months
+flagged `still_broken` (cross-family divergence, diagnostic only, not
+touched). User then said "apply if everything looks good" —
+`/api/historic/apply-rebase` was called; the HTTP call itself timed out at
+the Supervisor proxy's 30s cap (the endpoint writes, then also runs
+`poll_and_publish()`, pushing total time past 30s), but the write had
+already completed server-side (confirmed via add-on logs: "Rebase applied:
+38 month(s) touched, 0 unavailable, snapshot at
+/data/historic.pre-rebase-20260802T160326Z.json") and was independently
+verified against `/api/data`: reconciled months (2026-05/06) unchanged,
+the one unreconciled month (2026-07) shows the full rebuild. Did not blindly
+retry `apply()` — re-running on top of an already-rebased file could have
+masked a real problem, so verified the actual written data instead.
+
+## 0.35.2 — the automatic healer had no reconciled check either
+
+User asked directly, right after 0.35.1 was applied to the real data: "will
+rcem updates or invoice corrections work - they wont be locked?" Tracing
+every write path to `historic.json` confirmed RCEm updates
+(`historic_store.backfill_rcem()`) and invoice corrections
+(`reconcile_invoice()`, `reconcile_pending_invoices()`, `patch_month_field()`)
+all write directly via `_mutate_month()`, completely independent of
+`rebase.py` — not locked, never were. The freeze in fact makes them *more*
+durable, since a later rebase can't undo them.
+
+But answering that question surfaced a real, separate problem:
+`_scan_and_heal_all_months()` (`main.py`) — the automatic healer that runs on
+every add-on startup and on the daily month-close-verify job — had no
+reconciled-month check at all. It calls `_heal_month_if_needed()`, which
+flags a month for repair on two conditions: no data, or a balance breach
+(`balance.py`'s cross-family check, >10% divergence). Either condition sends
+the month through `_reread_month()` → `historic_store.replace_month()`,
+which preserves only `tariff`/`rcem_status` and overwrites everything else.
+
+Before 0.35.1, this was inert for reconciled months: `cross_family_produced_kwh`
+was always `None` on them, so `compute_balance()` returned `incomplete` and
+the breach branch was unreachable. **0.35.1's own `apply-rebase` armed it** —
+it populated `cross_family_produced_kwh` on all 37 reconciled months, and 7
+of them (2023-06, 2025-01, 2025-10, 2025-11, 2025-12, 2026-01, 2026-02) now
+exceed the 10% threshold (visible in the apply report's `still_broken`).
+Left unfixed, the very next add-on restart would have rebuilt those 7
+months from LTS — `reconcile_pending_invoices()` runs right after and
+restores the billed subset, but `produced_kwh`/`battery_charge_kwh`/
+`battery_discharge_kwh`/`specific_yield` would stay clobbered, on a repeating
+cycle every restart. That's the opposite of "invoice is always final."
+Nothing was actually damaged — the add-on hadn't restarted since the
+0.35.1 rebase — but it was armed and waiting for the next one.
+
+**Fix, user-approved choice** (asked via AskUserQuestion: skip breaches
+outright vs. still heal genuinely-empty reconciled rows): the latter. A
+reconciled month with a balance breach is now skipped entirely (logged,
+left untouched); a reconciled month with literally no data is still healed,
+since there's nothing final to destroy and `reconcile_pending_invoices()`
+reapplies the billed figures immediately afterward in the same startup
+sequence — that ordering was already deliberate
+(`_catch_up_missing_month_close()`'s own docstring says as much).
+
+Implementation: `_heal_month_if_needed()` now returns `(code, detail)`
+instead of a bare Polish sentence, so callers get a stable
+`'no_data'`/`'balance_breach'` to branch on. New pure function
+`_heal_action(reason, reconciled) -> 'ok'|'heal'|'skip_reconciled'` — split
+out specifically so the regression is unit-testable without booting the
+scheduler, matching this file's existing convention of keeping decision
+logic as plain, isolated functions. `_scan_and_heal_all_months()` now
+returns `(healed, skipped)` instead of just `healed`; its two callers
+(`_catch_up_missing_month_close()`, `month_close_verify_job()`) log skipped
+months too. No changes needed to `rebase.py`, `balance.py`, or
+`historic_store.py` — the existing `energy_balance` job already surfaces
+balance breaches on the health sensor via `balance.check_all()`, so the
+healer change only needed to stop *acting* on a breach for reconciled
+months, not add new visibility.
+
+Before deploying, captured the 7 affected months' `produced_kwh`/
+`purchased_kwh`/`exported_kwh`/`consumed_kwh` from the live add-on's
+`/api/data` as a real before/after baseline (not just trusting logs) —
+the decisive check is confirming these are byte-identical after the
+add-on restarts as part of the 0.35.2 update.
+
+482 tests passing (478 + 4 new for `_heal_action`).

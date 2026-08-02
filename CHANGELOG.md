@@ -2,6 +2,51 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.35.2] — 2026-08-02
+
+Follow-up do 0.35.1, znaleziony przez pytanie użytkownika wprost: "will rcem
+updates or invoice corrections work - they wont be locked?" Sprawdzenie
+każdej ścieżki zapisu do `historic.json` potwierdziło, że RCEm i korekty
+faktur NIE są blokowane (piszą bezpośrednio przez `_mutate_month()`,
+niezależnie od `rebase.py`) — ale ujawniło inny, realny problem: **automatyczny
+healer startowy nie miał żadnej ochrony rozliczonych fakturą miesięcy.**
+
+`_scan_and_heal_all_months()` odpala się na każdym starcie add-onu i przy
+codziennej weryfikacji zamknięcia miesiąca; gdy `_heal_month_if_needed()`
+wykryje rozjazd bilansu (>10% między dwiema rodzinami produkcji, patrz
+`balance.py`), bezwarunkowo odtwarza cały miesiąc ze statystyk LTS przez
+`replace_month()` — który zachowuje tylko `tariff`/`rcem_status`, nadpisując
+resztę, w tym `produced_kwh`/`battery_*`/`specific_yield`.
+
+Przed 0.35.1 to nie był problem: rozliczone miesiące miały
+`cross_family_produced_kwh = None`, więc `compute_balance()` zwracał
+`incomplete` i healer nigdy się nie odpalał na nich. **Rebase 0.35.1
+uzbroił ten healer** — uzupełnił to pole na wszystkich 37 rozliczonych
+miesiącach, a 7 z nich (2023-06, 2025-01, 2025-10/11/12, 2026-01/02)
+przekracza próg 10%. Bez tej poprawki, przy najbliższym restarcie add-onu
+te miesiące zostałyby cyklicznie nadpisywane — dokładnie to, czemu miał
+zapobiec 0.35.1 ("invoice should be always final"). Nic nie zostało
+uszkodzone — add-on nie restartował się między rebase'em a tą poprawką.
+
+### Fixed
+
+- `_scan_and_heal_all_months()` pomija naprawę (`replace_month`) dla
+  miesiąca rozliczonego fakturą, jeśli powodem jest rozjazd bilansu —
+  loguje ostrzeżenie i dodaje do nowej listy `skipped` zamiast nadpisywać.
+  Miesiąc rozliczony fakturą, ale bez żadnych danych (`no_data`), nadal
+  jest naprawiany — pusty wiersz nie ma nic finalnego do stracenia, a
+  `reconcile_pending_invoices()` i tak zaraz potem nakłada rozliczone pola
+  na tym samym starcie.
+- `_heal_month_if_needed()` zwraca teraz `(kod, opis)` zamiast gołego
+  zdania — `_scan_and_heal_all_months()` potrzebowała stabilnego kodu
+  (`'no_data'`/`'balance_breach'`), nie tekstu do dopasowania.
+- Nowa czysta funkcja decyzyjna `_heal_action(reason, reconciled)` —
+  wydzielona z pętli healera specjalnie po to, żeby ta konkretna regresja
+  była testowalna bez odpalania schedulera/live_reader (ta sama konwencja
+  co reszta `main.py`'s testowalnych helperów).
+
+482 testy przechodzą (478 + 4 nowe dla `_heal_action`).
+
 ## [0.35.1] — 2026-08-02
 
 Poprawka na żądanie użytkownika po przejrzeniu wyników `simulate()` z 0.35.0:

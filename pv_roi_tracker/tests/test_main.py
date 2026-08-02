@@ -10,7 +10,7 @@ from datetime import date
 
 from pv_roi_tracker.main import (
     previous_month, month_present, month_has_data,
-    _months_since_commissioning, _heal_month_if_needed,
+    _months_since_commissioning, _heal_month_if_needed, _heal_action,
 )
 from pv_roi_tracker.models import MonthlyRecord
 
@@ -126,12 +126,12 @@ def _balanced_rec(year, month):
 
 
 def test_heal_month_if_needed_none_for_missing_key():
-    assert _heal_month_if_needed({}, 2026, 7) == 'brak danych'
+    assert _heal_month_if_needed({}, 2026, 7) == ('no_data', 'brak danych')
 
 
 def test_heal_month_if_needed_none_for_placeholder():
     by_key = {(2026, 7): _placeholder(2026, 7)}
-    assert _heal_month_if_needed(by_key, 2026, 7) == 'brak danych'
+    assert _heal_month_if_needed(by_key, 2026, 7) == ('no_data', 'brak danych')
 
 
 def test_heal_month_if_needed_none_when_balanced():
@@ -149,4 +149,38 @@ def test_heal_month_if_needed_flags_balance_breach():
     by_key = {(2026, 7): broken}
     reason = _heal_month_if_needed(by_key, 2026, 7)
     assert reason is not None
-    assert 'bilans' in reason
+    code, detail = reason
+    assert code == 'balance_breach'
+    assert 'bilans' in detail
+
+
+# ── _heal_action (0.35.2 — invoice-reconciled months are never auto-rebuilt) ──
+
+def test_heal_action_ok_when_no_reason():
+    assert _heal_action(None, reconciled=False) == 'ok'
+    assert _heal_action(None, reconciled=True) == 'ok'
+
+
+def test_heal_action_heals_no_data_even_when_reconciled():
+    """An empty reconciled row has nothing final to lose — heal it either
+    way; reconcile_pending_invoices() reapplies the billed fields right
+    after, same startup sequence."""
+    reason = ('no_data', 'brak danych')
+    assert _heal_action(reason, reconciled=False) == 'heal'
+    assert _heal_action(reason, reconciled=True) == 'heal'
+
+
+def test_heal_action_heals_balance_breach_when_not_reconciled():
+    reason = ('balance_breach', 'niespójny bilans')
+    assert _heal_action(reason, reconciled=False) == 'heal'
+
+
+def test_heal_action_skips_balance_breach_when_reconciled():
+    """The actual regression this covers: 0.35.1's rebase populated
+    cross_family_produced_kwh on invoice-reconciled months, which armed the
+    pre-existing balance-breach healer to silently overwrite
+    produced_kwh/battery_*/specific_yield on every restart — undoing the
+    'invoice is always final' guarantee rebase.py just shipped. A reconciled
+    month with a balance breach must be skipped, not rebuilt."""
+    reason = ('balance_breach', 'niespójny bilans')
+    assert _heal_action(reason, reconciled=True) == 'skip_reconciled'
