@@ -288,6 +288,23 @@ def api_data():
     _infl = float(_os.environ.get('INFLATION_RATE', '0.05'))
     today_ym_t = (today.year, today.month)
 
+    # Rozjazd rodzin produkcji (balance.py) — tylko do wyświetlenia w
+    # diagnostyce zakładki Historia, patrz docs/BLUEPRINT.md 0.35.3. Zbiór
+    # rozliczonych miesięcy liczony tak samo jak main.py's _reconciled_months(),
+    # żeby oznaczyć w UI, dla których miesięcy rozjazd jest wyłącznie
+    # diagnostyką (faktura ostateczna, nigdy nienaprawiane).
+    _reconciled_ym: set = set()
+    if _invoice_path is not None:
+        try:
+            from . import invoice_store as _istore_reconciled
+            for _inv in _istore_reconciled.load(_invoice_path).values():
+                if _inv.get('reconciled', False) and _inv.get('doc_type', 'rozliczeniowa') == 'rozliczeniowa':
+                    _y, _m = _inv.get('year'), _inv.get('month')
+                    if _y is not None and _m is not None:
+                        _reconciled_ym.add((_y, _m))
+        except Exception:
+            pass
+
     cumulative = result.subsidy
     records_out = []
     for r in sorted(records, key=lambda x: (x.year, x.month)):
@@ -339,6 +356,12 @@ def api_data():
             # v0.27.0: rachunek „bez PV vs z PV"
             'bill_without_pv': round(consumed * buy_px, 2) if consumed > 0 and buy_px > 0 else None,
             'bill_with_pv': round(purchased * buy_px - feedin_rev, 2) if consumed > 0 and buy_px > 0 else None,
+            # 0.35.3: diagnostyka rozjazdu rodzin produkcji — patrz balance.py.
+            # Informacyjne, nie wpływa na health/roi; None jeśli LTS-fetch
+            # dla tego miesiąca nie zebrał drugiej rodziny.
+            'cross_family_produced_kwh': r.cross_family_produced_kwh,
+            'balance_residual_kwh': r.balance_residual_kwh,
+            'balance_reconciled': (r.year, r.month) in _reconciled_ym,
         })
 
     current_rec = next((r for r in records if (r.year, r.month) == current_ym), None)

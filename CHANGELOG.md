@@ -2,6 +2,64 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.35.3] — 2026-08-03
+
+Follow-up do 0.35.1/0.35.2, znaleziony przez powiadomienie: *"Stan: degraded.
+Problemy: energy_balance"*. Weryfikacja całego add-onu potwierdziła, że
+wszystko inne działa poprawnie (poll co 30 min zielony, brak wyjątków w
+logach, wersja/release zgodne) — jedyny problem to sam health-check.
+
+0.35.2 nauczyło automatycznego healera, że rozjazd bilansu na miesiącu
+rozliczonym fakturą jest diagnostyką, nie powodem do naprawy
+(`_heal_action` → `skip_reconciled`). **Health-check (`balance.check_all()`,
+wołany z `poll_and_publish()`) o tej regule nie wiedział** — nadal zgłaszał
+te same 7 rozliczonych miesięcy (2023-06, 2025-01, 2025-10/11/12,
+2026-01/02) jako `breach`, trzymając `sensor.pv_roi_tracker_health` w stanie
+`degraded` **na stałe**, bo nic ich nigdy nie naprawi.
+
+Drugi, niezależny defekt: próg 10% w `compute_balance()` był wyłącznie
+względny. Wszystkie 7 spornych miesięcy to miesiące o niskiej produkcji
+(174–368 kWh) z rozjazdem bezwzględnym 30–85 kWh — ten sam rozjazd w
+miesiącu letnim (~850 kWh) daje <10% i nigdy nie alarmuje. Nawet po
+naprawie pierwszego defektu, alarm wróciłby na żywym, jeszcze
+nierozliczonym grudniu/styczniu.
+
+Zbadano też *dlaczego* obie rodziny liczników produkcji się rozjeżdżają:
+`sensor.energy_pv` (źródło „solar" w Energy Dashboard) całkuje metodą
+`left` szablon, który mnoży moc DC falownika przez 0.90/0.95/0.98 zależnie
+od pasma mocy — przy niskim nasłonecznieniu produkcja siedzi głównie w
+pasmach ×0.90/×0.95, więc `energy_pv` strukturalnie zaniża, najmocniej
+zimą. Potwierdzone zbiorczo: `total_produced_kwh` 21 746,6 kWh vs
+`sensor.inverter_total_yield` 22 192,64 kWh na przestrzeni 2023-06..2026-07
+= −446 kWh (−2,0%), skupione w miesiącach o niskiej produkcji. To
+oczekiwane zachowanie łańcucha czujników, nie błąd danych — kWh
+rozliczeniowe (eksport/import z licznika Tauron) są nietknięte. Żadna
+konfiguracja HA (`template.yaml`, `sensors.yaml`, Energy Dashboard) nie
+została zmieniona — decyzja użytkownika.
+
+### Fixed
+
+- `balance.compute_balance()`: breach wymaga teraz **obu** warunków —
+  `diff_pct > 10%` ORAZ `|diff_kwh| > 100 kWh` (nowy `ALERT_MIN_ABS_KWH`).
+  Ten sam próg obowiązuje automatycznego healera (przez
+  `_heal_month_if_needed()`), więc nie przebuduje już żywego zimowego
+  miesiąca z tego samego powodu.
+- `balance.check_all()` przyjmuje teraz opcjonalny `reconciled: set[(year,
+  month)]` i pomija te miesiące — dokładnie ta sama reguła co
+  `_heal_action`'s `'skip_reconciled'`. `poll_and_publish()` w `main.py`
+  przekazuje `_reconciled_months()`, tak jak robi to już healer.
+  Domyślne `None` = bez zmian dla innych wywołań.
+
+### Added
+
+- `/api/data`: każdy miesiąc niesie teraz `cross_family_produced_kwh`,
+  `balance_residual_kwh` i `balance_reconciled` — wcześniej te pola nigdy
+  nie wychodziły przez API mimo że były liczone.
+- Zakładka *Historia miesięczna*: zwijana sekcja *„Diagnostyka: rozjazd
+  rodzin produkcji"* — tabela Δ kWh/Δ % dla miesięcy z policzoną drugą
+  rodziną, miesiące rozliczone oznaczone. Wyłącznie informacyjne, nie
+  wpływa na stan zdrowia.
+
 ## [0.35.2] — 2026-08-02
 
 Follow-up do 0.35.1, znaleziony przez pytanie użytkownika wprost: "will rcem

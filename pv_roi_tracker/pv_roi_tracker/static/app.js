@@ -881,6 +881,48 @@ function renderHistTable(records, monthClosed, invoices) {
 
   document.getElementById('histTbl').innerHTML  = head + '<tbody>' + html + '</tbody>';
   document.getElementById('histFoot').textContent = records.length + ' miesiecy danych';
+  renderBalanceDiagnostics(records);
+}
+
+/* -- 0.35.3: diagnostyka rozjazdu rodzin produkcji (balance.py) --
+   Informacyjna tabela dla miesiecy, dla ktorych zebrano cross_family_produced_kwh
+   (rodzina inverter_total_yield). Miesiace rozliczone fakturą są oznaczone —
+   dla nich rozjazd nigdy nie jest naprawiany (faktura jest ostateczna), więc
+   pokazujemy go, ale bez żadnego badge'a alarmowego. */
+function renderBalanceDiagnostics(records) {
+  const rows = records.filter(r => r.cross_family_produced_kwh != null);
+  const wrap = document.getElementById('balanceDiagWrap');
+  if (!rows.length) { wrap.style.display = 'none'; return; }
+  wrap.style.display = '';
+
+  const head = '<thead><tr>' +
+    '<th>Miesiąc</th>' +
+    '<th title="produced_kwh — rodzina Energy Dashboard (sensor.energy_pv)">Produkcja (Dashboard)</th>' +
+    '<th title="cross_family_produced_kwh — rodzina inverter_total_yield">Produkcja (Falownik)</th>' +
+    '<th>Δ kWh</th>' +
+    '<th>Δ %</th>' +
+    '<th>Status</th>' +
+  '</tr></thead>';
+
+  let html = '';
+  for (const r of rows) {
+    const produced = r.produced_kwh || 0;
+    const cross = r.cross_family_produced_kwh;
+    const diffKwh = r.balance_residual_kwh != null ? r.balance_residual_kwh : Math.abs(produced - cross);
+    const diffPct = produced > 0 ? Math.abs(produced - cross) / produced * 100 : 0;
+    const status = r.balance_reconciled
+      ? '<span class="badge badge-ok" title="Miesiąc rozliczony fakturą — rozjazd jest wyłącznie diagnostyką, nigdy nie jest korygowany">faktura ostateczna</span>'
+      : '<span class="badge badge-ok" title="Normalny rozjazd między dwoma niezależnymi licznikami produkcji">na żywo</span>';
+    html += '<tr>' +
+      '<td>' + r.month_label + '</td>' +
+      '<td>' + kwh(produced) + '</td>' +
+      '<td>' + kwh(cross) + '</td>' +
+      '<td>' + kwh(diffKwh) + '</td>' +
+      '<td>' + pct(diffPct) + '</td>' +
+      '<td>' + status + '</td>' +
+    '</tr>';
+  }
+  document.getElementById('balanceDiagTbl').innerHTML = head + '<tbody>' + html + '</tbody>';
 }
 
 /* -- Predictions table -- */

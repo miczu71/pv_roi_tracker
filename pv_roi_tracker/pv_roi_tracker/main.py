@@ -642,8 +642,13 @@ def main() -> None:
             # produced_kwh (rodzina Energy Dashboard) vs cross_family_produced_kwh
             # (rodzina inverter_total_yield) — patrz balance.py; przekracza health
             # sensor do 'degraded' zamiast być niewidoczny tak jak przed 0.35.0.
+            # Miesiące rozliczone fakturą są pomijane (ta sama reguła co
+            # _heal_action/'skip_reconciled' — patrz balance.check_all()):
+            # rozjazd tam jest diagnostyką, nie awarią, i nic go nigdy nie
+            # naprawi, więc bez tego pominięcia sensor zostałby 'degraded'
+            # na stałe (0.35.3, patrz docs/BLUEPRINT.md).
             try:
-                balance_check = balance.check_all(all_records)
+                balance_check = balance.check_all(all_records, reconciled=_reconciled_months())
                 _record_job('energy_balance', balance_check['ok'],
                            '; '.join(f"{b['ym']}: diff={b['diff_kwh']} kWh ({b['diff_pct']}%)"
                                      for b in balance_check['breaches'][:5]))

@@ -129,7 +129,7 @@ All sensors appear under one device **PV ROI Tracker** in HA Settings → Device
 | `pv_roi_tracker_battery_expansion_payback` | PV Battery Expansion Payback | years | simple payback of the second module at configured price |
 | `pv_roi_tracker_underperformance_pct` | PV Underperformance | % | deviation of last closed month production vs seasonal expectation; `unknown` until ≥ 1 prior year of same calendar month |
 | `pv_roi_tracker_underperformance_flag` | PV Underperformance Flag | — | `ok` / `uwaga`; `uwaga` when deviation ≤ −10% |
-| `pv_roi_tracker_health` | PV ROI Tracker Health | — | `ok`/`degraded`/`error`; JSON attributes per job + `solcast_available` |
+| `pv_roi_tracker_health` | PV ROI Tracker Health | — | `ok`/`degraded`/`error`; JSON attributes per job + `solcast_available`. Since v0.35.3 the `energy_balance` job skips invoice-reconciled months (see below) and requires >100 kWh absolute drift, not just >10% relative |
 | `pv_roi_tracker_rate_energy_peak_net` / `rate_energy_offpeak_net` | PV Rate Energy Peak/Offpeak | PLN/kWh | net energy rate from the **latest parsed invoice** — `unknown` until one is uploaded |
 | `pv_roi_tracker_rate_dist_var_peak_net` / `rate_dist_var_offpeak_net` | PV Rate Dist Var Peak/Offpeak | PLN/kWh | variable distribution component, latest invoice |
 | `pv_roi_tracker_rate_jakosciowa_net` / `rate_oze_net` / `rate_kogeneracja_net` | PV Rate Jakościowa/OZE/Kogeneracja | PLN/kWh | latest invoice |
@@ -165,7 +165,18 @@ Since closed months are always rebuilt from HA long-term statistics (never-
 resetting meters), a second, independently-sourced production figure
 (`sensor.inverter_total_yield`'s own reading) is also fetched purely as a
 plausibility cross-check — see `balance.py` and the `energy_balance` entry
-in the health sensor's attributes.
+in the health sensor's attributes. The two families genuinely diverge by a
+few percent most months: `produced_kwh`'s Energy Dashboard source
+integrates a template that discounts the inverter's raw DC power by
+0.90/0.95/0.98 depending on power band, so it structurally under-reads
+versus the inverter's own register, worst at low irradiance. Since v0.35.3
+a breach requires **both** >10% relative drift *and* >100 kWh absolute
+drift (`ALERT_MIN_ABS_KWH`) — a purely relative threshold false-positived
+on low-production winter months — and invoice-reconciled months are
+excluded from the health check entirely (the invoice is final; nothing
+will ever rebuild them, so flagging them kept the sensor permanently
+`degraded`). The per-month comparison is still shown, purely
+informationally, in a collapsible section of the Historia tab.
 
 ## Installation
 

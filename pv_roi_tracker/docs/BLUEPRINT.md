@@ -468,4 +468,105 @@ Before deploying, captured the 7 affected months' `produced_kwh`/
 the decisive check is confirming these are byte-identical after the
 add-on restarts as part of the 0.35.2 update.
 
+## 0.35.3 — the health job never learned the reconciled-month rule either
+
+2026-08-02, the 0.35.2 deploy restart flipped `sensor.pv_roi_tracker_health`
+to `degraded`; the phone alert fired ~2h later per the automation's `for:`
+guard. User asked for a full verification. Everything else on the add-on was
+green (all other jobs `ok`, zero exceptions in the logs, poll succeeding
+every 30 min, release/version consistent) — the only failing job was
+`energy_balance`, flagging the exact same 7 reconciled months 0.35.2 just
+finished protecting: 2023-06, 2025-01, 2025-10, 2025-11, 2025-12, 2026-01,
+2026-02.
+
+0.35.2's fix note above says it plainly and undersold the consequence: *"the
+existing `energy_balance` job already surfaces balance breaches on the
+health sensor via `balance.check_all()`, so the healer change only needed to
+stop acting on a breach for reconciled months, not add new visibility."*
+True, but `check_all()` itself never got a reconciled-month exception — only
+`_heal_action()` did. Since these 7 months are now permanently exempt from
+repair (by design, "invoice is always final"), and `check_all()` scans every
+record with no exception, the health sensor had no path back to `ok`. Not a
+data problem — a structural omission: the same "reconciled is final" rule
+was taught to the healer but not to the job that watches for what the healer
+should act on.
+
+**Second, independent defect surfaced by the same 7 months**: all of them
+are low-production winter/shoulder months (174–368 kWh) with 30–95 kWh
+absolute drift. `ALERT_TOLERANCE_PCT = 10.0` is purely relative, so the same
+absolute drift that trips 10% in a 220 kWh month sits under 2% in a 850 kWh
+summer month. Fixing only the reconciled-skip would have left the health
+sensor exposed to re-tripping on the next live (unreconciled) December or
+January.
+
+**Root cause of the underlying drift, investigated and documented, not
+fixed** (user's explicit choice — report only): `sensor.energy_pv`
+(`sensors.yaml`, `platform: integration, method: left`) integrates
+`sensor.input_power_with_efficiency_loss` (`template.yaml`), which scales
+the inverter's raw DC input power by ×0.90 (<600 W), ×0.95 (<1200 W), or
+×0.98 (else) before integration. `sensor.inverter_total_yield` is the
+Huawei integration's native lifetime register — no such scaling. At low
+irradiance, most of a month's production sits in the ×0.90/×0.95 bands, so
+`energy_pv` structurally under-reads, worst in winter. Confirmed via HA's
+own long-term statistics (`recorder/statistics_during_period`,
+`sum`-of-period, 2023-06..2026-07):
+
+| month | energy_pv | inverter_total_yield | diff | diff% |
+|---|---:|---:|---:|---:|
+| 2025-01 | 426.8 | 460.8 | -34.0 | 7.97% |
+| 2025-10 | 301.6 | 355.5 | -53.9 | 17.88% |
+| 2025-11 | 217.8 | 282.4 | -64.6 | 29.67% |
+| 2025-12 | 257.7 | 334.1 | -76.5 | 29.68% |
+| 2026-01 | 241.5 | 337.2 | -95.7 | 39.62% |
+
+(Values differ slightly from the health sensor's own `cross_family_produced_kwh`,
+which is a live per-record fetch computed at a specific poll moment, not
+a pure LTS window — same order of magnitude, same months, same sign.)
+Lifetime aggregate: `total_produced_kwh` 21746.6 kWh (from `/api/data`
+summary) vs `sensor.inverter_total_yield`'s own LTS-summed total ~22193 kWh
+over the same window ≈ **-2.0%**, concentrated in exactly these
+low-production months. One recorder-side anomaly excluded from this table:
+2023-09's `sum` statistic shows an obviously bogus -2276.9 kWh delta
+(a meter-reset artifact in the recorder's own bookkeeping, not present in
+`state`-based deltas) — not evidence of anything wrong with either
+production family, just a reminder that `sum` isn't immune to recorder
+resets either. Billed kWh (export/import, sourced from the Tauron meter,
+not from either of these two chains) are entirely unaffected by this drift.
+No changes made to `template.yaml`, `sensors.yaml`, or the Energy
+Dashboard's configured solar source — purely a report, per user's explicit
+choice via AskUserQuestion.
+
+**Fix:**
+- `balance.py`: new `ALERT_MIN_ABS_KWH = 100.0`; `compute_balance()` now
+  breaches only when `diff_pct > ALERT_TOLERANCE_PCT` **and**
+  `abs(diff_kwh) > ALERT_MIN_ABS_KWH`. Placed in `compute_balance()`, not
+  `check_all()`, so the same floor also protects the automatic healer via
+  `_heal_month_if_needed()` — a live, not-yet-reconciled December would
+  otherwise still trip a rebuild for the same reason.
+- `check_all(records, reconciled: set[(year, month)] | None = None)` skips
+  any month in `reconciled` — mirrors `_heal_action()`'s `skip_reconciled`
+  rule exactly. `main.py`'s `poll_and_publish()` now calls
+  `balance.check_all(all_records, reconciled=_reconciled_months())`, the
+  same closure the healer already uses. `reconciled=None` (default)
+  preserves pre-0.35.3 behavior for any other caller.
+- `/api/data`: each month now carries `cross_family_produced_kwh`,
+  `balance_residual_kwh`, and `balance_reconciled` (previously computed but
+  never serialized). Historia tab gained a collapsible, informational-only
+  diagnostics table showing the per-month drift — visibility without
+  alerting, so a real operator-worth-a-look divergence is still
+  discoverable, just not paged.
+
+**Lesson, extending 0.35.2's own**: this add-on now has *three* independent
+paths that read the reconciled-month rule — `rebase.py` (never rebuilds),
+the healer's `_heal_action()` (never repairs), and now the health job's
+`check_all()` (never alerts). Any future change to what counts as "final"
+must be checked against all three, not just the two identified in 0.35.2.
+
+Verified: 487 tests passing (482 baseline + 5 new in `test_balance.py`
+covering the abs-floor and the `reconciled` parameter, including a
+regression case reproducing the real 2025-01 numbers). Deploy verification
+(baseline capture, restart, health-sensor state, logs, UI diagnostics
+screenshot) recorded in the plan file
+`/data/home/.claude/plans/verify-the-whole-pv-roi-tracker-nested-river.md`.
+
 482 tests passing (478 + 4 new for `_heal_action`).

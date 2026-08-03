@@ -81,6 +81,27 @@ def test_compute_balance_just_over_tolerance_breaches():
     assert b['reason'] == 'breach'
 
 
+def test_compute_balance_low_production_month_over_pct_under_abs_floor_is_ok():
+    """Reproduces the confirmed 2025-01 measurement: produced=219.9,
+    cross_family=303.02 — 37.8% off, but only 83 kWh absolute. This is
+    exactly the false-positive pattern that kept the health sensor
+    'degraded' permanently after 0.35.1/0.35.2 (see docs/BLUEPRINT.md
+    0.35.3): a low-production month trips the pure-percent threshold on a
+    routine absolute gap that a summer month of the same size would never
+    flag. Must not be a breach."""
+    rec = _rec(produced_kwh=219.9, cross_family_produced_kwh=303.02)
+    b = balance.compute_balance(rec)
+    assert b['ok'] is True
+    assert b['reason'] == 'ok'
+
+
+def test_compute_balance_over_pct_and_over_abs_floor_breaches():
+    rec = _rec(produced_kwh=500.0, cross_family_produced_kwh=650.0)  # 30%, 150 kWh
+    b = balance.compute_balance(rec)
+    assert b['ok'] is False
+    assert b['reason'] == 'breach'
+
+
 def test_compute_balance_zero_produced_no_crash():
     rec = _rec(produced_kwh=0.0, cross_family_produced_kwh=0.0)
     b = balance.compute_balance(rec)
@@ -125,3 +146,31 @@ def test_check_all_ignores_incomplete_records():
     result = balance.check_all([incomplete])
     assert result['ok'] is True
     assert result['breaches'] == []
+
+
+def test_check_all_skips_reconciled_months_with_breach():
+    """0.35.3: an invoice-reconciled month's balance breach must never keep
+    the health job 'degraded' — mirrors main.py's _heal_action()
+    'skip_reconciled' rule. Reproduces the confirmed 2025-01 case."""
+    reconciled_breach = _rec(year=2025, month=1, produced_kwh=219.9, cross_family_produced_kwh=650.0)
+    result = balance.check_all([reconciled_breach], reconciled={(2025, 1)})
+    assert result['ok'] is True
+    assert result['breaches'] == []
+
+
+def test_check_all_still_flags_unreconciled_breach():
+    """A genuine breach on a month NOT in `reconciled` is still surfaced —
+    the reconciled set must not blanket-suppress everything."""
+    live_breach = _rec(year=2026, month=7, produced_kwh=500.0, cross_family_produced_kwh=650.0)
+    result = balance.check_all([live_breach], reconciled={(2025, 1)})
+    assert result['ok'] is False
+    assert result['breaches'][0]['ym'] == '2026-07'
+
+
+def test_check_all_default_reconciled_is_backward_compatible():
+    """Omitting `reconciled` must behave exactly as before 0.35.3 — every
+    record is checked."""
+    bad_month = _rec(year=2025, month=1, produced_kwh=219.9, cross_family_produced_kwh=650.0)
+    result = balance.check_all([bad_month])
+    assert result['ok'] is False
+    assert len(result['breaches']) == 1
