@@ -2,6 +2,46 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.35.5] — 2026-08-10
+
+Follow-up to 0.35.4, found during that release's own post-deploy
+verification (not a fresh report) — comparing the live `/api/data` after
+deploy against the audit's predicted numbers showed 2023-12's
+`effective_gross_per_kwh` still at 0.39, unchanged despite 0.35.4's fix.
+
+Root cause: 0.35.4 fixed the case where `energy_amount_net` was **missing**
+(`None`) by reconstructing it from rate × kWh. 2023-12's `energy_amount_net`
+wasn't missing — it was stored as a **parser artifact**, ~1.0 PLN net on a
+1703 kWh month whose own `energy_peak_net` rate (0.698 PLN/kWh) implies
+~1189 PLN. Since the field was non-`None`, the "reconstruct only when
+missing" check never fired and kept the bad value. Confirmed via
+`_build_cost_breakdown`'s parallel `energia` series, which showed the same
+1.0 PLN outlier against neighboring months' 350-900 PLN range and a
+dist_var/energia ratio of 0.0 versus ~2.5-2.6 everywhere else — this exact
+same latent bug was already present in `_build_cost_breakdown`
+(pre-existing, not introduced by 0.35.4), just never independently
+verified against live data before.
+
+### Fixed
+
+- **`web.py`**: new shared `_pick_amount(inv, amount_field, fallback)`,
+  used by both `_build_cost_breakdown` and `_build_rate_trend`. Prefers the
+  stored "wartość netto" amount, but falls back to the rate×kWh
+  reconstruction when the stored figure is both non-`None` **and**
+  implausible — below 20% of what the invoice's own rate implies
+  (`_IMPLAUSIBLE_STORED_RATIO`). A margin generous enough that a
+  genuinely small real amount (e.g. a near-zero OZE rate, or a low-import
+  month already separately flagged by `_LOW_VOLUME_KWH`) is never
+  second-guessed — only replaces values that are off by 5-10× or more.
+
+### Verified
+
+501 tests passing (498 in 0.35.4 + 3 new: two in `test_web_cost_breakdown.py`
+reproducing the exact 2023-12 numbers, one confirming a genuinely-small
+stored value is left alone). Live: `sensor.pv_roi_tracker_health` = `ok`,
+`cost_breakdown.energia['2023-12']` and `rate_trend` both confirmed correct
+after deploy.
+
 ## [0.35.4] — 2026-08-10
 
 Wynik pełnego audytu integralności danych i logiki, zlecony wprost przez

@@ -91,3 +91,39 @@ def test_unparsed_stub_excluded_from_aggregation(store_path):
 
     bd = web._build_cost_breakdown(_real(store_path))
     assert bd['per_month']['labels'] == ['2025-10']  # stub's synthetic key excluded
+
+
+def test_implausibly_small_stored_amount_reconstructed_not_kept(store_path):
+    """Regression for the real 2023-12 invoice, caught during 0.35.4's own
+    post-release verification (docs/AUDIT_2026_08_10.md): energy_amount_net
+    was stored as ~1.0 PLN net on a 1703 kWh month whose own energy_peak_net
+    rate (0.698 PLN/kWh) implies ~1189 PLN — a parser artifact, not a
+    genuine near-zero charge. Because the field was non-None, the original
+    'val is None -> reconstruct' fallback never fired and kept the bad
+    value. _pick_amount() must override a stored figure that's far below
+    what the rate implies, the same way it already does for a truly missing
+    (None) one."""
+    data = _parse_text(_make_g11_format_text())   # 2024-02: 1226 kWh, energy_peak_net=0.67270
+    data.energy_amount_net = 1.0                  # parser artifact — nowhere near 0.67270*1226
+    invoice_store.upsert(data, filename='dec.pdf', path=store_path)
+
+    bd = web._build_cost_breakdown(_real(store_path))
+    by_key = {c['key']: c for c in bd['components']}
+    assert by_key['energia']['total_net'] == pytest.approx(0.67270 * 1226, abs=0.5)
+    assert bd['any_reconstructed'] is True
+
+
+def test_plausible_small_stored_amount_kept_not_overridden(store_path):
+    """A genuinely small amount (e.g. a low-import month, or a component
+    whose rate is legitimately near-zero) must NOT be second-guessed just
+    for being small relative to a much larger reconstruction target on a
+    high-volume invoice — only reconstruct when there's an available rate
+    to compare against and the stored figure is far below it."""
+    data = _parse_text(_make_g11_format_text())   # 2024-02
+    data.dist_oze_net = 0.00001                   # near-zero but real rate
+    data.dist_oze_amount_net = 0.01                # tiny but genuine amount
+    invoice_store.upsert(data, filename='dec.pdf', path=store_path)
+
+    bd = web._build_cost_breakdown(_real(store_path))
+    by_key = {c['key']: c for c in bd['components']}
+    assert by_key['oze']['total_net'] == pytest.approx(0.01, abs=0.001)

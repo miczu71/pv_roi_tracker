@@ -110,6 +110,23 @@ def test_reconstructs_missing_energy_amount_from_rate(store_path):
     assert m['effective_gross_per_kwh'] > 0.9
 
 
+def test_reconstructs_implausibly_small_stored_energy_amount(store_path):
+    """Real 2023-12 regression, caught during 0.35.4's own post-release
+    verification: energy_amount_net wasn't missing — it was stored as a
+    parser artifact (~1.0 PLN net) on a 1703 kWh month whose own rate
+    (energy_peak_net=0.698) implies ~1189 PLN. The 'reconstruct only when
+    None' fix above didn't catch this, because the field was non-None. Must
+    fall back to the rate×kWh reconstruction here too, not just when the
+    field is truly absent."""
+    data = _data(energy_amount_net=1.0)  # implausible: real invoice implies ~1189
+    invoice_store.upsert(data, filename='dec.pdf', path=store_path)
+
+    rt = web._build_rate_trend(_real(store_path))
+    m = rt['rates_per_month'][0]
+    assert m['effective_gross_per_kwh'] is not None
+    assert m['effective_gross_per_kwh'] > 0.9  # not the ~0.39 the stored artifact would give
+
+
 def test_eff_is_none_when_energy_component_wholly_unrecoverable(store_path):
     """When neither the amount nor the rate is available, the energy
     component can't be reconstructed at all — eff must be None, not a number

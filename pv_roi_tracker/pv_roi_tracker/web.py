@@ -755,6 +755,40 @@ def _recon_flat(inv: dict, rate_field: str) -> Optional[float]:
     return round(rate * kwh, 2)
 
 
+# A stored 'wartość netto' amount is treated as unusable — not just missing —
+# when a rate×kWh reconstruction is available and the stored figure is far
+# below what the rate implies. Confirmed real case (docs/AUDIT_2026_08_10.md,
+# caught during 0.35.4's own post-release verification): 2023-12's
+# energy_amount_net parsed to ~1.0 PLN net on a 1703 kWh month whose own
+# energy_peak_net rate (0.698 PLN/kWh) implies ~1189 PLN — a parser artifact
+# for that specific old-format invoice, not a genuine near-zero energy
+# charge (energy is never a rounding error on a bill this size). 0.2 leaves
+# ample room for legitimately small amounts in low-import months, which
+# _build_rate_trend separately flags via _LOW_VOLUME_KWH rather than
+# excluding here.
+_IMPLAUSIBLE_STORED_RATIO = 0.2
+
+
+def _pick_amount(inv: dict, amount_field: str, fallback) -> tuple[Optional[float], bool]:
+    """Pick the best-known monthly amount for a cost component.
+
+    Returns (amount, reconstructed). Prefers the stored amount field unless a
+    rate×kWh reconstruction is available AND the stored figure is below
+    _IMPLAUSIBLE_STORED_RATIO of it — see the constant's docstring above.
+    fallback=None (fixed fees, which ARE the amount — there's no per-kWh rate
+    to reconstruct from) always returns the stored value as-is.
+    """
+    stored = inv.get(amount_field)
+    if fallback is None:
+        return stored, False
+    recon = fallback(inv)
+    if stored is None:
+        return recon, recon is not None
+    if recon is not None and recon > 0 and stored < _IMPLAUSIBLE_STORED_RATIO * recon:
+        return recon, True
+    return stored, False
+
+
 # Below this many imported kWh in a billing month, fixed fees (~15-30 PLN
 # historically) dominate effective_gross_per_kwh — e.g. 9 kWh in 2024-06
 # produced 5.26 PLN/kWh. Mathematically correct, but not a usable "current
@@ -806,11 +840,9 @@ def _build_cost_breakdown(real: dict) -> Optional[dict]:
     for month_key in labels:
         inv = months[month_key]
         for key, _label, amount_field, fallback in _COST_COMPONENTS:
-            val = inv.get(amount_field)
-            if val is None and fallback is not None:
-                val = fallback(inv)
-                if val is not None:
-                    any_reconstructed = True
+            val, was_reconstructed = _pick_amount(inv, amount_field, fallback)
+            if was_reconstructed:
+                any_reconstructed = True
             series[key].append(val)
             if val is not None:
                 totals[key] += val
@@ -861,11 +893,12 @@ def _build_rate_trend(real: dict) -> Optional[dict]:
     miesiące (patrz docs/AUDIT_2026_08_10.md, punkt C).
 
     Składniki zmienne (energia/dist_var/jakościowa/OZE/kogeneracja) są
-    rekonstruowane z rate × kWh dokładnie tak samo jak w
-    _build_cost_breakdown (_recon_zoned/_recon_flat) gdy faktura nie ma
-    bezpośrednio wyekstrahowanej kwoty netto — bez tego brakujący składnik
-    liczył się jako 0 zamiast None, zaniżając eff (np. 2023-12: 0.39 PLN/kWh
-    przy 1703 kWh importu, gdy energy_amount_net było nieobecne).
+    rekonstruowane z rate × kWh dokładnie tym samym _pick_amount() co
+    _build_cost_breakdown — brakujący LUB niewiarygodnie mały składnik
+    (patrz _IMPLAUSIBLE_STORED_RATIO) jest zastępowany rekonstrukcją zamiast
+    liczyć się jako 0/wartość-artefakt i zaniżać eff (np. 2023-12: parser
+    zapisał energy_amount_net≈1,0 PLN na 1703 kWh importu przy stawce
+    energy_peak_net=0,698 implikującej ~1189 PLN — 0,39 PLN/kWh zamiast ~1,25).
     """
     if not real:
         return None
@@ -875,20 +908,17 @@ def _build_rate_trend(real: dict) -> Optional[dict]:
     for ym in labels:
         inv = real[ym]
         kwh = inv.get('imported_kwh') or 0.0
-        def _amount_or_recon(field: str, fallback):
-            val = inv.get(field)
-            return val if val is not None else fallback(inv)
 
         eff = None
         if kwh > 0:
             comps_net = [
-                _amount_or_recon('energy_amount_net',
-                                 lambda i: _recon_zoned(i, 'energy_peak_net', 'energy_offpeak_net')),
-                _amount_or_recon('dist_var_amount_net',
-                                 lambda i: _recon_zoned(i, 'dist_var_peak_net', 'dist_var_offpeak_net')),
-                _amount_or_recon('dist_jakosciowa_amount_net', lambda i: _recon_flat(i, 'dist_jakosciowa_net')),
-                _amount_or_recon('dist_oze_amount_net', lambda i: _recon_flat(i, 'dist_oze_net')),
-                _amount_or_recon('dist_kogeneracja_amount_net', lambda i: _recon_flat(i, 'dist_kogeneracja_net')),
+                _pick_amount(inv, 'energy_amount_net',
+                            lambda i: _recon_zoned(i, 'energy_peak_net', 'energy_offpeak_net'))[0],
+                _pick_amount(inv, 'dist_var_amount_net',
+                            lambda i: _recon_zoned(i, 'dist_var_peak_net', 'dist_var_offpeak_net'))[0],
+                _pick_amount(inv, 'dist_jakosciowa_amount_net', lambda i: _recon_flat(i, 'dist_jakosciowa_net'))[0],
+                _pick_amount(inv, 'dist_oze_amount_net', lambda i: _recon_flat(i, 'dist_oze_net'))[0],
+                _pick_amount(inv, 'dist_kogeneracja_amount_net', lambda i: _recon_flat(i, 'dist_kogeneracja_net'))[0],
                 inv.get('fixed_mocowa_net'),
                 inv.get('fixed_abonament_net'),
                 inv.get('fixed_stalysieciowy_net'),
