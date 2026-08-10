@@ -32,6 +32,24 @@ _SNAPSHOT_FIELDS = (
 )
 
 
+def _warnings_need_training(warnings: list) -> bool:
+    """True when at least one warning reports a field the parser could not
+    find at all — as opposed to a plausibility check on a value it DID find
+    ('walidacja: …' — e.g. avg_price looking too high in a low-import summer
+    month, not a parse failure) or a field it defaulted rather than left
+    missing ('… (użyto 0)'). See docs/AUDIT_2026_08_10.md: an earlier version
+    of upsert() always set needs_training=False regardless of warnings, so
+    invoices with real gaps (five missing fixed-fee components on 2024-01,
+    understating cost_breakdown for that month) never surfaced for layout
+    training."""
+    for w in warnings:
+        if 'użyto' in w:
+            continue
+        if 'nie znalezion' in w or 'nieznaleziona' in w or 'nieobliczon' in w:
+            return True
+    return False
+
+
 # ── Internal helpers ─────────────────────────────────────────────────────────
 
 def _atomic_write(path: Path, doc: dict) -> None:
@@ -123,7 +141,7 @@ def _to_record(
     d['parsed_at'] = datetime.now(timezone.utc).isoformat()
     d['filename'] = filename
     d['reconciled'] = reconciled
-    d['needs_training'] = False
+    d['needs_training'] = _warnings_need_training(data.warnings)
     if pre_reconcile:
         d['pre_reconcile'] = pre_reconcile
     # Only store raw_text when the parse had warnings (saves space for clean parses)

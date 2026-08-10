@@ -22,10 +22,21 @@ this explicit: "for the past data that exists on the invoices and is
 reconciled - I want to keep it as final data, even if it's slightly off
 from inverter data. invoice should be always final." So reconciled months
 skip the full multi-entity LTS refetch entirely and pass through byte-for-
-byte, except for a cheap single-entity refresh of cross_family_produced_kwh
-(and the balance_residual_kwh derived from it) — a read-only diagnostic
-overlay, never a billed or produced figure, so refreshing it doesn't
-compromise finality.
+byte, except for two read-only/derived recomputations that never touch a
+billed or produced figure:
+  - cross_family_produced_kwh (and the balance_residual_kwh derived from
+    it) — a cheap single-entity diagnostic overlay, refreshed live.
+  - consumed_kwh — algebraically recomputed as self_consumed_kwh +
+    purchased_kwh, both already-frozen invoice-derived values. This one
+    is not optional: consumed_kwh is never billed (no invoice line for
+    "total household consumption"), and on this installation it was for
+    a time written from a buggy HA sensor
+    (sensor.house_consumption_energy_monthly, which read produced+imported
+    instead of real consumption). Freezing that field wholesale — as an
+    earlier version of this module did — would have locked the bug into
+    every reconciled month it ever touched (confirmed for 2026-05/06 during
+    the 2026-08-10 audit, docs/AUDIT_2026_08_10.md). "Invoice is final"
+    only applies to fields the invoice actually states.
 """
 from __future__ import annotations
 
@@ -80,14 +91,26 @@ def _merge_month(old: dict, new: MonthlyRecord) -> dict:
 
 
 def _freeze_month(old: dict, cross_family_produced_kwh: Optional[float]) -> dict:
-    """Build the rebased dict for an invoice-reconciled month: every field
-    passes through unchanged except cross_family_produced_kwh (a read-only
-    diagnostic, refreshed cheaply) and the balance_residual_kwh derived from
-    it. Nothing billed, produced, or stored-as-final is touched."""
+    """Build the rebased dict for an invoice-reconciled month: every billed
+    or produced field passes through unchanged. Two fields are still
+    recomputed — see module docstring for why neither compromises "invoice
+    is final":
+      - cross_family_produced_kwh (+ balance_residual_kwh derived from it):
+        a read-only diagnostic, refreshed cheaply.
+      - consumed_kwh: recomputed as self_consumed_kwh + purchased_kwh, both
+        already-frozen invoice-derived values on this same dict. Not billed,
+        so nothing here overrides the invoice — it corrects a field that was
+        historically written from a buggy live sensor and would otherwise
+        stay wrong forever once a month reconciles.
+    """
     merged = dict(old)
     if cross_family_produced_kwh is not None:
         merged['cross_family_produced_kwh'] = cross_family_produced_kwh
         merged['balance_residual_kwh'] = balance.residual_kwh(MonthlyRecord.from_dict(merged))
+    self_consumed = merged.get('self_consumed_kwh')
+    purchased = merged.get('purchased_kwh')
+    if isinstance(self_consumed, (int, float)) and isinstance(purchased, (int, float)):
+        merged['consumed_kwh'] = round(self_consumed + purchased, 3)
     return merged
 
 

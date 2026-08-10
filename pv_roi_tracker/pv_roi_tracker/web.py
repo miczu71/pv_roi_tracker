@@ -755,6 +755,13 @@ def _recon_flat(inv: dict, rate_field: str) -> Optional[float]:
     return round(rate * kwh, 2)
 
 
+# Below this many imported kWh in a billing month, fixed fees (~15-30 PLN
+# historically) dominate effective_gross_per_kwh — e.g. 9 kWh in 2024-06
+# produced 5.26 PLN/kWh. Mathematically correct, but not a usable "current
+# rate" for the headline sensor or a r/r comparison — see _build_rate_trend.
+_LOW_VOLUME_KWH = 30.0
+
+
 # Ordered energia → dystrybucja zmienna → opłaty stałe → opłaty dodatkowe, so the
 # breakdown table/chart reads as a natural cost narrative top-to-bottom.
 # (key, polish label, amount field on the stored invoice record, fallback fn or None)
@@ -839,9 +846,26 @@ def _build_rate_trend(real: dict) -> Optional[dict]:
       rates_per_month:      [{ym, energy_peak_net, energy_offpeak_net,
                                dist_var_peak_net, dist_var_offpeak_net,
                                jakosciowa_net, oze_net, kogeneracja_net,
-                               effective_gross_per_kwh}]
-      latest_effective_gross_per_kwh: stawka z ostatniej faktury (lub None)
-      yoy_effective_gross_pct:        r/r efektywnej ceny all-in (lub None)
+                               effective_gross_per_kwh, low_volume}]
+      latest_effective_gross_per_kwh: stawka z ostatniej faktury o miarodajnym
+                                       wolumenie (lub None)
+      yoy_effective_gross_pct:        r/r efektywnej ceny all-in, tylko wśród
+                                       miesięcy o miarodajnym wolumenie (lub None)
+
+    effective_gross_per_kwh = (wszystkie składniki netto, zmienne + stałe) ×
+    1.23 / imported_kwh — czyli PEŁNY koszt miesiąca na kWh, nie sama stawka
+    zmienna. Poniżej _LOW_VOLUME_KWH ta miara jest matematycznie poprawna,
+    ale zdominowana przez opłaty stałe rozłożone na garstkę kWh (np. 9 kWh w
+    2024-06 → 5.26 PLN/kWh) i nie nadaje się do porównań r/r ani jako
+    nagłówkowa "aktualna stawka" — stąd low_volume flaguje, nie usuwa, te
+    miesiące (patrz docs/AUDIT_2026_08_10.md, punkt C).
+
+    Składniki zmienne (energia/dist_var/jakościowa/OZE/kogeneracja) są
+    rekonstruowane z rate × kWh dokładnie tak samo jak w
+    _build_cost_breakdown (_recon_zoned/_recon_flat) gdy faktura nie ma
+    bezpośrednio wyekstrahowanej kwoty netto — bez tego brakujący składnik
+    liczył się jako 0 zamiast None, zaniżając eff (np. 2023-12: 0.39 PLN/kWh
+    przy 1703 kWh importu, gdy energy_amount_net było nieobecne).
     """
     if not real:
         return None
@@ -851,33 +875,29 @@ def _build_rate_trend(real: dict) -> Optional[dict]:
     for ym in labels:
         inv = real[ym]
         kwh = inv.get('imported_kwh') or 0.0
-        # brutto = suma netto × 1.23  (przybliżenie — pełne pole VAT nieobecne w każdej fakturze)
-        gross_total = None
-        vat_total   = inv.get('vat_total_net')       # rekonstruowane 23% od sumy netto
-        energy_net  = inv.get('energy_amount_net')
-        if vat_total is not None and energy_net is not None:
-            # vat_total = 0.23 × Σ netto_składniki; gross ≈ Σ netto + vat
-            # prostsze: użyj samego vat_total + energii + reszty jak w cost_breakdown
-            pass
-        # Najrzetelniej: brutto_total z faktury — suma netto × VAT
-        # Fallback: wartość efektywna = (energia + dist_var) × kWh
+        def _amount_or_recon(field: str, fallback):
+            val = inv.get(field)
+            return val if val is not None else fallback(inv)
+
         eff = None
         if kwh > 0:
-            # Szukaj bezpośredniego pola brutto z faktury (jeśli parser je wyciągnie w przyszłości)
-            # Na razie rekonstruujemy: Σ_netto × 1.23 / kWh
-            # Składniki netto (kwoty)
             comps_net = [
-                inv.get('energy_amount_net'),
-                inv.get('dist_var_amount_net'),
-                inv.get('dist_jakosciowa_amount_net'),
-                inv.get('dist_oze_amount_net'),
-                inv.get('dist_kogeneracja_amount_net'),
+                _amount_or_recon('energy_amount_net',
+                                 lambda i: _recon_zoned(i, 'energy_peak_net', 'energy_offpeak_net')),
+                _amount_or_recon('dist_var_amount_net',
+                                 lambda i: _recon_zoned(i, 'dist_var_peak_net', 'dist_var_offpeak_net')),
+                _amount_or_recon('dist_jakosciowa_amount_net', lambda i: _recon_flat(i, 'dist_jakosciowa_net')),
+                _amount_or_recon('dist_oze_amount_net', lambda i: _recon_flat(i, 'dist_oze_net')),
+                _amount_or_recon('dist_kogeneracja_amount_net', lambda i: _recon_flat(i, 'dist_kogeneracja_net')),
                 inv.get('fixed_mocowa_net'),
                 inv.get('fixed_abonament_net'),
                 inv.get('fixed_stalysieciowy_net'),
             ]
-            total_netto = sum(c for c in comps_net if c is not None)
-            if total_netto > 0:
+            # The energy component dominates the bill — without it, "total
+            # netto" is not a usable stand-in for the invoice total, so
+            # leave eff as None rather than silently under-reporting it.
+            if comps_net[0] is not None:
+                total_netto = sum(c for c in comps_net if c is not None)
                 eff = round(total_netto * 1.23 / kwh, 4)
 
         months_out.append({
@@ -891,24 +911,28 @@ def _build_rate_trend(real: dict) -> Optional[dict]:
             'kogeneracja_net':       inv.get('dist_kogeneracja_net'),
             'effective_gross_per_kwh': eff,
             'imported_kwh':          kwh if kwh > 0 else None,
+            'low_volume':            0 < kwh < _LOW_VOLUME_KWH,
         })
 
-    latest_eff  = next((m['effective_gross_per_kwh'] for m in reversed(months_out)
-                        if m['effective_gross_per_kwh'] is not None), None)
-    # r/r efektywnej ceny — porównaj ostatni z tym samym miesiącem rok wcześniej
+    def _representative(m: dict) -> bool:
+        return m['effective_gross_per_kwh'] is not None and not m['low_volume']
+
+    latest_eff = next((m['effective_gross_per_kwh'] for m in reversed(months_out)
+                       if _representative(m)), None)
+    # r/r efektywnej ceny — porównaj ostatni miarodajny miesiąc z tym samym
+    # miesiącem rok wcześniej (też miarodajnym)
     yoy_eff_pct = None
-    if months_out:
-        last = months_out[-1]
-        last_ym = last['ym']
+    last_representative = next((m for m in reversed(months_out) if _representative(m)), None)
+    if last_representative:
+        last_ym = last_representative['ym']
         try:
             ly, lm = int(last_ym[:4]), int(last_ym[5:7])
             prev_ym = f'{ly - 1}-{lm:02d}'
             prev = next((m for m in months_out if m['ym'] == prev_ym), None)
-            if (prev and prev['effective_gross_per_kwh'] is not None
-                    and last['effective_gross_per_kwh'] is not None
-                    and prev['effective_gross_per_kwh'] > 0):
+            if prev and _representative(prev) and prev['effective_gross_per_kwh'] > 0:
                 yoy_eff_pct = round(
-                    (last['effective_gross_per_kwh'] / prev['effective_gross_per_kwh'] - 1) * 100, 1
+                    (last_representative['effective_gross_per_kwh']
+                     / prev['effective_gross_per_kwh'] - 1) * 100, 1
                 )
         except (ValueError, TypeError):
             pass

@@ -108,11 +108,14 @@ def test_simulate_reports_roi_before_and_after():
 # ── invoice-reconciled months frozen wholesale ───────────────────────────────
 
 def test_simulate_freezes_reconciled_month_entirely():
-    """An invoice-reconciled month is final, full stop — not just the billed
-    fields but produced_kwh/consumed_kwh/self_consumed_kwh too, even though
-    the fresh LTS rebuild disagrees with the old row on all of them. The
-    fetch_month() full rebuild is never even called for this month; only the
-    cheap cross-family diagnostic is refreshed."""
+    """An invoice-reconciled month is final for every BILLED field — produced,
+    exported, purchased, self_consumed, prices — even though the fresh LTS
+    rebuild disagrees with the old row on all of them. The fetch_month() full
+    rebuild is never even called for this month; only two derived fields are
+    refreshed: the cheap cross-family diagnostic, and consumed_kwh (recomputed
+    as self_consumed_kwh + purchased_kwh — not billed by any invoice, so
+    freezing it would only preserve whatever a buggy live sensor wrote at the
+    time; see docs/AUDIT_2026_08_10.md)."""
     fetch = _fetch_stub({(2026, 7): _july_new()})
     cross_family = _cross_family_stub({(2026, 7): 900.0})
     report = rebase.simulate([_JULY_OLD], reconciled_months={(2026, 7)},
@@ -122,7 +125,9 @@ def test_simulate_freezes_reconciled_month_entirely():
     assert m['after']['exported_kwh'] == pytest.approx(430.00)
     assert m['after']['purchased_kwh'] == pytest.approx(84.32)
     assert m['after']['self_consumed_kwh'] == pytest.approx(432.02)
-    assert m['after']['consumed_kwh'] == pytest.approx(945.94)
+    # Recomputed from the frozen self_consumed_kwh + purchased_kwh above
+    # (432.02 + 84.32), NOT the old row's 945.94 nor the LTS rebuild's 520.20.
+    assert m['after']['consumed_kwh'] == pytest.approx(516.34)
     assert m['after']['produced_kwh'] == pytest.approx(862.02)  # untouched, NOT the rebuilt 867.11
     assert m['after']['cross_family_produced_kwh'] == pytest.approx(900.0)  # diagnostic only, refreshed
 
@@ -175,6 +180,7 @@ def test_apply_freezes_reconciled_month_on_disk(store):
     assert july.exported_kwh == pytest.approx(430.00)   # billed, untouched
     assert july.produced_kwh == pytest.approx(862.02)   # untouched, NOT the rebuilt 867.11
     assert july.cross_family_produced_kwh == pytest.approx(900.0)  # diagnostic refreshed
+    assert july.consumed_kwh == pytest.approx(516.34)   # recomputed: self_consumed + purchased
 
 
 def test_apply_leaves_unavailable_months_untouched(store):
@@ -194,3 +200,34 @@ def test_apply_no_snapshot_when_no_prior_file(tmp_path):
     fetch = _fetch_stub({})
     report = rebase.apply(path=store, fetch_month=fetch)
     assert report['snapshot_path'] is None
+
+
+# ── regression: 2026-05/06 consumed_kwh corruption (docs/AUDIT_2026_08_10.md) ─
+
+_MAY_CORRUPTED = MonthlyRecord(
+    year=2026, month=5, produced_kwh=892.8, exported_kwh=379.0,
+    consumed_kwh=1020.8,  # bug: this is produced+imported (892.8+129.0-1.0
+    purchased_kwh=129.0, purchased_kwh_peak=10.0, purchased_kwh_offpeak=119.0,
+    self_consumed_kwh=513.8, buy_price_pln_kwh=0.6771, tariff='G12W',
+    rcem_status='confirmed',
+)
+
+
+def test_apply_repairs_corrupted_consumed_kwh_on_reconciled_month(store):
+    """Reproduces the exact production incident: a reconciled month whose
+    consumed_kwh was written as produced+imported (1020.8) instead of
+    self_consumed+imported (642.8) by a buggy live sensor, then frozen there
+    by the pre-fix _freeze_month(). rebase.apply() must repair it even though
+    the month is invoice-reconciled, because consumed_kwh is not a billed
+    field — only self_consumed_kwh/purchased_kwh (both untouched here) are."""
+    historic_store.save([_MAY_CORRUPTED], store)
+    fetch = _fetch_stub({})  # full rebuild must never be called — reconciled
+
+    report = rebase.apply(path=store, reconciled_months={(2026, 5)}, fetch_month=fetch)
+
+    assert report['unavailable'] == []  # reconciled path skips fetch_month entirely
+    records = historic_store.load(store)
+    may = next(r for r in records if r.month == 5)
+    assert may.self_consumed_kwh == pytest.approx(513.8)   # billed, untouched
+    assert may.purchased_kwh == pytest.approx(129.0)       # billed, untouched
+    assert may.consumed_kwh == pytest.approx(642.8)        # repaired: 513.8 + 129.0

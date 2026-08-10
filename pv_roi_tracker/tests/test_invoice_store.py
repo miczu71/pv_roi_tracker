@@ -8,7 +8,7 @@ from pv_roi_tracker import invoice_store
 from pv_roi_tracker.invoice_parser import InvoiceData
 
 
-def _data(year=2025, month=10, imported=300.0, exported=101.0) -> InvoiceData:
+def _data(year=2025, month=10, imported=300.0, exported=101.0, warnings=None) -> InvoiceData:
     return InvoiceData(
         year=year, month=month,
         imported_kwh=imported, exported_kwh=exported,
@@ -18,6 +18,7 @@ def _data(year=2025, month=10, imported=300.0, exported=101.0) -> InvoiceData:
         dist_var_peak_net=None, dist_var_offpeak_net=None,
         dist_jakosciowa_net=None, dist_oze_net=None, dist_kogeneracja_net=None,
         fixed_mocowa_net=None, fixed_abonament_net=None, fixed_stalysieciowy_net=None,
+        warnings=warnings or [],
     )
 
 
@@ -247,3 +248,43 @@ def test_save_does_not_delete_target_before_atomic_replace(store_path, monkeypat
 
     assert seen_missing == [True]
     assert store_path.with_suffix('.json.bak').exists()
+
+
+# ── needs_training derivation from parser warnings (docs/AUDIT_2026_08_10.md) ─
+
+def test_upsert_flags_needs_training_on_missing_field_warning(store_path):
+    """A warning reporting a field the parser genuinely could not find
+    ('… nie znaleziony', no fallback) must flip needs_training on — this is
+    the exact 2024-01 case: 5 such warnings (missing mocowa/abonament/stały
+    sieciowy/jakościowa/fixed_total_net) left the invoice silently excluded
+    from layout training and understated cost_breakdown for that month."""
+    data = _data(warnings=[
+        'stawka jakościowa nie znaleziona (użyto 0)',
+        'opłata mocowa nie znaleziona',
+        'abonament nie znaleziony',
+        'składnik stały sieciowy nie znaleziony',
+        'fixed_total_net nieobliczony — brakuje co najmniej jednej opłaty stałej',
+    ])
+    key = invoice_store.upsert(data, path=store_path)
+    rec = invoice_store.get(key, store_path)
+    assert rec['needs_training'] is True
+
+
+def test_upsert_does_not_flag_training_for_plausibility_or_fallback_warnings(store_path):
+    """A '(użyto 0)' fallback warning alone, or a 'walidacja:' plausibility
+    check on a value the parser DID find (e.g. avg_price looking high in a
+    low-import month), must not trigger needs_training — these aren't parse
+    failures and flagging them would just be noise in the training queue."""
+    data = _data(warnings=[
+        'stawka jakościowa nie znaleziona (użyto 0)',
+        'walidacja: średnia cena 3.5000 zł/kWh poza rozsądnym zakresem [0.10, 3.00]',
+    ])
+    key = invoice_store.upsert(data, path=store_path)
+    rec = invoice_store.get(key, store_path)
+    assert rec['needs_training'] is False
+
+
+def test_upsert_no_warnings_needs_training_false(store_path):
+    key = invoice_store.upsert(_data(), path=store_path)
+    rec = invoice_store.get(key, store_path)
+    assert rec['needs_training'] is False

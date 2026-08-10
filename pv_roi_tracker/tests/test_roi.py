@@ -128,6 +128,55 @@ def test_payback_none_when_no_avg():
     assert r.payback_date is None
 
 
+def test_months_to_payback_matches_seasonal_walk_not_flat_average():
+    """Regression for docs/AUDIT_2026_08_10.md point E: months_to_payback used
+    to come from a flat division (remaining / average monthly savings), while
+    payback_date came from the seasonal walk that weights winter months lower
+    than summer — the two sensors disagreed by ~2 months on real data. With
+    strongly seasonal savings (low winter, high summer), months_to_payback
+    must now match the calendar-month distance to payback_date_seasonal
+    itself, not the flat-average figure."""
+    today = date(2026, 7, 15)
+    # Two full years of alternating low-winter/high-summer savings so the
+    # seasonal factors deviate sharply from a flat average.
+    records = []
+    for i in range(24):
+        y = 2024 + (i // 12)
+        m = (i % 12) + 1
+        sav = 100.0 if m in (11, 12, 1, 2) else 700.0
+        records.append(month(y, m, savings=sav, feedin=0.0))
+    r = calculate(records, today=today, gross_investment=52_000.0, subsidy=0.0)
+    assert r.payback_date_seasonal is not None
+    assert r.months_to_payback is not None
+    expected_months = ((r.payback_date_seasonal.year - today.year) * 12
+                       + (r.payback_date_seasonal.month - today.month))
+    assert r.months_to_payback == pytest.approx(expected_months)
+    assert r.years_to_payback == pytest.approx(round(expected_months / 12, 2))
+    # The flat-average figure (what the old code returned) would come out
+    # meaningfully different given how lopsided the seasonal split is here —
+    # guard against silently falling back to it.
+    flat_months = r.remaining_to_recover / r.monthly_avg_savings
+    assert abs(r.months_to_payback - flat_months) > 1.0
+
+
+# ── net_profit is not clamped to zero (docs/AUDIT_2026_08_10.md, point D) ───
+
+def test_net_profit_negative_before_payback():
+    records = [month(2023, m, savings=200.0, feedin=0.0) for m in range(1, 4)]
+    r = calculate(records, today=date(2023, 6, 1), gross_investment=_GROSS, subsidy=_SUB)
+    assert r.total_return < r.gross_investment
+    assert r.net_profit == pytest.approx(r.total_return - r.gross_investment)
+    assert r.net_profit < 0
+
+
+def test_net_profit_positive_after_payback():
+    records = [month(2023, m, savings=5000.0, feedin=0.0) for m in range(1, 10)]
+    r = calculate(records, today=date(2026, 5, 1), gross_investment=_GROSS, subsidy=_SUB)
+    assert r.total_return > r.gross_investment
+    assert r.net_profit == pytest.approx(r.total_return - r.gross_investment)
+    assert r.net_profit > 0
+
+
 # ── Energy totals ─────────────────────────────────────────────────────────────────────────────────
 
 def test_total_produced_kwh():
@@ -219,6 +268,36 @@ def test_degradation_rolling_and_trend():
     assert len(out['rolling']) == 13   # okna 12-mies. od mies. 12 do 24
     assert out['trend_pct_per_year'] is not None
     assert out['trend_pct_per_year'] < -5.0
+
+
+def test_degradation_rolling_flags_partial_commissioning_month():
+    """Regression for docs/AUDIT_2026_08_10.md point F: on the real
+    installation, commissioning landed on 27/06/2023, so the first data-month
+    (2023-06) produced only a fraction of a normal June. That single
+    artificially-low point sits at the start of the rolling series (maximum
+    leverage for a least-squares slope), and pulled the real trend from
+    +3.29%/yr to +4.24%/yr — worse, on a declining system, the same
+    contamination could invert a real negative trend to a positive one and
+    mask warranty_flag entirely. Only the very first rolling window (whose
+    12-month sum can only be built from the very first data-month onward)
+    should ever be flagged; the regression must skip it."""
+    records = [_prod(2023, 6, 200.0)]  # partial: production started mid-June
+    y, m = 2023, 7
+    for _ in range(23):
+        records.append(_prod(y, m, 1000.0))  # otherwise flat production
+        m += 1
+        if m > 12:
+            y, m = y + 1, 1
+    out = degradation_analysis(records, system_kwp=1.0, today=date(2025, 7, 15))
+
+    assert out['rolling'][0]['ym'] == '2024-05'
+    assert out['rolling'][0]['partial_start'] is True
+    assert all(p['partial_start'] is False for p in out['rolling'][1:])
+    # Flat production after the partial month means the TRUE trend is ~0%/yr;
+    # if the contaminated point were still included in the regression, the
+    # artificial jump from 11200 to 12000 kWh/kWp between the first two
+    # rolling points would read as a strong positive trend instead.
+    assert out['trend_pct_per_year'] == pytest.approx(0.0, abs=0.5)
 
 
 def test_degradation_yearly_complete_flag():

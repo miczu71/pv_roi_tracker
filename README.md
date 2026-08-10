@@ -87,8 +87,15 @@ ROI %  = status / gross_investment × 100
 Payback remaining:
 ```
 remaining = max(0, gross_investment − status)
-months    = remaining / monthly_avg_savings
 ```
+`months_to_payback`/`years_to_payback` (since v0.35.4) are derived from the
+**same seasonal walk** that produces `payback_date_seasonal` — accumulating
+month-by-month savings weighted by each calendar month's seasonal factor
+(from `_seasonal_factors()`) until `remaining` is covered, then counting the
+elapsed calendar months. Previously they came from a separate flat-average
+division (`remaining / monthly_avg_savings`) that disagreed with
+`payback_date` by up to a couple of months on real data — two sensors giving
+different answers to "when do I break even?" (see `docs/AUDIT_2026_08_10.md`).
 
 ## Sensors published (MQTT discovery)
 
@@ -108,7 +115,7 @@ All sensors appear under one device **PV ROI Tracker** in HA Settings → Device
 | `pv_roi_tracker_total_exported_kwh` | PV Total Exported | kWh | |
 | `pv_roi_tracker_specific_yield` | PV Specific Yield | kWh/kWp | lifetime |
 | `pv_roi_tracker_battery_arbitrage_savings` | PV Battery Arbitrage Savings | PLN | grid-charged off-peak |
-| `pv_roi_tracker_net_profit` | PV Net Profit | PLN | above gross investment |
+| `pv_roi_tracker_net_profit` | PV Net Profit | PLN | `status − gross_investment`; negative before payback (since v0.35.4 — previously clamped to 0, indistinguishable from "no data"), `state_class: measurement` |
 | `pv_roi_tracker_current_month_savings` | PV Savings This Month | PLN | |
 | `pv_roi_tracker_rcem_scrape_status` | RCEm Scrape Status | — | ok / pending / retrying / error |
 | `pv_roi_tracker_projected_month_kwh` | PV Projected Month kWh | kWh | Solcast-based |

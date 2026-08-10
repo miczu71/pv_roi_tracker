@@ -2,6 +2,90 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.35.4] — 2026-08-10
+
+Wynik pełnego audytu integralności danych i logiki, zlecony wprost przez
+użytkownika (nie zgłoszenie błędu) — pierwsze systematyczne sprawdzenie od
+0.35.0/0.35.1. Metoda: snapshot `/api/data` na żywym stanie produkcyjnym (39
+miesięcy, 37 faktur), krzyżowo z LTS Home Assistanta i kodem. Pełny raport:
+`pv_roi_tracker/docs/AUDIT_2026_08_10.md`.
+
+**Znaleziona jedna realna korupcja danych** (nie tylko logiki): `consumed_kwh`
+dla 2026-05 i 2026-06 było zapisane jako `produced + imported` zamiast
+`self_consumed + imported` — dokładnie ten sam błąd, który 0.35.0 miało
+naprawić rebase'em, ale 0.35.1 zamroziło go z powrotem w miesiącach
+rozliczonych fakturą (patrz niżej). Naprawiono punktowo na żywych danych przez
+`/api/historic/patch` w trakcie audytu (642,8 / 698,4 kWh — zweryfikowane:
+`total_savings`, ROI i `payback_date` bez zmian, bo liczą się z
+`self_consumed_savings_pln`/`feedin_revenue_pln`, nie z `consumed_kwh`;
+`autarky_pct` 45,0 → 46,2, `bill_comparison.total_saved` 14 270,12 → 13 808,09).
+Reszta historii (37/39 miesięcy) przeszła audyt bez zastrzeżeń: rekonsyliacja
+faktur 37/37 z zerowym rozjazdem kWh, tożsamość `produced = exported +
+self_consumed` co do 0,1 kWh, arytmetyka oszczędności co do grosza, `sensor.
+pv_roi_tracker_health` = `ok` przez cały audyt.
+
+### Fixed
+
+- **`rebase.py`** — miesiące rozliczone fakturą przestają zamrażać
+  `consumed_kwh` wholesale. To pole nie jest fakturowane przez żadną pozycję
+  na Tauronie (w przeciwieństwie do `produced_kwh`/`exported_kwh`/
+  `purchased_kwh`/cen, które faktura *rzeczywiście* stwierdza i które nadal
+  są nietykalne) — `_freeze_month()` teraz przelicza je z już-zamrożonych
+  `self_consumed_kwh + purchased_kwh`, dokładnie tak jak dla miesięcy
+  nierozliczonych. Bez tego błąd zapisany przez wadliwy sensor pozostawał
+  zamurowany na zawsze w każdym miesiącu, który się kiedykolwiek rozliczył.
+  Zasada „faktura jest ostateczna" dotyczy tylko pól, które faktura faktycznie
+  podaje.
+- **`invoice_store.py`** — `needs_training` liczy się teraz z ostrzeżeń
+  parsera zamiast być zawsze `False`. Faktura 2024-01 miała 5 ostrzeżeń o
+  brakujących opłatach stałych (mocowa/abonament/składnik stały
+  sieciowy/jakościowa/`fixed_total_net`) i mimo to nigdy nie trafiała do kolejki
+  treningu layoutu — `cost_breakdown` dla tego miesiąca cicho zaniżał
+  `grand_total_net` o te kwoty. Rozróżnia „pole naprawdę nieznalezione" (flaguje)
+  od „pole nieznalezione, ale użyto sensownego domyślnego 0" i od `walidacja:`
+  (kontrola wiarygodności wartości, którą parser znalazł — nie błąd parsowania).
+- **`web.py` (`_build_rate_trend`)** — `effective_gross_per_kwh` rekonstruuje
+  teraz brakujące składniki zmienne (energia/dist_var/jakościowa/OZE/
+  kogeneracja) przez stawka×kWh, tym samym mechanizmem co `_build_cost_
+  breakdown` już od dawna używa — wcześniej brakujący `energy_amount_net`
+  liczył się cicho jako 0 (2023-12: 0,39 PLN/kWh przy 1703 kWh importu, gdy
+  faktura implikowała ~1,20). Zwraca `None`, gdy składnik energii jest
+  całkowicie nieodtwarzalny, zamiast dalej liczyć bez niego. Nowa flaga
+  `low_volume` (< 30 kWh importu) oznacza miesiące, w których opłaty stałe
+  rozłożone na garstkę kWh winduje wynik matematycznie poprawnie, ale
+  nieprzydatnie (2024-06: 9 kWh → 5,26 PLN/kWh) — `latest_effective_gross_
+  per_kwh` i `yoy_effective_gross_pct` pomijają takie miesiące zamiast
+  publikować nagłówkowo skok wywołany wolumenem, nie ceną. Usunięto też
+  martwy blok kodu (`vat_total`/`energy_net` liczone i odrzucane `pass`em).
+- **`roi.py`** — `net_profit` nie jest już przycinane do `max(0, …)`. Ujemna
+  wartość przed spłatą inwestycji jest poprawną informacją (już dostępną
+  odwrotnie w `remaining_to_recover`) — przycięcie czyniło sensor
+  nieodróżnialnym od „brak danych" przez lata. `months_to_payback`/
+  `years_to_payback` liczą się teraz z tego samego sezonowego chodnika co
+  `payback_date_seasonal`, zamiast z osobnej płaskiej średniej — obie miary
+  różniły się na żywych danych o ~2 miesiące (28,8 vs ~31), dając dwa
+  sprzeczne sensory na pytanie „kiedy zwrot". `degradation_analysis()`
+  wyklucza z regresji trendu okno kroczące obejmujące niepełny miesiąc
+  uruchomienia (2023-06, tylko 173,9 kWh — instalacja ruszyła 27/06) — ten
+  jeden, skrajnie dźwigniowy punkt (leży na początku serii) winduje trend z
+  realnych +3,29%/rok do +4,24%/rok na żywych danych; na instalacji z
+  faktyczną degradacją mógłby analogicznie zamaskować `warranty_flag`.
+- **`publisher.py`** — `state_class` sensora `net_profit` zmienione z
+  `total_increasing` na `measurement` (może być teraz ujemne i
+  nie-monotoniczne, co `total_increasing` odrzuca).
+
+### Added
+
+- `pv_roi_tracker/docs/AUDIT_2026_08_10.md` — pełny raport audytu: co
+  zweryfikowano jako zdrowe (z dowodami), co naprawiono, co świadomie
+  zostawiono do decyzji użytkownika (rozjazd `deposit.balance_model` vs
+  `balance_estimate`, 236,36 vs 103,84 PLN — oba poprawne matematycznie,
+  różna definicja „salda", nie błąd).
+- 92 nowe/zmienione testy (406 → 498) pokrywające każdą z powyższych
+  poprawek, w tym dwie dosłowne regresje odtwarzające rzeczywisty incydent:
+  skorumpowany `consumed_kwh` na rozliczonym miesiącu (`test_rebase.py`) i
+  skażony trend degradacji (`test_roi.py`).
+
 ## [0.35.3] — 2026-08-03
 
 Follow-up do 0.35.1/0.35.2, znaleziony przez powiadomienie: *"Stan: degraded.

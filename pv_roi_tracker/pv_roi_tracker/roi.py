@@ -275,6 +275,15 @@ def degradation_analysis(
         rolling.append({
             'ym': f'{last.year}-{last.month:02d}',
             'yield_12m': round(sum(r.produced_kwh for r in window) / system_kwp, 1) if system_kwp else None,
+            # complete[0] is the earliest month with any production at all —
+            # in practice always a partial month, since commissioning almost
+            # never lands on the 1st (this installation: 27/06/2023). Only
+            # the very first possible rolling window can include it (by
+            # construction, i==11 ⇒ window == complete[0:12]); every later
+            # window has aged it out. Flagged, not dropped, so the chart
+            # still shows it — see trend_pct_per_year below for why it's
+            # excluded from the regression.
+            'partial_start': window[0] is complete[0],
         })
 
     # r/r po sparowanych miesiącach (działa już przy <24 mies. historii)
@@ -290,9 +299,16 @@ def degradation_analysis(
     yoy_delta_pct = (round((recent_sum / prior_sum - 1.0) * 100.0, 2)
                      if pairs >= 3 and prior_sum > 0 else None)
 
-    # Trend liniowy serii kroczącej (najmniejsze kwadraty), %/rok względem średniej
+    # Trend liniowy serii kroczącej (najmniejsze kwadraty), %/rok względem średniej.
+    # Pomija okno(a) obejmujące niepełny miesiąc uruchomienia (partial_start) —
+    # sztucznie zaniżony punkt startowy serii ma dużą dźwignię na regresji
+    # (leży na skraju x), co potrafi wygenerować pozorny trend rosnący,
+    # maskujący realną degradację (patrz warranty_flag niżej). Potwierdzone
+    # na danych produkcyjnych 2026-08-10: usunięcie jednego skażonego punktu
+    # zmieniło trend z +4.24%/rok na +3.29%/rok — patrz docs/AUDIT_2026_08_10.md.
     trend_pct_per_year = None
-    pts = [p['yield_12m'] for p in rolling if p['yield_12m'] is not None]
+    pts = [p['yield_12m'] for p in rolling
+           if p['yield_12m'] is not None and not p['partial_start']]
     if len(pts) >= 6:
         n = len(pts)
         mean_x = (n - 1) / 2.0
@@ -492,8 +508,20 @@ def calculate(
         # P90 = pessimistic/later → lower monthly savings (z < 0).
         payback_date_p10 = _walk_payback(remaining_to_recover, monthly_avg_savings, factors, today, z=1.28,  cv=cv)
         payback_date_p90 = _walk_payback(remaining_to_recover, monthly_avg_savings, factors, today, z=-1.28, cv=cv)
-        months_to_payback: Optional[float] = remaining_to_recover / monthly_avg_savings
-        years_to_payback:  Optional[float] = round(months_to_payback / 12, 2)
+        # Derived from the SAME seasonal walk as payback_date_seasonal, not a
+        # separate flat-average division — the two used to disagree by ~2
+        # months (e.g. 28.8 flat-average months vs ~31 seasonal-walk months)
+        # because the flat version ignores that savings aren't uniform across
+        # the year (see docs/AUDIT_2026_08_10.md, point E). _walk_payback
+        # steps one calendar month per iteration from `today`, so the month
+        # count to its returned date IS months_to_payback by construction.
+        months_to_payback: Optional[float] = (
+            (payback_date_seasonal.year - today.year) * 12
+            + (payback_date_seasonal.month - today.month)
+        ) if payback_date_seasonal is not None else None
+        years_to_payback: Optional[float] = (
+            round(months_to_payback / 12, 2) if months_to_payback is not None else None
+        )
     else:
         payback_date_seasonal = payback_date_p10 = payback_date_p90 = None
         months_to_payback = years_to_payback = None
@@ -597,7 +625,12 @@ def calculate(
         specific_yield_lifetime=round(specific_yield, 1),
         gross_investment=gross_investment,
         subsidy=subsidy,
-        net_profit=round(max(0.0, total_return - gross_investment), 2),
+        # Not clamped to 0 — before payback this is legitimately negative
+        # (still recovering the investment), and remaining_to_recover already
+        # carries that same information non-negated. Clamping here made
+        # net_profit indistinguishable from "no data yet" for years at a
+        # stretch (see docs/AUDIT_2026_08_10.md, point D).
+        net_profit=round(total_return - gross_investment, 2),
         seasonal_factors={m: round(f, 4) for m, f in factors.items()},
         residual_cv=round(cv, 4),
         payback_date_seasonal=payback_date_seasonal,
