@@ -2,6 +2,86 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.36.0] — 2026-09-10
+
+Zgłoszenie: w sekcji "Depozyt — faktury vs falownik (rekonsyliacja zasileń)"
+2026-06/07/08 pokazywały "jeszcze niezaksięgowane", mimo że faktury za lipiec
+i sierpień były już wgrane i sparsowane. Diagnoza na żywych danych produkcyjnych
+(add-on 0.35.5) i na oryginalnych PDF-ach faktur — pełny opis w
+`pv_roi_tracker/docs/BLUEPRINT.md`.
+
+**Przyczyna źródłowa**: od ok. 2026-05 Tauron zaczął czasem drukować w polu
+"Depozyt z okresów poprzednich" samą kwotę pobraną z rachunku za energię
+("1. Sprzedaż energii elektrycznej"), zaczepioną na jego wartości — nie
+prawdziwe saldo depozytu (dzieje się to, gdy realne saldo przewyższa rachunek,
+czyli latem, gdy eksport > import). Potwierdzone na 4 kolejnych fakturach
+(05-08/2026): obie liczby identyczne co do grosza. Skutki w rekonsyliacji:
+- kolumna "Faktury (Tauron)" mierzyła rachunek za energię, nie zasilenie
+  depozytu → fałszywe różnice +55%, +73%, +14,6% na miesiącach 2026-03..05;
+- `anchor_balance` = 0,00 zł mimo `balance_model` = 329,45 zł (formuła
+  `max(0, previous − used)` z zaczepionej faktury zawsze wychodzi 0);
+- struktura wiekowa partii (`lots`) skalowana 0,74× do tej fałszywej kotwicy.
+
+Osobno: detekcja "lagu księgowania" (ile miesięcy mija między eksportem a
+zaksięgowaniem przez Taurona) systematycznie wybierała lag=3 zamiast
+prawdziwego lag=1 — algorytm oparty na błędzie bezwzględnym (MAE) faworyzuje
+większy lag na rosnącym szeregu (wiosna→lato 2026), bo porównanie ze starszą,
+niższą wartością daje mniejszy błąd bezwzględny mimo gorszego dopasowania
+proporcjonalnego.
+
+### Fixed
+
+- **`invoice_parser.py`**: nowe pole `energy_sale_gross_pln` (linia
+  "1. Sprzedaż energii elektrycznej") i pochodna flaga `deposit_capped`
+  (True gdy `deposit_used_pln` ≈ `energy_sale_gross_pln`). Genuinely
+  opcjonalne — najstarszy layout faktury (2023-2025 Q1-Q3) nie ma
+  pojedynczej linii sumarycznej, tylko rozbicie na strefy, więc brak nie
+  generuje ostrzeżenia. Obie faktury (zwykła i korekta) liczone z tej samej
+  scopowanej sekcji co reszta pól depozytu.
+- **`invoice_layouts.py`**: `energy_sale_total` dodany do `LEARNABLE_FIELDS`
+  — uczenie layoutów obejmuje też to pole.
+- **`invoice_store.py`**: `effective_by_month()` przenosi `deposit_capped` i
+  `energy_sale_gross_pln` z najnowszej korekty miesiąca (overlay spójny z
+  resztą pól depozytu).
+- **`deposit.py`**: wiersze rekonsyliacji dostają pole `status` —
+  `'ok'` / `'capped'` / `'gap'` / `'unposted'` — zamiast jednej etykiety
+  "jeszcze niezaksięgowane" dla wszystkich braków. Faktura capped (sama lub
+  poprzednia w łańcuchu, od której zależy `after(M−1)`) pomija wpis zamiast
+  publikować fałszywą liczbę. Miesiące `capped` wykluczone z sum Σ. Kotwica
+  salda (`anchor_balance`/`balance_estimate`) = `None` z nowym polem
+  `anchor_source: 'faktura'|'model'`, gdy najnowsza faktura jest capped —
+  zamiast fałszywego 0 zł. Detekcja lagu: `DEFAULT_POSTING_LAG` 2→1
+  (fizyczne minimum — RCEm za eksport M publikowane w połowie M+1), metryka
+  MAE → mediana `|log(implied/accrued)|` (odporna na trend rosnącego
+  szeregu; zweryfikowane niezależnie na syntetycznych danych, że stary
+  algorytm MAE myli lag, nowy nie).
+- **`static/app.js`**: trzy odrębne etykiety w tabeli rekonsyliacji zamiast
+  jednej ("jeszcze niezaksięgowane" / "nie do odczytania z faktury" z
+  tooltipem / "brak faktury w łańcuchu"), fallback lagu 2→1, KPI "Stan
+  bieżący" rozróżnia "brak faktur" od "faktura nie pokazuje salda".
+
+### Changed (świadomie, nie regresja)
+
+- Σ "z faktur (Tauron)" w sekcji rekonsyliacji **spadnie** względem 0.35.5 —
+  miesiące capped (od 2026-05) wypadają z sumy, bo nie są zasileniem
+  depozytu, tylko rachunkiem za energię. "Różnica skumulowana" zmieni się
+  analogicznie.
+- `balance_estimate`/`anchor_balance` pokażą "—" zamiast liczby, gdy
+  najnowsza faktura jest capped — świadomie, żeby nie publikować fałszywego
+  salda.
+
+### Verified
+
+503 testy (501 w 0.35.5 + 2 nowe w `test_deposit.py`; 2 istniejące
+zaktualizowane pod nowy fallback lagu). Dwa nowe testy regresyjne zweryfikowane niezależnie
+przed wpisaniem na sztywno: `test_lag_detection_resists_trend_bias_from_absolute_error`
+(sprawdzony osobnym skryptem: stary algorytm MAE na tych danych wybiera
+lag=2, nowy poprawnie 1) i `test_capped_invoices_excluded_from_reconciliation_and_anchor`.
+Sanity check na prawdziwych danych produkcyjnych (rekordy + faktury z
+działającego add-onu, capped ustawione wg realnie sprawdzonych PDF-ów
+05-08/2026): `posting_lag_months=1`, miesiące 2026-04..07 poprawnie
+`status='capped'`, 2026-08 poprawnie `'unposted'`.
+
 ## [0.35.5] — 2026-08-10
 
 Follow-up to 0.35.4, found during that release's own post-deploy

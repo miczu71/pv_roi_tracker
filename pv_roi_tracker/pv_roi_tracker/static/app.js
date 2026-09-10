@@ -1535,7 +1535,9 @@ function renderDepositSection(dep, invoices) {
   const balSub = dep.balance_estimate != null
     ? 'po fakturze ' + (dep.invoice_latest_month || '—') + ': ' + pln(dep.anchor_balance || 0, 2) +
       ' + niezaksięgowane: ' + pln(dep.unposted_accrual || 0, 2)
-    : 'model FIFO (brak faktur)';
+    : (dep.invoice_latest_month
+        ? 'model FIFO — faktura ' + dep.invoice_latest_month + ' nie pokazuje salda (zaczepiona na rachunku)'
+        : 'model FIFO (brak faktur)');
   kpiWrap.innerHTML =
     '<div style="' + kpiStyle + '">' + lbl('Stan bieżący (estymat)') + val(pln(bal, 2)) +
       '<div style="font-size:10px;color:var(--muted)">' + balSub + '</div></div>' +
@@ -1547,7 +1549,7 @@ function renderDepositSection(dep, invoices) {
 
   if (note) note.textContent =
     'Stan bieżący = saldo po ostatniej fakturze (previous − rozliczone) + zasilenia z falownika za miesiące, których Tauron jeszcze nie zaksięgował '
-    + '(lag ~' + (dep.posting_lag_months || 2) + ' mies.). '
+    + '(lag ~' + (dep.posting_lag_months || 1) + ' mies.). '
     + 'Po 12 mies. od przypisania niewykorzystane środki przepadają poza zwrotem do ' + fmt(dep.refund_cap_pct, 0, '%') + ' wartości energii z danego miesiąca (art. 4 ust. 11 ustawy o OZE).';
 
   renderReconSection(dep);
@@ -1607,10 +1609,18 @@ function renderReconSection(dep) {
     '<div style="' + kpiStyle + '">' + lbl('Σ z faktur (Tauron)') + val(pln(tot.tauron, 2)) + '</div>' +
     '<div style="' + kpiStyle + '">' + lbl('Różnica skumulowana') +
       val(pln(tot.diff, 2) + (tot.diff_pct != null ? ' (' + (tot.diff_pct > 0 ? '+' : '') + tot.diff_pct.toFixed(1) + '%)' : ''), diffCol) + '</div>' +
-    '<div style="' + kpiStyle + '">' + lbl('Lag księgowania Taurona') + val('~' + (dep.posting_lag_months || 2) + ' mies.') + '</div>';
+    '<div style="' + kpiStyle + '">' + lbl('Lag księgowania Taurona') + val('~' + (dep.posting_lag_months || 1) + ' mies.') + '</div>';
 
   const fmtD = (v, signed) => v == null ? '—'
     : (signed && v > 0 ? '+' : '') + v.toLocaleString('pl-PL', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' zł';
+  // Trzy różne powody braku wartości — nie mylić "jeszcze nie ma faktury" z
+  // "faktura jest, ale nie pokazuje salda" (patrz docs/BLUEPRINT.md).
+  const STATUS_LABEL = {
+    unposted: {text: 'jeszcze niezaksięgowane', title: 'Brak jeszcze faktury dla tego miesiąca eksportu.'},
+    capped: {text: 'nie do odczytania z faktury',
+             title: 'Faktura istnieje, ale Tauron wydrukował w polu depozytu samą kwotę pobraną z rachunku za energię, zaczepioną na jego wartości — nie prawdziwe saldo. Wartości nie da się zrekonstruować.'},
+    gap: {text: 'brak faktury w łańcuchu', title: 'W łańcuchu faktur brakuje dokumentu za poprzedni miesiąc — rekonstrukcja przerwana.'},
+  };
   let html = '<table><thead><tr>' +
     '<th>Mies. eksportu</th>' +
     '<th title="Zasilenie wyliczone z falownika: eksport × RCEm (×1,23 od 2025-02)">Falownik (model)</th>' +
@@ -1619,9 +1629,13 @@ function renderReconSection(dep) {
     '</tr></thead><tbody>';
   [...rec.rows].reverse().forEach(r => {
     const pctStyle = (r.diff_pct != null && Math.abs(r.diff_pct) > 10) ? 'color:#e67e22;font-weight:700' : '';
+    const st = STATUS_LABEL[r.status];
+    const tauronCell = r.tauron_implied != null ? fmtD(r.tauron_implied)
+      : st ? '<span style="color:var(--muted)" title="' + st.title.replace(/"/g, '&quot;') + '">' + st.text + '</span>'
+      : '—';
     html += '<tr><td>' + r.ym + '</td>' +
       '<td>' + fmtD(r.model_accrued) + '</td>' +
-      '<td>' + (r.tauron_implied == null ? '<span style="color:var(--muted)">jeszcze niezaksięgowane</span>' : fmtD(r.tauron_implied)) + '</td>' +
+      '<td>' + tauronCell + '</td>' +
       '<td>' + fmtD(r.diff, true) + '</td>' +
       '<td style="' + pctStyle + '">' + (r.diff_pct == null ? '—' : (r.diff_pct > 0 ? '+' : '') + r.diff_pct.toFixed(1) + '%') + '</td></tr>';
   });
@@ -1633,7 +1647,9 @@ function renderReconSection(dep) {
 
   if (note) note.textContent =
     'Wartość z faktur to zasilenie zrekonstruowane z łańcucha sald (previous − saldo po poprzedniej fakturze), dopasowane do miesiąca eksportu '
-    + 'przez przesunięcie o wykryty lag księgowania. Wartości surowe — bez kalibracji; różnica % pokazuje, o ile model z falownika odbiega od rozliczeń Taurona.';
+    + 'przez przesunięcie o wykryty lag księgowania. Wartości surowe — bez kalibracji; różnica % pokazuje, o ile model z falownika odbiega od rozliczeń Taurona. '
+    + 'Od miesięcy, w których Tauron zaczepia pole depozytu na wartości rachunku za energię (patrz kolumna "Faktury (Tauron)"), rekonstrukcja jest niemożliwa '
+    + 'i taki miesiąc nie wchodzi do sum Σ powyżej.';
 }
 
 /* -- RCEm manual override -- */

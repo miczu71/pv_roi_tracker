@@ -178,6 +178,16 @@ _BUILTIN_PATTERNS: dict[str, list] = {
         r'Rozliczenie depozytu\s+([\d,]+)',
         r'[67]\.\s*Rozliczenie depozytu[^\d]+([\d,]+)',       # numbered (6. or 7.)
     ],
+    'energy_sale_total': [
+        # "1. Sprzedaż energii elektrycznej 57,57 zł" (and "Sprzedaży..." variant
+        # seen on the 2026-02 layout). Value is the last money-like token before
+        # the line ends — avoid matching the per-kWh rate table further down.
+        r'1\.\s*Sprzeda.y?\s+energii elektrycznej[^\d\n]*([\d ]+,\d{2})\s*z',
+        r'Sprzeda.y?\s+energii elektrycznej\s+([\d ]+,\d{2})\s*z',
+        # Old/oldest row format: label net vat% vat_amt GROSS kwh (no "zł" suffix
+        # on this row) — capture the 4th number (gross), not kwh (5th, integer).
+        r'Sprzeda.y?\s+energii elektrycznej\s+[\d,]+\s+\d+\s+[\d,]+\s+([\d ]+,\d+)\s+\d+',
+    ],
     'fixed_mocowa': [
         # New format: label qty unit price_per_unit value_net
         r'Op.ata mocowa\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
@@ -316,6 +326,17 @@ class InvoiceData:
     deposit_used_pln: Optional[float] = field(default=None)      # rozliczenie depozytu
     amount_due_pln: Optional[float] = field(default=None)        # Razem do zapłaty
     avg_price_pln_kwh: Optional[float] = field(default=None)     # Średnia cena 1 kWh
+
+    # "1. Sprzedaż energii elektrycznej" — kwota brutto rachunku za energię pobraną
+    # w tym miesiącu. Od ok. 2026-05 Tauron zaczął drukować w polu "Depozyt z
+    # okresów poprzednich" tę samą wartość zamiast prawdziwego salda (depozyt
+    # "zaczepiony" na rachunku), gdy saldo przewyższa rachunek — patrz
+    # deposit_capped niżej i docs/BLUEPRINT.md.
+    energy_sale_gross_pln: Optional[float] = field(default=None)
+    # True gdy deposit_used_pln ≈ energy_sale_gross_pln (linia depozytu zaczepiona
+    # na rachunku za energię, nie pokazuje prawdziwego salda). None = nie do
+    # ustalenia (jedno z dwóch pól nieodczytane — nie mylić z False).
+    deposit_capped: Optional[bool] = field(default=None)
 
     # Fixed monthly net sum (for comparison with energy_simulation.yaml)
     fixed_total_net: Optional[float] = field(default=None)
@@ -926,6 +947,25 @@ def _parse_text(text: str) -> InvoiceData:
     if deposit_used_pln is None:
         warnings.append('rozliczenie depozytu nie znalezione')
 
+    # "1. Sprzedaż energii elektrycznej" — rachunek za energię pobraną. Ta sama
+    # sekcja co linie depozytu, więc dla korekt też liczymy z _deposit_text
+    # (wartość skorygowana, nie stara z POLICZONO). Genuinely optional — like
+    # oplata_przejsciowa/oplata_handlowa/akcyza above, the oldest layout (2025
+    # Q1-Q3) has no single aggregate row for this, only a per-zone breakdown, so
+    # absence here is not a parse failure and doesn't warn. Its only consumer
+    # (deposit_capped below) already treats None as "unknown", not "not capped".
+    energy_sale_gross_pln = _first_float_multi(_patterns_for('energy_sale_total'), _deposit_text)
+
+    # deposit_capped: Tauron od ok. 2026-05 zaczął czasem drukować w polu
+    # "Depozyt z okresów poprzednich" samą kwotę pobraną z rachunku (zaczepioną),
+    # nie prawdziwe saldo depozytu — dzieje się to, gdy saldo > rachunek. Wykryte
+    # przez porównanie deposit_used z rachunkiem za energię (patrz docs/BLUEPRINT.md
+    # dla weryfikacji na żywych fakturach). None = nie do ustalenia (brak jednej
+    # z dwóch wartości), nie mylić z False.
+    deposit_capped: Optional[bool] = None
+    if deposit_used_pln is not None and energy_sale_gross_pln is not None:
+        deposit_capped = abs(deposit_used_pln - energy_sale_gross_pln) <= 0.02
+
     # ── Amount due ────────────────────────────────────────────────────────────
     # For korekta: _amount_text is scoped to NALEŻAŁO POLICZYĆ so we get the
     # corrected month total, not the old value from POLICZONO.
@@ -1040,6 +1080,8 @@ def _parse_text(text: str) -> InvoiceData:
         deposit_current_pln=deposit_current_pln,
         deposit_previous_pln=deposit_previous_pln,
         deposit_used_pln=deposit_used_pln,
+        energy_sale_gross_pln=energy_sale_gross_pln,
+        deposit_capped=deposit_capped,
         amount_due_pln=amount_due_pln,
         avg_price_pln_kwh=avg_price_pln_kwh,
         fixed_total_net=fixed_total_net,

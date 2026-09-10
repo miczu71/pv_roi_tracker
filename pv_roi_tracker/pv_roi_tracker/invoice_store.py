@@ -345,7 +345,8 @@ def effective_by_month(stored: dict) -> dict:
         kor_keys = sorted(k for k in stored if k.startswith(f'{month_key}~kor~'))
         if kor_keys:
             latest_kor = stored[kor_keys[-1]]
-            for field_name in ('deposit_current_pln', 'deposit_previous_pln', 'deposit_used_pln'):
+            for field_name in ('deposit_current_pln', 'deposit_previous_pln', 'deposit_used_pln',
+                               'energy_sale_gross_pln', 'deposit_capped'):
                 val = latest_kor.get(field_name)
                 if val is not None:
                     merged[field_name] = val

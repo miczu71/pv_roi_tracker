@@ -30,7 +30,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
-from statistics import mean
+from math import log
+from statistics import mean, median
 from typing import Optional
 
 from dateutil.relativedelta import relativedelta
@@ -39,7 +40,10 @@ from .models import MonthlyRecord
 
 REFUND_CAP_DEFAULT = 0.20   # RCEm; 0.30 przy rozliczeniu godzinowym RCE
 EXPIRY_MONTHS = 12
-DEFAULT_POSTING_LAG = 2     # mies. między eksportem a dopisaniem depozytu (Tauron)
+DEFAULT_POSTING_LAG = 1     # mies. między eksportem a dopisaniem depozytu (Tauron);
+                            # RCEm za miesiąc M publikowane w połowie M+1, więc
+                            # zasilenie za eksport M nie może trafić na fakturę
+                            # wcześniejszą niż M+1 — 1 jest fizycznym minimum.
 _MIN_LAG_SAMPLES = 4        # min. par implied↔accrued do detekcji lagu
 _LAG_WINDOW = 6             # detekcja na ostatnich parach — liczy się bieżący rytm
                             # księgowania, nie historia (stare miesiące z nasyconym
@@ -78,8 +82,9 @@ class DepositResult:
     # Rekonsyliacja model (falownik) vs faktury (Tauron)
     posting_lag_months: int = DEFAULT_POSTING_LAG  # wykryty lag księgowania
     anchor_balance: Optional[float] = None         # saldo PO ostatniej fakturze (previous − used)
+    anchor_source: str = 'faktura'                 # 'faktura' | 'model' — skąd wzięto saldo bieżące
     unposted_accrual: float = 0.0                  # zasilenia jeszcze niezaksięgowane przez Taurona
-    reconciliation: dict = field(default_factory=dict)  # {rows: [{ym, model_accrued, tauron_implied, diff, diff_pct}], totals: {...}}
+    reconciliation: dict = field(default_factory=dict)  # {rows: [{ym, model_accrued, tauron_implied, status, diff, diff_pct}], totals: {...}}
 
 
 def _ym_str(d: date) -> str:
@@ -195,33 +200,55 @@ def calculate(
     # ── Rekonsyliacja: zasilenia implikowane z łańcucha faktur ────────────────
     # after(M) = max(0, previous − used) — saldo po fakturze M;
     # implied(M) = previous(M) − after(M−1) — ile Tauron dopisał między fakturami.
+    #
+    # Od ok. 2026-05 Tauron czasem drukuje w polu "Depozyt z okresów poprzednich"
+    # samą kwotę pobraną z rachunku (zaczepioną — deposit_capped=True), nie
+    # prawdziwe saldo. To psuje implied(M) na dwa sposoby: (a) previous(M) samo
+    # w sobie jest zaniżone, gdy faktura M jest capped; (b) after(M−1) wychodzi
+    # ≈0 zamiast prawdziwego salda, gdy faktura M−1 jest capped — po obu stronach
+    # implied(M) nie da się wyliczyć, więc pomijamy wpis i zapisujemy powód.
     inv_months = sorted(mk for mk, v in invoice_data.items()
                         if isinstance(v, dict) and v.get('deposit_previous_pln') is not None)
+    invoice_latest_month = inv_months[-1] if inv_months else None
     implied: dict[str, float] = {}
+    implied_status: dict[str, str] = {}   # tylko dla wpisów pominiętych — powód
     for i, mk in enumerate(inv_months):
+        cur_capped = bool(invoice_data[mk].get('deposit_capped'))
         prev_v = invoice_data[mk].get('deposit_previous_pln') or 0.0
         if i == 0:
-            implied[mk] = round(prev_v, 2)   # założenie: saldo 0 przed pierwszą fakturą
+            if cur_capped:
+                implied_status[mk] = 'capped'
+            else:
+                implied[mk] = round(prev_v, 2)   # założenie: saldo 0 przed pierwszą fakturą
             continue
         p_mk = inv_months[i - 1]
         if _ym_shift(mk, -1) != p_mk:
-            continue                          # luka w fakturach — implied nie do wyliczenia
+            implied_status[mk] = 'gap'           # luka w fakturach — implied nie do wyliczenia
+            continue
         p_inv = invoice_data[p_mk]
+        if cur_capped or bool(p_inv.get('deposit_capped')):
+            implied_status[mk] = 'capped'
+            continue
         p_after = max(0.0, (p_inv.get('deposit_previous_pln') or 0.0)
                       - (p_inv.get('deposit_used_pln') or 0.0))
         implied[mk] = round(prev_v - p_after, 2)
 
     accrued_by_ym = {m['ym']: m['accrued'] for m in months_out}
 
-    # Lag księgowania L: implied(M) powinno odpowiadać accrued(M−L)
+    # Lag księgowania L: implied(M) powinno odpowiadać accrued(M−L).
+    # Miara log-ratio (nie MAE) — na rosnącym szeregu (sezon wiosna→lato) błąd
+    # bezwzględny systematycznie faworyzuje większy lag (porównanie z niższą,
+    # starszą wartością daje mniejszy |diff|, mimo że dopasowanie jest gorsze
+    # proporcjonalnie). `implied` zawiera już tylko wpisy 'ok' (bez capped/gap).
     posting_lag = DEFAULT_POSTING_LAG
     best_err: Optional[float] = None
     for lag in (1, 2, 3):
-        errs = [abs(v - accrued_by_ym[_ym_shift(mk, -lag)])
+        errs = [abs(log(v / accrued_by_ym[_ym_shift(mk, -lag)]))
                 for mk, v in sorted(implied.items())
-                if _ym_shift(mk, -lag) in accrued_by_ym][-_LAG_WINDOW:]
+                if _ym_shift(mk, -lag) in accrued_by_ym
+                and v > 0 and accrued_by_ym[_ym_shift(mk, -lag)] > 0][-_LAG_WINDOW:]
         if len(errs) >= _MIN_LAG_SAMPLES:
-            err = mean(errs)
+            err = median(errs)
             if best_err is None or err < best_err:
                 best_err, posting_lag = err, lag
 
@@ -229,9 +256,18 @@ def calculate(
     recon_rows: list[dict] = []
     recon_model_sum = recon_tauron_sum = 0.0
     for m in months_out:
-        tauron = implied.get(_ym_shift(m['ym'], posting_lag))
+        inv_mk = _ym_shift(m['ym'], posting_lag)
+        tauron = implied.get(inv_mk)
+        if tauron is not None:
+            status = 'ok'
+        elif inv_mk in implied_status:
+            status = implied_status[inv_mk]
+        elif invoice_latest_month is not None and inv_mk <= invoice_latest_month:
+            status = 'gap'        # miesiąc w zasięgu fakturowania, ale brak faktury
+        else:
+            status = 'unposted'   # naprawdę jeszcze nie zaksięgowane
         row = {'ym': m['ym'], 'model_accrued': m['accrued'],
-               'tauron_implied': tauron, 'diff': None, 'diff_pct': None}
+               'tauron_implied': tauron, 'status': status, 'diff': None, 'diff_pct': None}
         if tauron is not None:
             row['diff'] = round(m['accrued'] - tauron, 2)
             if tauron > 0:
@@ -251,17 +287,21 @@ def calculate(
     }
 
     # ── Kotwica fakturowa: saldo PO ostatniej fakturze + niezaksięgowane ──────
+    # Gdy najnowsza faktura jest capped, jej "previous"/"used" nie opisują
+    # prawdziwego salda (patrz komentarz przy implied wyżej) — kotwica z takiej
+    # faktury byłaby fałszywa (zawsze ~0), więc spadamy do czystego modelu FIFO.
     invoice_latest_balance: Optional[float] = None
-    invoice_latest_month: Optional[str] = None
     anchor_balance: Optional[float] = None
+    anchor_source = 'model'
     balance_estimate: Optional[float] = None
     unposted_accrual = 0.0
     if inv_months:
-        invoice_latest_month = inv_months[-1]
         latest_inv = invoice_data[invoice_latest_month]
         invoice_latest_balance = latest_inv.get('deposit_previous_pln')
-        anchor_balance = round(max(0.0, (latest_inv.get('deposit_previous_pln') or 0.0)
-                                   - (latest_inv.get('deposit_used_pln') or 0.0)), 2)
+        if not bool(latest_inv.get('deposit_capped')):
+            anchor_balance = round(max(0.0, (latest_inv.get('deposit_previous_pln') or 0.0)
+                                       - (latest_inv.get('deposit_used_pln') or 0.0)), 2)
+            anchor_source = 'faktura'
         cutoff = _ym_shift(invoice_latest_month, -posting_lag)
         unposted_accrual = sum(m['accrued'] for m in months_out if m['ym'] > cutoff)
         # bieżący (częściowy) miesiąc
@@ -269,7 +309,8 @@ def calculate(
         if curr:
             unposted_accrual += curr.feedin_revenue_pln or 0.0
         unposted_accrual = round(unposted_accrual, 2)
-        balance_estimate = round(anchor_balance + unposted_accrual, 2)
+        if anchor_balance is not None:
+            balance_estimate = round(anchor_balance + unposted_accrual, 2)
 
     # Skalowanie struktury wiekowej do najlepszego szacunku salda
     scale = 1.0
@@ -337,6 +378,7 @@ def calculate(
         months=months_out,
         posting_lag_months=posting_lag,
         anchor_balance=anchor_balance,
+        anchor_source=anchor_source,
         unposted_accrual=unposted_accrual,
         reconciliation=reconciliation,
     )

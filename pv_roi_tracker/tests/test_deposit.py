@@ -79,8 +79,10 @@ def test_balance_estimate_anchored_to_latest_invoice():
     ]
     invoices = {'2025-01': {'deposit_used_pln': 0.0, 'deposit_previous_pln': 200.0}}
     out = calculate(records, invoices, today=date(2025, 4, 1))
-    # kotwica = previous − used = 200; lag domyślny 2 → niezaksięgowane od 2024-12,
-    # czyli wszystkie zasilenia modelu (100 + 50 + 0) = 150
+    # kotwica = previous − used = 200; tylko jedna faktura → fallback lag=1 →
+    # niezaksięgowane od 2024-12, czyli wszystkie zasilenia modelu (100+50+0)=150
+    # (cutoff w obu wypadkach — lag 1 lub 2 — wypada przed 2025-01, więc wynik
+    # nie zależy tu od dokładnej wartości lagu)
     assert out.anchor_balance == pytest.approx(200.0)
     assert out.unposted_accrual == pytest.approx(150.0)
     assert out.balance_estimate == pytest.approx(350.0)
@@ -96,9 +98,10 @@ def test_anchor_is_balance_after_invoice_when_fully_consumed():
     invoices = {'2025-03': {'deposit_previous_pln': 95.0, 'deposit_used_pln': 95.0}}
     out = calculate(records, invoices, today=date(2025, 5, 1))
     assert out.anchor_balance == pytest.approx(0.0)
-    # lag domyślny 2 → niezaksięgowane: 2025-02, 03, 04
-    assert out.unposted_accrual == pytest.approx(300.0)
-    assert out.balance_estimate == pytest.approx(300.0)
+    # tylko jedna faktura → za mało par do detekcji, fallback = DEFAULT_POSTING_LAG (1)
+    # → niezaksięgowane: 2025-03, 04
+    assert out.unposted_accrual == pytest.approx(200.0)
+    assert out.balance_estimate == pytest.approx(200.0)
 
 
 def test_posting_lag_detection_from_invoice_chain():
@@ -125,14 +128,77 @@ def test_posting_lag_detection_from_invoice_chain():
     assert row['diff'] == pytest.approx(0.0)
 
 
+def test_lag_detection_resists_trend_bias_from_absolute_error():
+    """Regresja na realny błąd z 2026-09: gdy implied(M) rośnie wykładniczo,
+    porównanie |diff| bezwzględnego (MAE) może wybrać zły (za duży) lag, bo
+    zestawienie z DUŻO starszą, mniejszą wartością accrued daje mniejszy błąd
+    bezwzględny mimo gorszego dopasowania proporcjonalnego. Dane niżej to
+    dokładnie taki przypadek — zweryfikowane niezależnie: stary algorytm MAE
+    na tym oknie wybiera lag=2, poprawny (skonstruowany) lag to 1."""
+    accrued = {0: 30.0, 1: 42.0, 2: 58.8, 3: 82.32, 4: 115.25, 5: 161.35,
+               6: 225.89, 7: 316.24, 8: 442.74, 9: 619.83}
+    implied = {2: 35.7, 3: 49.98, 4: 69.97, 5: 97.96, 6: 137.15, 7: 192.01,
+               8: 268.8, 9: 376.33}   # = accrued[k-1] * 0.85, lag realny = 1
+    months = ['2025-01', '2025-02', '2025-03', '2025-04', '2025-05', '2025-06',
+              '2025-07', '2025-08', '2025-09', '2025-10']
+    records = [_rec(2025, i + 1, feedin=accrued[i]) for i in range(10)]
+    invoices = {
+        months[k]: {'deposit_previous_pln': v, 'deposit_used_pln': v, 'deposit_capped': False}
+        for k, v in implied.items()
+    }
+    out = calculate(records, invoices, today=date(2025, 11, 1))
+    assert out.posting_lag_months == 1
+
+
+def test_capped_invoices_excluded_from_reconciliation_and_anchor():
+    """Regresja na zgłoszony błąd: od ok. 2026-05 Tauron czasem drukuje w polu
+    "Depozyt z okresów poprzednich" samą kwotę zaczepioną na rachunku za
+    energię (deposit_capped=True), nie prawdziwe saldo. Takie miesiące nie
+    mogą trafiać do rekonsyliacji jako 'ok' ani zasilać kotwicy salda."""
+    records = [_rec(2026, m, feedin=v) for m, v in
+               ((1, 50.0), (2, 60.0), (3, 70.0), (4, 80.0))]
+    invoices = {
+        '2026-01': {'deposit_previous_pln': 40.0, 'deposit_used_pln': 40.0,
+                    'deposit_capped': False},
+        '2026-02': {'deposit_previous_pln': 50.0, 'deposit_used_pln': 50.0,
+                    'deposit_capped': True},   # faktura sama capped
+        '2026-03': {'deposit_previous_pln': 55.0, 'deposit_used_pln': 55.0,
+                    'deposit_capped': False},  # niecapped, ale M-1 (luty) capped
+        '2026-04': {'deposit_previous_pln': 70.0, 'deposit_used_pln': 70.0,
+                    'deposit_capped': True},   # najnowsza faktura też capped
+    }
+    out = calculate(records, invoices, today=date(2026, 5, 1))
+
+    rows = {r['ym']: r for r in out.reconciliation['rows']}
+    assert rows['2026-01']['status'] == 'capped'   # → faktura 2026-02, sama capped
+    assert rows['2026-02']['status'] == 'capped'   # → faktura 2026-03, zepsuta przez luty
+    assert rows['2026-03']['status'] == 'capped'   # → faktura 2026-04, sama capped
+    assert rows['2026-04']['status'] == 'unposted'  # brak faktury za maj jeszcze
+    assert all(r['tauron_implied'] is None for r in rows.values())
+
+    # żadna capped wartość nie wchodzi do sum — Σ tauron = 0, nie fałszywa liczba
+    assert out.reconciliation['totals']['tauron'] == pytest.approx(0.0)
+    assert out.reconciliation['totals']['model'] == pytest.approx(0.0)
+
+    # najnowsza faktura (2026-04) jest capped → kotwica nieznana, nie 0 zł
+    assert out.anchor_balance is None
+    assert out.anchor_source == 'model'
+    assert out.balance_estimate is None
+
+    # bez balance_estimate skalowanie partii = 1.0 (czysty model FIFO)
+    assert sum(l['remaining'] for l in out.lots) == pytest.approx(out.balance_model, abs=0.01)
+
+
 def test_no_invoices_keeps_model_only():
     records = [_rec(2025, 1, feedin=100.0), _rec(2025, 2, feedin=50.0)]
     out = calculate(records, {}, today=date(2025, 3, 1))
     assert out.balance_estimate is None
     assert out.anchor_balance is None
-    assert out.posting_lag_months == 2
+    assert out.anchor_source == 'model'
+    assert out.posting_lag_months == 1   # brak faktur → fallback = DEFAULT_POSTING_LAG
     assert out.reconciliation['totals']['tauron'] == pytest.approx(0.0)
     assert all(r['tauron_implied'] is None for r in out.reconciliation['rows'])
+    assert all(r['status'] == 'unposted' for r in out.reconciliation['rows'])
 
 
 def test_forecast_reports_upcoming_expiry():

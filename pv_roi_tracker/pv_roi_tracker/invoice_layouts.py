@@ -55,6 +55,7 @@ LEARNABLE_FIELDS = [
     'deposit_current',
     'deposit_previous',
     'deposit_used',
+    'energy_sale_total',
     'invoice_number',
     'fixed_mocowa',
     'fixed_abonament',
