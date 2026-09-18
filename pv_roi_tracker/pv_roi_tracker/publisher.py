@@ -39,31 +39,33 @@ _SENSORS: list[_Sensor] = [
     _Sensor('roi_pct',                  'PV ROI',                     'roi_pct',                  '%',       None,       'measurement',      'mdi:percent'),
     _Sensor('payback_years',            'PV Payback Remaining',        'years_to_payback',          'years',   None,       'measurement',      'mdi:calendar-clock'),
     _Sensor('payback_date',             'PV Payback Date',             'payback_date',              None,      'date',     None,               'mdi:calendar-check'),
-    _Sensor('total_savings',            'PV Total Savings',            'total_savings',             'PLN',     'monetary', 'total_increasing', 'mdi:cash-plus'),
-    _Sensor('self_consumption_savings', 'PV Self-Consumption Savings', 'self_consumption_savings',  'PLN',     'monetary', 'total_increasing', 'mdi:home-lightning-bolt'),
-    _Sensor('feedin_revenue',           'PV Feed-in Revenue',          'feedin_revenue',            'PLN',     'monetary', 'total_increasing', 'mdi:transmission-tower-export'),
-    _Sensor('net_investment',           'PV Net Investment',           None,                        'PLN',     'monetary', 'measurement',      'mdi:bank'),
-    _Sensor('monthly_avg_savings',      'PV Monthly Avg Savings',      'monthly_avg_savings',       'PLN',     'monetary', 'measurement',      'mdi:chart-line'),
+    _Sensor('total_savings',            'PV Total Savings',            'total_savings',             'PLN',     'monetary', 'total', 'mdi:cash-plus'),
+    _Sensor('self_consumption_savings', 'PV Self-Consumption Savings', 'self_consumption_savings',  'PLN',     'monetary', 'total', 'mdi:home-lightning-bolt'),
+    _Sensor('feedin_revenue',           'PV Feed-in Revenue',          'feedin_revenue',            'PLN',     'monetary', 'total', 'mdi:transmission-tower-export'),
+    _Sensor('net_investment',           'PV Net Investment',           None,                        'PLN',     'monetary', None,      'mdi:bank'),
+    _Sensor('monthly_avg_savings',      'PV Monthly Avg Savings',      'monthly_avg_savings',       'PLN',     'monetary', None,      'mdi:chart-line'),
     _Sensor('total_produced_kwh',       'PV Total Produced',           'total_produced_kwh',        'kWh',     'energy',   'total_increasing', 'mdi:solar-power'),
     _Sensor('total_exported_kwh',       'PV Total Exported',           'total_exported_kwh',        'kWh',     'energy',   'total_increasing', 'mdi:transmission-tower'),
     _Sensor('specific_yield',           'PV Specific Yield',           'specific_yield_lifetime',   'kWh/kWp', None,       'total_increasing', 'mdi:chart-bar'),
-    _Sensor('battery_arbitrage_savings', 'PV Battery Arbitrage Savings', 'battery_arbitrage_savings', 'PLN',    'monetary', 'total_increasing', 'mdi:battery-charging'),
-    # measurement, not total_increasing: net_profit is legitimately negative
+    _Sensor('battery_arbitrage_savings', 'PV Battery Arbitrage Savings', 'battery_arbitrage_savings', 'PLN',    'monetary', 'total', 'mdi:battery-charging'),
+    # 'total', not 'total_increasing': net_profit is legitimately negative
     # before payback and can move either direction month to month (see
     # docs/AUDIT_2026_08_10.md, point D) — total_increasing requires a
-    # monotonically non-decreasing, non-negative series.
-    _Sensor('net_profit',              'PV Net Profit',               'net_profit',                'PLN',     'monetary', 'measurement',       'mdi:cash-multiple'),
-    _Sensor('current_month_savings',      'PV Savings This Month',          None,                          'PLN',  'monetary', 'measurement',      'mdi:calendar-today'),
+    # monotonically non-decreasing, non-negative series. HA also forbids
+    # 'measurement' for device_class 'monetary' (only None or 'total' allowed),
+    # and this isn't a running sum, so state_class is None.
+    _Sensor('net_profit',              'PV Net Profit',               'net_profit',                'PLN',     'monetary', None,       'mdi:cash-multiple'),
+    _Sensor('current_month_savings',      'PV Savings This Month',          None,                          'PLN',  'monetary', None,      'mdi:calendar-today'),
     _Sensor('rcem_scrape_status',         'RCEm Scrape Status',             None,                          None,   None,       None,               'mdi:cloud-sync'),
     # Solcast projection
     _Sensor('projected_month_kwh',        'PV Projected Month kWh',         None,                          'kWh',  'energy',   'measurement',      'mdi:solar-power-variant'),
-    _Sensor('projected_month_savings',    'PV Projected Month Savings',     None,                          'PLN',  'monetary', 'measurement',      'mdi:chart-timeline-variant'),
+    _Sensor('projected_month_savings',    'PV Projected Month Savings',     None,                          'PLN',  'monetary', None,      'mdi:chart-timeline-variant'),
     # Financial analysis
-    _Sensor('real_total_savings',         'PV Real Total Savings',          'real_total_savings',          'PLN',  'monetary', 'total_increasing', 'mdi:cash-check'),
+    _Sensor('real_total_savings',         'PV Real Total Savings',          'real_total_savings',          'PLN',  'monetary', 'total', 'mdi:cash-check'),
     _Sensor('real_roi_pct',               'PV Real ROI',                    'real_roi_pct',                '%',    None,       'measurement',      'mdi:percent-outline'),
-    _Sensor('npv',                        'PV NPV',                         'npv',                         'PLN',  'monetary', 'measurement',      'mdi:bank-outline'),
+    _Sensor('npv',                        'PV NPV',                         'npv',                         'PLN',  'monetary', None,      'mdi:bank-outline'),
     _Sensor('irr_pct',                    'PV IRR',                         'irr_pct',                     '%',    None,       'measurement',      'mdi:trending-up'),
-    _Sensor('vs_bond_delta',              'PV vs Bond Delta',               'counterfactual_delta',        'PLN',  'monetary', 'measurement',      'mdi:scale-balance'),
+    _Sensor('vs_bond_delta',              'PV vs Bond Delta',               'counterfactual_delta',        'PLN',  'monetary', None,      'mdi:scale-balance'),
     _Sensor('cumulative_inflation',       'PV Cumulative Inflation',        'cumulative_inflation_pct',    '%',    None,       'measurement',      'mdi:trending-up'),
     # Wskaźniki energetyczne (v0.17.0)
     _Sensor('self_consumption_rate',      'PV Self-Consumption Rate',       'self_consumption_rate_pct',   '%',    None,       'measurement',      'mdi:home-percent'),
@@ -74,10 +76,10 @@ _SENSORS: list[_Sensor] = [
     _Sensor('underperformance_pct',       'PV Underperformance',            'underperformance_pct',        '%',    None,       'measurement',      'mdi:solar-power-variant-outline'),
     _Sensor('underperformance_flag',      'PV Underperformance Flag',       'underperformance_flag',       None,   None,       None,               'mdi:alert-circle-outline'),
     # Depozyt prosumencki (v0.17.0)
-    _Sensor('deposit_balance_est',        'PV Deposit Balance Est',         None,                          'PLN',  'monetary', 'measurement',      'mdi:piggy-bank'),
-    _Sensor('deposit_expiring_30d',       'PV Deposit Expiring 30d',        None,                          'PLN',  'monetary', 'measurement',      'mdi:timer-sand'),
+    _Sensor('deposit_balance_est',        'PV Deposit Balance Est',         None,                          'PLN',  'monetary', None,      'mdi:piggy-bank'),
+    _Sensor('deposit_expiring_30d',       'PV Deposit Expiring 30d',        None,                          'PLN',  'monetary', None,      'mdi:timer-sand'),
     # Rozbudowa magazynu — symulacja drugiego modułu (v0.30.0)
-    _Sensor('battery_expansion_savings',  'PV Battery Expansion Avg Savings', None,                        'PLN',  'monetary', 'measurement',      'mdi:battery-plus'),
+    _Sensor('battery_expansion_savings',  'PV Battery Expansion Avg Savings', None,                        'PLN',  'monetary', None,      'mdi:battery-plus'),
     _Sensor('battery_expansion_payback',  'PV Battery Expansion Payback',   None,                          'years', None,      'measurement',      'mdi:battery-clock'),
     # Latest-invoice rates (v0.20.0) — single source of truth for energy_simulation.yaml
     # and Analiza taryf; values come from invoice_rates (see _render_value), not RoiResult.
@@ -91,10 +93,10 @@ _SENSORS: list[_Sensor] = [
     _Sensor('rate_jakosciowa_net',        'PV Rate Jakościowa',             None,                          'PLN/kWh', None,       'measurement', 'mdi:certificate'),
     _Sensor('rate_oze_net',               'PV Rate OZE',                    None,                          'PLN/kWh', None,       'measurement', 'mdi:leaf'),
     _Sensor('rate_kogeneracja_net',       'PV Rate Kogeneracja',            None,                          'PLN/kWh', None,       'measurement', 'mdi:factory'),
-    _Sensor('fixed_mocowa_net',           'PV Fixed Mocowa',                None,                          'PLN',     'monetary', 'measurement', 'mdi:gauge'),
-    _Sensor('fixed_abonament_net',        'PV Fixed Abonament',             None,                          'PLN',     'monetary', 'measurement', 'mdi:receipt'),
-    _Sensor('fixed_stalysieciowy_net',    'PV Fixed Stały Sieciowy',        None,                          'PLN',     'monetary', 'measurement', 'mdi:transmission-tower'),
-    _Sensor('fixed_total_net',            'PV Fixed Total Net',             None,                          'PLN',     'monetary', 'measurement', 'mdi:sigma'),
+    _Sensor('fixed_mocowa_net',           'PV Fixed Mocowa',                None,                          'PLN',     'monetary', None, 'mdi:gauge'),
+    _Sensor('fixed_abonament_net',        'PV Fixed Abonament',             None,                          'PLN',     'monetary', None, 'mdi:receipt'),
+    _Sensor('fixed_stalysieciowy_net',    'PV Fixed Stały Sieciowy',        None,                          'PLN',     'monetary', None, 'mdi:transmission-tower'),
+    _Sensor('fixed_total_net',            'PV Fixed Total Net',             None,                          'PLN',     'monetary', None, 'mdi:sigma'),
     _Sensor('rate_peak_gross',            'PV Rate Peak Gross',             None,                          'PLN/kWh', None,       'measurement', 'mdi:cash'),
     _Sensor('rate_offpeak_gross',         'PV Rate Offpeak Gross',          None,                          'PLN/kWh', None,       'measurement', 'mdi:cash-outline'),
 ]
