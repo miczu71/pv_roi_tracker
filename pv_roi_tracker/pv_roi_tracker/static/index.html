@@ -17,11 +17,25 @@
   <div id="loading" class="loading">Pobieranie danych&hellip;</div>
   <div id="content" style="display:none">
     <div class="cards" id="cards"></div>
-    <div class="charts">
-      <div class="chart-wrap">
-        <h3>Wachlarz spłaty — skumulowany zwrot z pasmem niepewności (P10–P90)</h3>
-        <canvas id="fanChart"></canvas>
+    <div class="yoy-tile" id="yoyTile" style="display:none">
+      <div class="yoy-head">
+        <h3>Rok do roku</h3>
+        <div class="yoy-method-toggle" id="yoyMethodToggle"></div>
+        <span class="yoy-asof" id="yoyAsOf"></span>
       </div>
+      <div class="grid2" id="yoyGrid"></div>
+      <div class="chart-wrap" style="height:240px;margin-top:12px">
+        <h3>Wyścig narastająco
+          <select id="yoyRaceMetric" onchange="redrawYoyRace()" style="font-size:11px;margin-left:8px">
+            <option value="savings_pln">Oszczędności (zł)</option>
+            <option value="produced_kwh">Produkcja (kWh)</option>
+            <option value="net_grid_cost_pln">Koszt netto sieci (zł)</option>
+          </select>
+        </h3>
+        <canvas id="yoyRaceChart"></canvas>
+      </div>
+    </div>
+    <div class="charts2" style="margin-bottom:12px">
       <div class="chart-wrap">
         <h3>Miesieczne oszczednosci (ostatnie 24 mies.)</h3>
         <canvas id="barChart"></canvas>
@@ -64,6 +78,12 @@
       </div>
       <div id="tab-charts" style="display:none">
         <div style="padding:12px">
+          <div class="charts2" style="margin-bottom:12px">
+            <div class="chart-wrap" style="height:320px">
+              <h3>Wachlarz spłaty — skumulowany zwrot z pasmem niepewności (P10–P90)</h3>
+              <canvas id="fanChart"></canvas>
+            </div>
+          </div>
           <div class="charts" style="margin-bottom:12px">
             <div class="chart-wrap">
               <h3>Historia ceny RCEm (zl/kWh)</h3>

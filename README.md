@@ -260,8 +260,10 @@ eksportu bieżącego (niezamkniętego) miesiąca liczona dwiema metodami
 
 `yoy` jest `null` 1. dnia miesiąca (okno MTD puste). Pełny kontekst, wzory i
 backtest obu metod: [`pv_roi_tracker/docs/ROADMAP_YOY.md`](pv_roi_tracker/docs/ROADMAP_YOY.md).
-Na razie tylko dane API — kafel w UI (zastępujący wykres „Wachlarz spłaty” na
-stronie głównej) planowany na v0.38.0.
+
+Od v0.38.0: kafel "Rok do roku" na stronie głównej (zastępuje wykres „Wachlarz
+spłaty" w tym miejscu — wachlarz przeniesiony do zakładki **Wykresy**), z
+przełącznikiem metody wyceny eksportu i wykresem wyścigu narastająco.
 
 ## Architecture
 

@@ -41,6 +41,35 @@ main { max-width: 1600px; margin: 0 auto; padding: 18px 16px; }
 .chart-wrap.sm { height: 200px; }
 .chart-wrap h3 { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 8px; }
 
+/* -- Kafel "Rok do roku" -- */
+.yoy-tile { background: var(--card); border-radius: var(--radius); padding: 16px 18px; box-shadow: var(--shadow); margin-bottom: 12px; }
+.yoy-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+.yoy-head h3 { font-size: 14px; font-weight: 700; }
+.yoy-asof { font-size: 11px; color: var(--muted); margin-left: auto; }
+.yoy-method-toggle { display: flex; gap: 4px; }
+.yoy-method-btn { font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 12px;
+                  border: 1px solid var(--border); background: var(--bg); color: var(--muted); cursor: pointer; }
+.yoy-method-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.yoy-col-title { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase;
+                 letter-spacing: .5px; margin-bottom: 6px; }
+.yoy-headline { font-size: 22px; font-weight: 700; line-height: 1.15; }
+.yoy-vs { font-size: 13px; font-weight: 400; color: var(--muted); }
+.yoy-delta { font-size: 13px; font-weight: 700; margin: 4px 0 10px; }
+.yoy-pos { color: var(--green); }
+.yoy-neg { color: var(--red); }
+.yoy-why-label { font-size: 11px; font-weight: 600; color: var(--muted); margin-bottom: 3px; }
+.yoy-effects { margin-bottom: 10px; }
+.yoy-effect-row { display: flex; justify-content: space-between; font-size: 12px; padding: 2px 0; }
+.yoy-effects-empty { font-size: 11px; color: var(--muted); font-style: italic; margin-bottom: 10px; }
+.yoy-context { font-size: 11px; color: var(--muted); margin-bottom: 6px; }
+.yoy-flag { font-size: 10.5px; color: var(--muted); background: var(--bg); border-radius: 4px;
+            padding: 4px 8px; margin-top: 4px; }
+.yoy-flag-warn { color: var(--yellow); }
+.yoy-pace { font-size: 12px; margin-top: 8px; }
+.yoy-why { font-size: 11px; margin-top: 6px; }
+.yoy-why summary { cursor: pointer; color: var(--accent); font-weight: 600; }
+.yoy-why[open] summary { margin-bottom: 6px; }
+
 /* -- Tabs -- */
 .tabs { display: flex; gap: 3px; flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch;
         scrollbar-width: none; }
@@ -169,6 +198,9 @@ tbody tr.yr  td { background: #f7fafc; font-weight: 700; font-size: 11.5px; colo
   .card .val { font-size: 18px; }
   .chart-wrap { height: 240px; padding: 12px 10px; }
   .chart-wrap.sm { height: 180px; }
+  .yoy-tile { padding: 12px 12px; }
+  .yoy-asof { margin-left: 0; width: 100%; order: 3; }
+  .yoy-headline { font-size: 19px; }
   .tab-btn { padding: 7px 12px; font-size: 11px; }
   .tbl-wrap { max-height: 440px; }
   /* pierwsza kolumna tabel przyklejona przy przewijaniu poziomym */

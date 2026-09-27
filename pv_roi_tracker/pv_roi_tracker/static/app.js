@@ -7,6 +7,7 @@ let _billChart = null, _co2Chart = null, _rateTrendChart = null;
 let _batMonthlyChart = null, _batCumChart = null, _batCfgLoaded = false;
 let _forecastChart = null;
 let _lastRecords = [], _lastInvoices = [], _lastRceMonths = [], _lastRateTrend = null, _lastSummary = null;
+let _yoyChart = null, _yoyMethod = 'estimate', _lastYoy = null;
 
 /* -- Formatters -- */
 function fmt(v, dp, sfx) {
@@ -54,7 +55,7 @@ function showTab(name) {
   if (name === 'rce' && _rceCmpChart) _rceCmpChart.resize();
   if (name === 'battery') [_batMonthlyChart, _batCumChart].forEach(c => c && c.resize());
   if (name === 'charts') {
-    [_rcemChart, _autarkiaChart, _prodChart, _arbitrageChart, _netCostChart,
+    [_fanChart, _rcemChart, _autarkiaChart, _prodChart, _arbitrageChart, _netCostChart,
      _priceSpreadChart, _yieldChart, _energyBalChart, _yearCompChart, _prodRankChart,
      _cpiRealChart, _degradChart, _waterfallChart, _sankeyChart,
      _billChart, _co2Chart].forEach(c => c && c.resize());
@@ -1204,6 +1205,195 @@ function renderRceTab(rc) {
 }
 
 /* ─────────────────────────────────────────────────────────────
+   v0.37.0/0.38.0 — kafel "Rok do roku" (MTD/YTD, wyścig)
+   ───────────────────────────────────────────────────────────── */
+
+const _YOY_EFFECT_LABELS = {
+  production: 'Produkcja (pogoda)', self_consumption: 'Autokonsumpcja',
+  buy_price: 'Cena zakupu', feedin_price: 'Cena RCEm', arbitrage: 'Arbitraż baterii',
+};
+const _YOY_EFFECT_ORDER = ['production', 'self_consumption', 'buy_price', 'feedin_price', 'arbitrage'];
+const _YOY_METHOD_LABELS = { estimate: 'Szacunek RCE', prior_year: 'RCEm rok temu' };
+const _YOY_MONTHS = ['Sty','Lut','Mar','Kwi','Maj','Cze','Lip','Sie','Wrz','Paź','Lis','Gru'];
+
+function yoyEffectsHtml(effects) {
+  if (!effects) return '<div class="yoy-effects-empty">Brak pełnych danych do rozbicia przyczyn</div>';
+  return '<div class="yoy-effects">' + _YOY_EFFECT_ORDER.map(k => {
+    const v = effects[k] || 0;
+    const cls = v >= 0 ? 'yoy-pos' : 'yoy-neg';
+    const sign = v >= 0 ? '+' : '−';
+    return '<div class="yoy-effect-row"><span>' + _YOY_EFFECT_LABELS[k] + '</span>' +
+      '<span class="' + cls + '">' + sign + pln(Math.abs(v), 0) + '</span></div>';
+  }).join('') + '</div>';
+}
+
+/* Δ + strzałka, kolor wg korzystności (lowerBetter=true → spadek jest zielony) */
+function yoyDeltaBadge(cur, prev, lowerBetter) {
+  if (cur == null || prev == null) return '<span style="color:var(--muted)">—</span>';
+  const delta = cur - prev;
+  if (Math.abs(delta) < 1e-9) return '<span style="color:var(--muted)">bez zmian</span>';
+  const good = lowerBetter ? delta < 0 : delta > 0;
+  const arrow = delta > 0 ? '▲' : '▼';
+  const pctD = prev !== 0 ? Math.abs(delta / prev * 100) : null;
+  return '<span class="' + (good ? 'yoy-pos' : 'yoy-neg') + '">' + arrow +
+    (pctD != null ? ' ' + fmt(pctD, 1, '%') : '') + '</span>';
+}
+
+function yoyYtdTableHtml(ytd) {
+  const rows = [
+    ['Oszczędności',       ytd.cur.savings_pln,               ytd.prev.savings_pln,               pln,  false],
+    ['Koszt netto sieci',  ytd.cur.net_grid_cost_pln,          ytd.prev.net_grid_cost_pln,          pln,  true],
+    ['Produkcja',          ytd.cur.produced_kwh,               ytd.prev.produced_kwh,               kwh,  false],
+    ['Zużycie',            ytd.cur.consumed_kwh,               ytd.prev.consumed_kwh,               kwh,  true],
+    ['Autokonsumpcja',     ytd.cur.self_consumption_rate_pct,  ytd.prev.self_consumption_rate_pct,  pct,  false],
+  ];
+  const body = rows.map(([label, cur, prev, f, lowerBetter]) => {
+    const delta = (cur != null && prev != null) ? cur - prev : null;
+    const good  = delta == null ? null : (lowerBetter ? delta < 0 : delta > 0);
+    const cls   = delta == null || Math.abs(delta) < 1e-9 ? '' : (good ? 'yoy-pos' : 'yoy-neg');
+    const arrow = delta == null ? '' : (Math.abs(delta) < 1e-9 ? '' : (delta > 0 ? '▲ ' : '▼ '));
+    const deltaTxt = delta == null ? '—' : (arrow || 'bez zmian ') + f(Math.abs(delta));
+    return '<tr><td>' + label + '</td><td>' + f(cur) + '</td><td style="color:var(--muted)">' + f(prev) +
+      '</td><td class="' + cls + '">' + deltaTxt + '</td></tr>';
+  }).join('');
+  return '<div class="tbl-wrap" style="max-height:none"><table><thead><tr><th>' + ytd.label +
+    '</th><th>Ten rok</th><th>Rok temu</th><th>Δ</th></tr></thead><tbody>' + body + '</tbody></table></div>';
+}
+
+function yoyPaceHtml(projection) {
+  if (!projection) return '';
+  const up = projection.gap_savings_pln >= 0;
+  return '<div class="yoy-pace">Tempo: rok ~' + pln(projection.savings_pln) +
+    ' <span style="color:var(--muted)">(rok temu: ' + pln(projection.prev_full_savings_pln) + ')</span> — ' +
+    '<span class="' + (up ? 'yoy-pos' : 'yoy-neg') + '">' + (up ? '▲ ' : '▼ ') +
+    pln(Math.abs(projection.gap_savings_pln)) + '</span></div>';
+}
+
+function yoyFlagsHtml(flags, method) {
+  if (!flags) return '';
+  if (method === 'estimate') {
+    const cf = flags.correction_factor;
+    return '<div class="yoy-flag">Cena RCEm: szacunek' +
+      (cf != null ? ' (skorygowany ×' + cf + ' z ' + flags.n_trailing_months + ' mies.)' : ' (surowy — za mało danych do korekty)') +
+      ' — orientacyjnie ±15%</div>';
+  }
+  if (method === 'prior_year') {
+    return flags.unavailable
+      ? '<div class="yoy-flag yoy-flag-warn">Brak RCEm sprzed roku dla tego miesiąca</div>'
+      : '<div class="yoy-flag">Cena RCEm: z tego samego miesiąca rok wcześniej — empirycznie mniej dokładne niż szacunek</div>';
+  }
+  return '';
+}
+
+function yoyMethodToggleHtml(methods, active) {
+  return methods.map(m =>
+    '<button class="yoy-method-btn' + (m === active ? ' active' : '') + '" onclick="setYoyMethod(\'' + m + '\')">' +
+    (_YOY_METHOD_LABELS[m] || m) + '</button>'
+  ).join('');
+}
+
+function renderYoyTile(yoyData) {
+  const wrap = document.getElementById('yoyTile');
+  _lastYoy = yoyData;
+  if (!yoyData) { wrap.style.display = 'none'; return; }
+  wrap.style.display = '';
+  if (!yoyData.methods.includes(_yoyMethod)) _yoyMethod = yoyData.method_default;
+
+  document.getElementById('yoyAsOf').textContent = 'stan: ' + yoyData.as_of;
+  document.getElementById('yoyMethodToggle').innerHTML = yoyMethodToggleHtml(yoyData.methods, _yoyMethod);
+
+  const mtd = yoyData.mtd[_yoyMethod];
+  const ytd = yoyData.ytd[_yoyMethod];
+  const projection = yoyData.projection[_yoyMethod];
+  const mtdUp = mtd.delta_savings_pln >= 0;
+
+  const mtdHtml =
+    '<div class="yoy-col">' +
+      '<div class="yoy-col-title">' + mtd.label + '</div>' +
+      '<div class="yoy-headline">' + pln(mtd.cur.savings_pln) +
+        ' <span class="yoy-vs">vs ' + pln(mtd.prev.savings_pln) + '</span></div>' +
+      '<div class="yoy-delta ' + (mtdUp ? 'yoy-pos' : 'yoy-neg') + '">' + (mtdUp ? '▲ ' : '▼ ') +
+        pln(Math.abs(mtd.delta_savings_pln)) + ' (' + fmt(Math.abs(mtd.delta_savings_pct), 1, '%') + ')</div>' +
+      '<div class="yoy-why-label">Dlaczego:</div>' +
+      yoyEffectsHtml(mtd.effects) +
+      '<div class="yoy-context">Produkcja ' + kwh(mtd.cur.produced_kwh) + ' ' +
+        yoyDeltaBadge(mtd.cur.produced_kwh, mtd.prev.produced_kwh, false) +
+        ' &middot; Zużycie ' + kwh(mtd.cur.consumed_kwh) + ' ' +
+        yoyDeltaBadge(mtd.cur.consumed_kwh, mtd.prev.consumed_kwh, true) +
+        ' &middot; Autokons. ' + fmt(mtd.cur.self_consumption_rate_pct, 1, '%') + '</div>' +
+      yoyFlagsHtml(mtd.flags, _yoyMethod) +
+    '</div>';
+
+  const ytdHtml =
+    '<div class="yoy-col">' +
+      '<div class="yoy-col-title">Od początku roku</div>' +
+      yoyYtdTableHtml(ytd) +
+      yoyPaceHtml(projection) +
+      (ytd.flags && ytd.flags.unpaired_months && ytd.flags.unpaired_months.length
+        ? '<div class="yoy-flag">Bez pary rok temu: ' + ytd.flags.unpaired_months.join(', ') + '</div>' : '') +
+      (ytd.effects
+        ? '<details class="yoy-why"><summary>Dlaczego? (rozbicie YTD)</summary>' + yoyEffectsHtml(ytd.effects) + '</details>'
+        : '') +
+    '</div>';
+
+  document.getElementById('yoyGrid').innerHTML = mtdHtml + ytdHtml;
+  redrawYoyRace();
+}
+
+function setYoyMethod(method) {
+  _yoyMethod = method;
+  if (_lastYoy) renderYoyTile(_lastYoy);
+}
+
+function redrawYoyRace() {
+  if (!_lastYoy) return;
+  const sel = document.getElementById('yoyRaceMetric');
+  const metric = sel ? sel.value : 'savings_pln';
+  const race = _lastYoy.race;
+  const isMoney = metric !== 'produced_kwh';
+  const fmtY = v => isMoney ? v.toLocaleString('pl-PL', {maximumFractionDigits: 0}) + ' zl'
+                            : v.toLocaleString('pl-PL', {maximumFractionDigits: 0}) + ' kWh';
+
+  const curClosed = race.cur_closed[metric] || [];
+  const todayEntry = race.cur_today[_yoyMethod];
+  const todayPoint = todayEntry ? todayEntry[metric] : null;
+  const curData = curClosed.slice();
+  while (curData.length < 12) curData.push(null);
+  const todayIdx = curClosed.length;
+  if (todayPoint != null && todayIdx < 12) curData[todayIdx] = todayPoint;
+
+  const ctx = document.getElementById('yoyRaceChart');
+  if (!ctx) return;
+  if (_yoyChart) _yoyChart.destroy();
+  _yoyChart = new Chart(ctx.getContext('2d'), {
+    type: 'line',
+    data: {
+      labels: _YOY_MONTHS,
+      datasets: [
+        {
+          label: race.cur_year + ' (do dziś)', data: curData, borderColor: '#2563eb',
+          backgroundColor: 'rgba(37,99,235,.08)', spanGaps: false, tension: .25,
+          pointRadius: c => c.dataIndex === todayIdx ? 5 : 2,
+          pointBackgroundColor: '#2563eb',
+        },
+        {
+          label: String(race.prev_year), data: race.prev[metric] || [], borderColor: '#94a3b8',
+          borderDash: [5, 4], tension: .25, pointRadius: 2,
+        },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'top', labels: { boxWidth: 12, font: { size: 11 } } },
+        tooltip: { callbacks: { label: c => c.dataset.label + ': ' + fmtY(c.raw) } },
+      },
+      scales: { y: { ticks: { callback: v => fmtY(v), font: { size: 10 } } } },
+    },
+  });
+}
+
+/* ─────────────────────────────────────────────────────────────
    v0.17.0 — nowe wykresy
    ───────────────────────────────────────────────────────────── */
 
@@ -1903,6 +2093,7 @@ async function loadData() {
     _lastRateTrend = d.rate_trend || null;
     _lastSummary = d.summary;
     renderFanChart(d.records, d.predictions, d.summary.gross_investment, d.summary.net_investment);
+    renderYoyTile(d.yoy);
     renderCpiRealChart(d.records);
     renderDegradChart(d.degradation);
     _populateWaterfallSelect(d.records);

@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.38.0] — 2026-09-27
+
+Kafel "Rok do roku" na stronie głównej — dane wprowadzone w v0.37.0 mają teraz UI.
+Zastępuje wykres "Wachlarz spłaty" w tym miejscu; wachlarz przeniesiony do
+zakładki **Wykresy** (pierwszy wiersz), bez zmian samej treści.
+
+**Nowy kafel** (pełna szerokość, nad wykresem miesięcznych oszczędności):
+- **MTD** — te same dni bieżącego miesiąca vs rok temu: kwota, Δ zł/%, rozbicie
+  na 5 przyczyn (produkcja, autokonsumpcja, cena zakupu, cena RCEm, arbitraż),
+  kontekst (produkcja/zużycie/autokonsumpcja r/r).
+- **YTD** — tabela ten rok / rok temu / Δ (oszczędności, koszt netto sieci,
+  produkcja, zużycie, autokonsumpcja), tempo roku (projekcja vs pełny rok
+  poprzedni), zwijane rozbicie przyczyn.
+- **Przełącznik metody wyceny eksportu** bieżącego miesiąca — "Szacunek RCE"
+  (domyślny) / "RCEm rok temu"; przełącza wyłącznie już pobrane dane, bez
+  ponownego zapytania do serwera.
+- **Wykres wyścigu** narastająco (rok bieżący do dziś vs pełny rok poprzedni),
+  przełącznik metryki: oszczędności / produkcja / koszt netto sieci.
+
+Brak nowych sensorów MQTT — wyłącznie zmiana UI web (`/api/data`'s `yoy` już
+istniał od v0.37.0). Pełny opis: `pv_roi_tracker/docs/ROADMAP_YOY.md`.
+
 ## [0.37.0] — 2026-09-27
 
 Dane pod nowy kafel "Rok do roku" na stronie głównej (zastąpi wykres "Wachlarz
