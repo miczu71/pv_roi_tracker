@@ -241,6 +241,28 @@ Add `https://github.com/miczu71/pv_roi_tracker` in **Settings → Add-ons → Ad
 
 All files are backed up daily to `/share/pv_roi_tracker`.
 
+## Rok do roku (YoY) — od v0.37.0
+
+`/api/data`'s `yoy` key: porównanie MTD (te same elapsed dni bieżącego miesiąca
+vs rok temu) i YTD (od 1.01 do dziś vs tę samą liczbę dni rok temu), z
+addytywnym rozbiciem Δ oszczędności na 5 przyczyn (produkcja/pogoda,
+autokonsumpcja, cena zakupu, cena RCEm, arbitraż baterii — suma == Δ
+dokładnie), projekcją tempa roku i seriami do wykresu narastająco. Cena
+eksportu bieżącego (niezamkniętego) miesiąca liczona dwiema metodami
+(`yoy.METHODS`, wybór w `method_default`):
+- `estimate` (domyślna) — cena RCE ważona profilem naszego eksportu
+  (`rce_hourly.estimate_current_month_feedin_price()`), skorygowana medianą
+  z ostatnich 6 zamkniętych miesięcy. Śr. błąd bezwzględny w backteście:
+  ~15%, rosnący do 20–35% w miesiącach z gwałtowną zmianą cen.
+- `prior_year` — realna RCEm z tego samego miesiąca kalendarzowego rok
+  wcześniej. Empirycznie GORSZA (śr. błąd 22%, pojedyncze pudła do −50% przy
+  skoku cen r/r) — zostawiona jako opcja wyboru w UI, nie jako domyślna.
+
+`yoy` jest `null` 1. dnia miesiąca (okno MTD puste). Pełny kontekst, wzory i
+backtest obu metod: [`pv_roi_tracker/docs/ROADMAP_YOY.md`](pv_roi_tracker/docs/ROADMAP_YOY.md).
+Na razie tylko dane API — kafel w UI (zastępujący wykres „Wachlarz spłaty” na
+stronie głównej) planowany na v0.38.0.
+
 ## Architecture
 
 ```
@@ -256,7 +278,8 @@ Every 30 min
   live HA reader                 ├→ concat → ROI engine → MQTT publisher → HA sensors
   rcem_history                   ┘            ├→ balance.py (cross-family plausibility check)
                                               ├→ tariff_analysis (HA statistics)
-                                              └→ rce_hourly (PSE API + rce_pse + HA statistics)
+                                              ├→ rce_hourly (PSE API + rce_pse + HA statistics)
+                                              └→ yoy (MTD/YTD rok do roku — patrz niżej)
 
 23:55 last day of month
   live HA reader → historic.json (month-close, provisional) → notify.family summary

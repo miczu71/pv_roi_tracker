@@ -2,6 +2,43 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.37.0] — 2026-09-27
+
+Dane pod nowy kafel "Rok do roku" na stronie głównej (zastąpi wykres "Wachlarz
+spłaty" w v0.38.0 — na razie tylko backend, zero zmian w UI). Pełny opis,
+wzory i backtest: `pv_roi_tracker/docs/ROADMAP_YOY.md`.
+
+**Nowy blok `yoy` w `/api/data`:**
+- MTD — te same elapsed dni bieżącego miesiąca vs rok temu (np. 1–26 września
+  obu lat, nie liczone niedokończone "dziś").
+- YTD — od 1.01 do dziś vs tę samą liczbę dni rok temu (miesiące zamknięte
+  sparowane rok do roku + okno MTD).
+- Addytywne rozbicie Δ oszczędności na 5 przyczyn — produkcja (pogoda),
+  autokonsumpcja, cena zakupu, cena RCEm, arbitraż baterii; suma pięciu
+  efektów równa się Δ oszczędności co do grosza (tożsamość algebraiczna,
+  potwierdzona testem).
+- Projekcja tempa roku (pełny rok poprzedni × tempo YTD) i serie do wykresu
+  "wyścigu" narastająco (rok bieżący vs poprzedni).
+- Dwie metody wyceny eksportu bieżącego miesiąca, wybór w UI w v0.38.0
+  (domyślnie `estimate`): cena RCE ważona profilem eksportu ze skorygowaną
+  medianą z ostatnich 6 zamkniętych miesięcy, albo realna RCEm sprzed roku
+  (empirycznie gorsza — zostawiona jako opcja, nie domyślna).
+
+**Naprawione w trakcie budowy, przed wdrożeniem** (złapane na żywych danych,
+nie w produkcji): pierwsza wersja szacunku RCEm liczyła prostą (nieważoną)
+średnią z 24 godzin/dobę — zawyżała cenę eksportu bieżącego miesiąca ~2×,
+bo nasz eksport PV skupia się wyłącznie w tanich południowych godzinach
+nadpodaży słońca, a prosta średnia dobowa waży też drogie godziny
+wieczorne/nocne. Poprawiona wersja reużywa istniejącą w module `rce_hourly`
+metodę ważenia eksportem (`compare_month`), zweryfikowaną wprost na żywym
+HA i oficjalnym API PSE — zgodność co do 4. miejsca po przecinku z liczbą,
+którą add-on już wcześniej publikował gdzie indziej (`rce_comparison`).
+
+Nowy moduł `pv_roi_tracker/yoy.py` (czyste funkcje, bez I/O) +
+`live_reader.get_energy_window()` (godzinowe long-term-statistics dla
+dowolnego okna dat) + `rce_hourly.estimate_current_month_feedin_price()`.
+15 nowych testów (`tests/test_yoy.py`); pełny pakiet: 518 passed, 13 skipped.
+
 ## [0.36.0] — 2026-09-10
 
 Zgłoszenie: w sekcji "Depozyt — faktury vs falownik (rekonsyliacja zasileń)"
