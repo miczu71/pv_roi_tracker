@@ -780,6 +780,89 @@ def main() -> None:
                 logger.exception('RCE hourly comparison failed — continuing')
                 _record_job('rce_hourly', False, 'symulacja RCE godzinowej nie powiodła się')
 
+            # --- Rok do roku (kafel na stronie głównej) ---
+            try:
+                from . import yoy
+                import calendar as _calendar
+                from datetime import timedelta as _timedelta
+
+                _today_yoy = date.today()
+                _days_elapsed = _today_yoy.day - 1
+                if _days_elapsed > 0:
+                    _mtd_start_cur = _today_yoy.replace(day=1)
+                    _mtd_start_prev = date(_today_yoy.year - 1, _today_yoy.month, 1)
+                    _mtd_end_prev = _mtd_start_prev + _timedelta(days=_days_elapsed)
+
+                    _win_cur = live_reader.get_energy_window(_mtd_start_cur, _today_yoy)
+                    _win_prev = live_reader.get_energy_window(_mtd_start_prev, _mtd_end_prev)
+
+                    _peak_gross_yoy, _offpeak_gross_yoy = _tariff_rates_for(_today_yoy)
+                    _buy_price_cur = None
+                    if (_win_cur.get('peak') is not None and _win_cur.get('offpeak') is not None
+                            and (_win_cur['peak'] + _win_cur['offpeak']) > 0):
+                        _buy_price_cur = round(
+                            (_win_cur['peak'] * _peak_gross_yoy + _win_cur['offpeak'] * _offpeak_gross_yoy)
+                            / (_win_cur['peak'] + _win_cur['offpeak']), 4)
+                    _arb_rate_yoy = _peak_gross_yoy * live_reader._BATTERY_RT_EFF - _offpeak_gross_yoy
+                    _arb_cur = (_win_cur.get('arb_kwh') or 0.0) * _arb_rate_yoy
+
+                    _prev_rec_yoy = next((r for r in all_records if r.year == _today_yoy.year - 1
+                                          and r.month == _today_yoy.month), None)
+                    _prev_buy_price = _prev_rec_yoy.buy_price_pln_kwh if _prev_rec_yoy else None
+                    _prev_feedin_price = _prev_rec_yoy.feedin_price_pln_kwh if _prev_rec_yoy else None
+                    # Arbitraż 'prev': proporcja dni w oknie vs cały miesiąc — uproszczenie
+                    # zamiast osobnego zapytania LTS tylko dla tej jednej, małej pozycji.
+                    _days_in_prev_month = _calendar.monthrange(_today_yoy.year - 1, _today_yoy.month)[1]
+                    _prev_arb = (round((_prev_rec_yoy.battery_arbitrage_savings_pln or 0.0)
+                                       * _days_elapsed / _days_in_prev_month, 2)
+                                 if _prev_rec_yoy else 0.0)
+
+                    _mtd_prev_metrics = yoy.build_period_metrics(
+                        _win_prev.get('produced'), _win_prev.get('exported'), _win_prev.get('imported'),
+                        _prev_buy_price, _prev_feedin_price, arbitrage_pln=_prev_arb, system_kwp=SYSTEM_KWP)
+
+                    _feedin_est = rce_hourly.estimate_current_month_feedin_price(
+                        rcem_scraper._load_history(RCEM_HISTORY_PATH),
+                        cache_path=RCE_HOURLY_CACHE_PATH, today=_today_yoy)
+
+                    _mtd_cur_by_method = {
+                        'estimate': yoy.build_period_metrics(
+                            _win_cur.get('produced'), _win_cur.get('exported'), _win_cur.get('imported'),
+                            _buy_price_cur, _feedin_est.get('estimate'),
+                            arbitrage_pln=_arb_cur, system_kwp=SYSTEM_KWP),
+                        'prior_year': yoy.build_period_metrics(
+                            _win_cur.get('produced'), _win_cur.get('exported'), _win_cur.get('imported'),
+                            _buy_price_cur, _prev_feedin_price,
+                            arbitrage_pln=_arb_cur, system_kwp=SYSTEM_KWP),
+                    }
+                    _mtd_flags_by_method = {
+                        'estimate': {
+                            'rcem_estimated': True,
+                            'source': 'średnia godzinowych RCE (skorygowana)',
+                            'correction_factor': _feedin_est.get('correction_factor'),
+                            'raw_pln_kwh': _feedin_est.get('raw_pln_kwh'),
+                            'n_trailing_months': _feedin_est.get('n_trailing_months'),
+                        },
+                        'prior_year': {
+                            'rcem_estimated': True,
+                            'source': 'RCEm z tego samego miesiąca rok wcześniej',
+                            'unavailable': _prev_feedin_price is None,
+                        },
+                    }
+
+                    yoy_payload = yoy.build_yoy_payload(
+                        all_records, _today_yoy, _days_elapsed,
+                        _mtd_prev_metrics, _mtd_cur_by_method, _mtd_flags_by_method,
+                        system_kwp=SYSTEM_KWP)
+                    _web.update_yoy(yoy_payload)
+                    _record_job('yoy', True)
+                else:
+                    _web.update_yoy(None)
+                    _record_job('yoy', True, 'dzień 1. miesiąca — okno MTD puste')
+            except Exception:
+                logger.exception('YoY (Rok do roku) update failed — continuing')
+                _record_job('yoy', False, 'kafel rok do roku nie powiódł się')
+
             _record_job('poll', True)
             _last['result'] = result
             logger.info('Poll complete — ROI %.2f%%, remaining %.0f PLN, payback %s',

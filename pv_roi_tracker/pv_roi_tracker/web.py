@@ -139,6 +139,7 @@ _state: dict = {
     'deposit': None,
     'battery_sim': None,
     'lifetime_forecast': None,
+    'yoy': None,
 }
 
 def update_state(result: RoiResult, records: list[MonthlyRecord],
@@ -182,6 +183,13 @@ def update_lifetime_forecast(payload: Optional[dict]) -> None:
     """Store the forecast_lifetime() payload (called from main.py poll loop)."""
     with _lock:
         _state['lifetime_forecast'] = payload
+
+
+def update_yoy(payload: Optional[dict]) -> None:
+    """Store the yoy.build_yoy_payload() result (called from main.py poll loop);
+    None on the 1st of the month, when the MTD window is empty."""
+    with _lock:
+        _state['yoy'] = payload
 
 
 def _build_predictions(result: RoiResult) -> list[dict]:
@@ -478,6 +486,7 @@ def api_data():
         'battery_sim': _state.get('battery_sim'),
         'lifetime_forecast': _state.get('lifetime_forecast'),
         'degradation': _build_degradation(records, today),
+        'yoy': _state.get('yoy'),
         'version': __version__,
     })
 

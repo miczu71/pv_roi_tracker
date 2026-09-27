@@ -431,6 +431,75 @@ def _sum_role_month(vals: dict, entities: list) -> Optional[float]:
     return sum(available)
 
 
+def get_energy_window(start_date: date, end_date_exclusive: date) -> dict:
+    """Sum each Energy Dashboard role (+ zone-tariff/arbitrage meters) over the
+    half-open window [start_date, end_date_exclusive) via hourly LTS —
+    sub-month granularity read_month_from_statistics()'s monthly 'change'
+    can't give. Used by yoy.py for "same elapsed days" year-over-year windows:
+    both years' windows always end at a whole local-midnight boundary (never
+    a partial day), so the two sides are computed identically regardless of
+    what wall-clock time this function happens to run at.
+
+    Returns {'produced','exported','imported','peak','offpeak',
+    'battery_charge','battery_discharge','arb_kwh'} → Optional[float], None
+    only when every entity for that role had zero hourly buckets in the
+    window (same convention as _sum_role_month). A negative per-hour 'change'
+    (meter reset, same failure mode _fetch_lifetime_month_stats guards
+    against) is skipped rather than accepted at face value.
+    """
+    roles = ('produced', 'exported', 'imported', 'peak', 'offpeak',
+             'battery_charge', 'battery_discharge', 'arb_kwh')
+    empty = {k: None for k in roles}
+    if end_date_exclusive <= start_date:
+        return empty
+
+    sources = get_energy_dashboard_sources()
+    arb_entity = 'sensor.battery_grid_charge_off_peak_monthly'
+    entity_ids = (_all_role_entities(sources)
+                 + [_ZONE_PEAK_METER, _ZONE_OFFPEAK_METER, arb_entity])
+    start_iso = _dt(start_date.year, start_date.month, start_date.day,
+                    tzinfo=ZoneInfo(_TZ_NAME)).isoformat()
+    end_iso = _dt(end_date_exclusive.year, end_date_exclusive.month, end_date_exclusive.day,
+                 tzinfo=ZoneInfo(_TZ_NAME)).isoformat()
+    try:
+        data = _ws_statistics(entity_ids, start_iso, 'hour', end_iso=end_iso, timeout=60)
+    except Exception as exc:
+        logger.warning('get_energy_window failed for %s..%s: %s', start_date, end_date_exclusive, exc)
+        return empty
+
+    def _entity_sum(eid: str) -> Optional[float]:
+        total = 0.0
+        found = False
+        for entry in data.get(eid, []):
+            change = entry.get('change')
+            if change is None:
+                continue
+            change_f = float(change)
+            if change_f < 0:
+                logger.warning(
+                    'get_energy_window: change ujemny dla %s @ %s: %.3f — pomijam '
+                    '(prawdopodobnie źle wykryty reset licznika)', eid, entry.get('start'), change_f)
+                continue
+            total += change_f
+            found = True
+        return total if found else None
+
+    def _role_sum(entities: list) -> Optional[float]:
+        available = [v for v in (_entity_sum(e) for e in entities) if v is not None]
+        return sum(available) if available else None
+
+    return {
+        'produced':          _role_sum(sources['solar']),
+        'exported':          _role_sum(sources['grid_export']),
+        'imported':          _role_sum(sources['grid_import']),
+        'peak':              _entity_sum(_ZONE_PEAK_METER),
+        'offpeak':           _entity_sum(_ZONE_OFFPEAK_METER),
+        'battery_charge':    _role_sum(sources['battery_charge']),
+        'battery_discharge': _role_sum(sources['battery_discharge']),
+        'arb_kwh':           _entity_sum(arb_entity),
+    }
+
+
 def get_ha_history_7d(entity_ids: list) -> dict:
     """
     Fetch 7-day state history from HA Recorder for the given entity_ids.

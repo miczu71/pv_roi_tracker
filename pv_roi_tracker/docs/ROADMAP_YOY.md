@@ -85,17 +85,24 @@ koszt netto sieci zł. Punkt „ta sama data rok temu” pochodzi z okna MTD, ni
   `rce_hourly`) × współczynnik 1,23 (`rce_hourly._vat_factor`); flaga `rcem_estimated`.
 - Liczone w pętli odczytu i cache'owane w pamięci; `/api/data` tylko serwuje (LTS WS bywa wolne).
 
-### Kształt w `/api/data`
+### Kształt w `/api/data` (jak faktycznie zaimplementowane, `yoy.py`)
 ```
-yoy: { as_of, mtd: Period, ytd: Period,
-       projection: {savings_pln, produced_kwh, prev_full_savings_pln, prev_full_produced_kwh, gap_savings_pln},
-       race: {cur_year, prev_year, today_pos,
-              cur:  {savings_pln:[..], produced_kwh:[..], net_grid_cost_pln:[..]},   // narastająco
-              prev: {savings_pln:[12], produced_kwh:[12], net_grid_cost_pln:[12], at_today:{...}}} }
-Period: { label, cur: Metrics, prev: Metrics, delta_savings_pln, delta_savings_pct,
-          effects: {production, self_consumption, buy_price, feedin_price, arbitrage},
-          flags: {rcem_estimated, unpaired_months: [...]} }
+yoy: { as_of, days_elapsed, method_default: 'estimate', methods: ['estimate','prior_year'],
+       mtd: { estimate: Period, prior_year: Period },
+       ytd: { estimate: Period, prior_year: Period },
+       projection: { estimate: Projection|null, prior_year: Projection|null },
+       race: { cur_year, prev_year,
+               prev:        {savings_pln:[12], produced_kwh:[12], net_grid_cost_pln:[12]},  // narastająco, pełny rok
+               cur_closed:  {savings_pln:[..], produced_kwh:[..], net_grid_cost_pln:[..]},  // narastająco, tylko zamknięte mies.
+               cur_today:   { estimate: {savings_pln, produced_kwh, net_grid_cost_pln}|null,
+                              prior_year: {...}|null } } }   // front dokleja jako ostatni punkt za cur_closed
+Period:     { label, cur: Metrics, prev: Metrics, delta_savings_pln, delta_savings_pct,
+              effects: {production, self_consumption, buy_price, feedin_price, arbitrage}|null,
+              flags: {rcem_estimated, unpaired_months?, correction_factor?, ...} }
+Projection: { savings_pln, produced_kwh, prev_full_savings_pln, prev_full_produced_kwh,
+              gap_savings_pln, pace_pct }
 ```
+`yoy` całość jest `null` 1. dnia miesiąca (okno MTD puste — patrz `days_elapsed`).
 Poza zakresem (YAGNI): sensory HA dla r/r, selektor dowolnego miesiąca.
 
 ## Kafel (UI)
@@ -120,6 +127,45 @@ na telefonie wszystko jedno pod drugim:
 ```
 Wachlarz: przeniesiony 1:1 do zakładki Wykresy (+ `_fanChart` w liście `resize()` w `showTab('charts')`).
 
+## Wynik Etapu 1 (27.09.2026)
+
+**Przełącznik metody** (dodany po pytaniu usera w trakcie brainstormingu): oprócz
+skorygowanego szacunku RCE, `mtd`/`ytd`/`projection`/`race.cur_today` mają teraz
+klucz na każdą z metod (`estimate`, `prior_year`) — user backtestował samą
+propozycję „RCEm sprzed roku" (śr. błąd 22,4%, gorzej niż 15,1% dla szacunku
+godzinowego, pojedyncze pudło −50% przy skoku cen r/r) i mimo to chciał opcję
+wyboru w UI, domyślnie `estimate`.
+
+**Błąd metodologiczny złapany na żywych danych, zanim trafił do usera:** pierwsza
+wersja `estimate_current_month_feedin_price` liczyła PROSTĄ (nieważoną) średnią
+z 24 godzin/dobę. Weryfikacja na żywym HA (get_energy_window + realne ceny PSE,
+27.09.2026) pokazała, że to zawyżało cenę ~2× (sierpień 2026: prosta średnia
+0,71 zł/kWh vs eksport-ważona 0,29 zł/kWh vs realna RCEm 0,362 zł/kWh) — nasz
+eksport PV skupia się w tanich południowych godzinach (często ujemna RCE), a
+prosta średnia dobowa waży równo drogie godziny wieczorne/nocne, w których w
+ogóle nie eksportujemy. Naprawione: `estimate_current_month_feedin_price`
+reużywa teraz `compare_month()`'s `rce_weighted_price_pln_kwh` (ta sama metoda
+co reszta modułu, ważona NASZYM profilem eksportu) jako bazę, dopiero na niej
+liczona jest korekta medianą z ostatnich 6 zamkniętych miesięcy. Po poprawce:
+`raw_pln_kwh` dla 2026-09 wyszło 0,3808 — dokładnie tyle, ile żywy add-on już
+sam raportował jako `rce_weighted` dla tego miesiąca — potwierdzenie zgodności.
+
+**Przy okazji potwierdzone (nie błąd):** ceny RCE we wrześniu 2026 realnie
+skoczyły 2–3× względem sierpnia — zweryfikowane bezpośrednio przez oficjalne
+PSE REST API (`api.raporty.pse.pl`, dzień po dniu), niezależnie od kodu add-onu.
+
+**Weryfikacja bez wdrożenia:** cały pipeline (`get_energy_window`, skorygowany
+szacunek, `yoy.build_yoy_payload`) przetestowany z tej powłoki bezpośrednio na
+żywym HA (real Supervisor token, real Energy Dashboard, realne LTS) oraz na
+prawdziwych rekordach historycznych pobranych z żywego `/api/data` add-onu —
+bez rebuildu/restartu samego add-onu. Wynik dla 27.09.2026, dzień 26:
+MTD (estimate) 327,75 zł vs 338,39 zł rok temu (−3,1%, produkcja i cena zakupu
+w dół, cena RCEm w górę); MTD (prior_year) pokazałoby mylące −17,9% (nie widzi
+tegorocznego skoku cen). Tożsamość sumy efektów = Δ oszczędności zweryfikowana
+zarówno testami jednostkowymi, jak i na tych żywych liczbach.
+
+15/15 nowych testów (`tests/test_yoy.py`) + pełny pakiet (518 testów) zielone.
+
 ## Etapy (każdy kończy się checkpointem — bez kolejnego bez „go”)
 
 **Etap 0 — dokument.** Zapis tego planu jako `docs/ROADMAP_YOY.md` w repo add-onu. ✅ (ten plik)
@@ -138,8 +184,10 @@ Wachlarz: przeniesiony 1:1 do zakładki Wykresy (+ `_fanChart` w liście `resize
 
 **Etap 2 — UI, release 0.38.0.**
 - `static/index.html`: kafel zamiast wachlarza; wachlarz do `tab-charts`.
-- `static/app.js`: `renderYoyTile(d.yoy)` (MTD + tabela YTD + tempo) i `renderYoyRaceChart` (Chart.js,
-  przełącznik metryki), resize fanChart w `showTab`; `app.css`: siatka 2→1 kol.
+- `static/app.js`: `renderYoyTile(d.yoy)` (MTD + tabela YTD + tempo) i `renderYoyRaceChart` (Chart.js);
+  przełącznik metody `estimate`/`prior_year` (mały toggle w kaflu, domyślnie `estimate`, zmienia
+  wyłącznie który klucz z `mtd`/`ytd`/`projection`/`race.cur_today` jest odczytywany — bez re-fetchu),
+  resize fanChart w `showTab`; `app.css`: siatka 2→1 kol.
 - Cache-busting jest (`?v={{VERSION}}`, badge `appVer`) — sprawdzić, że wersja rośnie.
 - Dokumentacja w modalu (`openDocsModal`) + README/CHANGELOG + release notes z tabelą pól.
 - Checkpoint: screenshoty desktop + mobile i konsola bez błędów.

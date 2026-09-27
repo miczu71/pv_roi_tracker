@@ -203,6 +203,91 @@ def _ensure_prices(cache: dict, months: list, today: date) -> None:
             prices.update(rows_to_hourly(ha_rows))
 
 
+def estimate_current_month_feedin_price(
+    rcem_history: dict,
+    cache_path: Path = DEFAULT_CACHE_PATH,
+    today: Optional[date] = None,
+    trailing_months: int = 6,
+    get_stats_fn=None,
+) -> dict:
+    """
+    Szacunek RCEm bieżącego (otwartego) miesiąca dla kafla \"Rok do roku\"
+    (yoy.py, metoda 'estimate').
+
+    Metoda: TA SAMA co compare_month()'s rce_weighted_price_pln_kwh — cena RCE
+    ważona profilem NASZEGO eksportu, NIE prosta średnia z 24 godzin.
+    To rozróżnienie jest kluczowe i zweryfikowane na żywych danych 2026-09-27
+    (patrz docs/ROADMAP_YOY.md): nasz eksport PV skupia się w tanich
+    południowych godzinach nadpodaży słońca (często ujemna RCE), podczas gdy
+    prosta średnia dobowa waży RÓWNO drogie godziny wieczorne/nocne, których
+    nasz eksport w ogóle nie dotyczy. Pierwsza wersja tej funkcji liczyła
+    prostą średnią — dawała dla sierpnia 2026 ~0,71 zł/kWh, podczas gdy
+    eksport-ważona (ta wersja) dała ~0,29 zł/kWh, a realna RCEm wyniosła
+    0,362 zł/kWh: eksport-ważona jest bliżej prawdy o rząd wielkości, nie tylko
+    o kilka procent — prosta średnia była nieużywalna, nie tylko niedokładna.
+
+    Nawet eksport-ważona średnia ma systematyczny błąd — backtest na 24
+    zamkniętych miesiącach (docs/ROADMAP_YOY.md) pokazał śr. błąd bezwzględny
+    15%, rosnący do 20–35% w 2026 (RCEm to średnia ważona CAŁĄ krajową
+    produkcją, szerszą niż nasz profil) — stąd korekta medianą (realna RCEm /
+    eksport-ważona z tego samego miesiąca) z ostatnich `trailing_months`
+    zamkniętych miesięcy.
+
+    Zwraca {'estimate': Optional[float] (PLN/kWh brutto, po korekcie),
+    'correction_factor': Optional[float] (None gdy <3 wiarygodnych miesięcy
+    wstecz — wtedy `estimate` to surowa wartość eksport-ważona, nieskorygowana),
+    'raw_pln_kwh': Optional[float] (przed korektą, eksport-ważona brutto),
+    'n_trailing_months': int}. `estimate` None gdy brak danych eksportu dla
+    bieżącego miesiąca (np. jeszcze żadnego dnia z LTS).
+    """
+    if today is None:
+        today = date.today()
+    if get_stats_fn is None:
+        from .live_reader import get_ha_tariff_stats
+        get_stats_fn = get_ha_tariff_stats
+
+    cache = _load_cache(cache_path)
+    current_ym = today.strftime('%Y-%m')
+
+    # Ostatnie zamknięte miesiące ze ZNANĄ realną RCEm (rcem_history nie ma
+    # kluczy dla miesięcy jeszcze nierozliczonych/nie zeskrobanych — pomijane
+    # naturalnie, bez specjalnej obsługi).
+    trailing = sorted(ym for ym in rcem_history if ym < current_ym)[-trailing_months:]
+    all_months = sorted(set(trailing + [current_ym]))
+
+    _ensure_prices(cache, all_months, today)
+    _save_cache({'v': CACHE_VERSION, 'prices': cache['prices'], 'months': cache['months']}, cache_path)
+    export_hourly = get_stats_fn([EXPORT_ENTITY], start=f'{all_months[0]}-01',
+                                 period='hour').get(EXPORT_ENTITY, {})
+
+    def _weighted_price(ym: str) -> Optional[float]:
+        row = compare_month(ym, export_hourly, cache['prices'], rcem_price_gross=None,
+                            exported_total_kwh=None, rcem_estimated=True)
+        return row['rce_weighted_price_pln_kwh'] if row else None
+
+    raw = _weighted_price(current_ym)
+    if raw is None:
+        return {'estimate': None, 'correction_factor': None, 'raw_pln_kwh': None, 'n_trailing_months': 0}
+
+    ratios: list = []
+    for ym in trailing:
+        actual = rcem_history.get(ym)
+        est_hist = _weighted_price(ym)
+        if actual is None or est_hist is None or est_hist <= 0:
+            continue
+        ratios.append(actual / est_hist)
+
+    if len(ratios) < 3:
+        return {'estimate': raw, 'correction_factor': None,
+                'raw_pln_kwh': raw, 'n_trailing_months': len(ratios)}
+
+    ratios.sort()
+    n = len(ratios)
+    median = ratios[n // 2] if n % 2 else (ratios[n // 2 - 1] + ratios[n // 2]) / 2.0
+    return {'estimate': round(raw * median, 4), 'correction_factor': round(median, 3),
+            'raw_pln_kwh': raw, 'n_trailing_months': len(ratios)}
+
+
 # ── Czysta logika porównania ──────────────────────────────────────────────────
 
 def compare_month(
