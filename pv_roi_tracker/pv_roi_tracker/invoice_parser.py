@@ -27,9 +27,12 @@ Resilience design:
 """
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import asdict, dataclass, field
 from typing import Callable, Optional
+
+logger = logging.getLogger(__name__)
 
 # ── Layouts provider (injectable, default = no learned patterns) ──────────────
 
@@ -403,6 +406,12 @@ def _first(pattern: str, text: str, group: int = 1) -> Optional[str]:
     return m.group(group) if m else None
 
 
+def _last(pattern: str, text: str, group: int = 1) -> Optional[str]:
+    """Like _first but returns the LAST match — used for korekta fields (see _last_float_multi)."""
+    matches = list(re.finditer(pattern, text, re.IGNORECASE))
+    return matches[-1].group(group) if matches else None
+
+
 def _first_float(pattern: str, text: str, group: int = 1) -> Optional[float]:
     raw = _first(pattern, text, group)
     try:
@@ -426,6 +435,31 @@ def _first_float_multi(patterns: list, text: str, group: int = 1) -> Optional[fl
         v = _first_float(p, text, group)
         if v is not None:
             return v
+    return None
+
+
+def _last_float_multi(patterns: list, text: str, group: int = 1) -> Optional[float]:
+    """
+    Try an ordered list of regex patterns; for the FIRST pattern that matches
+    at all, return its LAST match's value.
+
+    Used for korekta documents: pypdf's plain-mode extraction can place the
+    stale POLICZONO (old) section's numbers AFTER the NALEŻAŁO POLICZYĆ
+    (corrected) section's own LABEL text in the extracted stream, so scoping
+    by marker *position* is unreliable. Empirically, on every sampled korekta
+    (2025-02..2025-07), each deposit field matches either 4 times (old×2,
+    new×2 — main body + repeated ZAŁĄCZNIK annex) or, when the correction
+    changed nothing, the same value ×4 — and the LAST match is always the
+    corrected/final one. Regular (non-korekta) invoices only ever have one
+    occurrence, so this is a no-op there (first == last).
+    """
+    for p in patterns:
+        raw = _last(p, text, group)
+        if raw is not None:
+            try:
+                return _n(raw)
+            except (ValueError, AttributeError):
+                continue
     return None
 
 
@@ -652,16 +686,33 @@ def _parse_text(text: str) -> InvoiceData:
         return _parse_nota(text)
     _is_korekta = bool(re.search(r'FAKTURA VAT KOREKTA', text, re.IGNORECASE))
 
-    # For korekta: scope deposit / amount_due extraction to the NALEŻAŁO POLICZYĆ
-    # section so we capture corrected values, not the stale POLICZONO ones.
-    # For regular invoices both variables equal the full text (no-op).
+    # For korekta: deposit / amount_due fields must come from the NALEŻAŁO
+    # POLICZYĆ (corrected) section, not the stale POLICZONO (old) one.
+    #
+    # Scoping the plain-mode text by marker *position* is NOT reliable here:
+    # pypdf's plain extraction for this two-column template can place the
+    # POLICZONO section's numbers in the stream AFTER the NALEŻAŁO POLICZYĆ
+    # label, ahead of the real corrected figure (confirmed on a live korekta:
+    # the "scoped" text still hit the old value first). pypdf's layout-mode
+    # extraction avoids the reordering but duplicates every line of text for
+    # this template (each run rendered twice at the same position), which
+    # corrupts numeric matches — also confirmed live, so that's not usable
+    # either.
+    #
+    # What IS reliable, checked on 5 live korekta PDFs (2025-02..2025-06):
+    # each deposit/amount field matches either 4 times in the full plain
+    # text (old×2, new×2 — main body + repeated ZAŁĄCZNIK annex) or 4× the
+    # same value when the correction changed nothing — and the LAST match
+    # is always the corrected/final one, the FIRST always the old one. So:
+    # use `_field(...)` (last-match) below for the real field value, and
+    # first-match-in-full-text for the "było" (old) value shown in the UI
+    # (see prev_deposit_previous_pln further down). Regular invoices only
+    # ever have one occurrence per field, so first == last there — no-op.
     _deposit_text = text
     _amount_text = text
-    if _is_korekta:
-        _split = re.search(r'NALE.{0,3}O POLICZY', text, re.IGNORECASE)
-        if _split:
-            _deposit_text = text[_split.start():]
-            _amount_text = _deposit_text
+
+    def _field(patterns: list, source: str) -> Optional[float]:
+        return _last_float_multi(patterns, source) if _is_korekta else _first_float_multi(patterns, source)
 
     # ── Billing period ────────────────────────────────────────────────────────
     # "Okres rozliczeniowy 01.04.2026 - 30.04.2026"
@@ -943,11 +994,11 @@ def _parse_text(text: str) -> InvoiceData:
         vat_total_pln = round(vat_total_pln * 0.23, 2)
 
     # ── Prosument deposit ─────────────────────────────────────────────────────
-    # For korekta: _deposit_text is scoped to the NALEŻAŁO POLICZYĆ section so
-    # we extract the corrected values, not the stale POLICZONO values.
-    deposit_current_pln  = _first_float_multi(_patterns_for('deposit_current'), _deposit_text)
-    deposit_previous_pln = _first_float_multi(_patterns_for('deposit_previous'), _deposit_text)
-    deposit_used_pln     = _first_float_multi(_patterns_for('deposit_used'), _deposit_text)
+    # For korekta: _field() takes the LAST match (corrected NALEŻAŁO POLICZYĆ
+    # value), not the stale POLICZONO one — see comment above _field's definition.
+    deposit_current_pln  = _field(_patterns_for('deposit_current'), _deposit_text)
+    deposit_previous_pln = _field(_patterns_for('deposit_previous'), _deposit_text)
+    deposit_used_pln     = _field(_patterns_for('deposit_used'), _deposit_text)
 
     if deposit_current_pln is None:
         warnings.append('depozyt prosumencki bieżący nie znaleziony')
@@ -963,7 +1014,7 @@ def _parse_text(text: str) -> InvoiceData:
     # Q1-Q3) has no single aggregate row for this, only a per-zone breakdown, so
     # absence here is not a parse failure and doesn't warn. Its only consumer
     # (deposit_capped below) already treats None as "unknown", not "not capped".
-    energy_sale_gross_pln = _first_float_multi(_patterns_for('energy_sale_total'), _deposit_text)
+    energy_sale_gross_pln = _field(_patterns_for('energy_sale_total'), _deposit_text)
 
     # Opłata Handlowa jest wliczona w "1. Sprzedaży energii elektrycznej", ale
     # nieuprawniona do pokrycia depozytem — patrz komentarz przy trade_fee_gross_pln
@@ -982,9 +1033,9 @@ def _parse_text(text: str) -> InvoiceData:
         deposit_capped = abs(deposit_used_pln - (energy_sale_gross_pln - trade_fee_gross_pln)) <= 0.02
 
     # ── Amount due ────────────────────────────────────────────────────────────
-    # For korekta: _amount_text is scoped to NALEŻAŁO POLICZYĆ so we get the
-    # corrected month total, not the old value from POLICZONO.
-    amount_due_pln    = _first_float_multi(_patterns_for('amount_due'), _amount_text)
+    # For korekta: _field() takes the corrected (last-match) month total, not
+    # the old value from POLICZONO.
+    amount_due_pln    = _field(_patterns_for('amount_due'), _amount_text)
     avg_price_pln_kwh = _first_float_multi(_patterns_for('avg_price'), text)
 
     if amount_due_pln is None:
@@ -1048,17 +1099,22 @@ def _parse_text(text: str) -> InvoiceData:
         _r_m = re.search(r'Przyczyna korekty:\s*([^\n]+)', text, re.IGNORECASE)
         if _r_m:
             correction_reason = _r_m.group(1).strip()[:200]
-        # "Zwiększenie wartości brutto: 1,89 zł" — the net delta owed now
-        correction_delta_pln = _first_float(
-            r'Zwi.kszenie warto.ci brutto[:\s]+([\d ]+,[\d]+)', text
-        )
-        # Capture POLICZONO section's deposit_previous (first match in full text)
-        # for the "było → jest" UI display. _deposit_text starts at NALEŻAŁO POLICZYĆ
-        # so the first-match from full text IS the POLICZONO value.
+        # "Zwiększenie wartości brutto: 1,89 zł" or "-6,25 zł" — the net delta
+        # owed now; can be negative (deposit correction reduced the bill), so
+        # the sign must be captured too, not just stripped by [\d ]+.
+        _delta_raw = _first(r'Zwi.kszenie warto.ci brutto[:\s]+(-?[\d ]+,[\d]+)', text)
+        if _delta_raw is not None:
+            try:
+                correction_delta_pln = _n(_delta_raw)
+            except (ValueError, AttributeError):
+                correction_delta_pln = None
+        # Capture the POLICZONO (old) deposit_previous — first match in full
+        # text, see _field()'s docstring/comment above: first == old, last ==
+        # corrected — for the "było → jest" UI display.
         prev_deposit_previous_pln = _first_float_multi(
             _patterns_for('deposit_previous'), text
         )
-        # Suppress when no split was found and both values came from full text
+        # Suppress when the correction didn't actually change this value
         if prev_deposit_previous_pln == deposit_previous_pln:
             prev_deposit_previous_pln = None
 

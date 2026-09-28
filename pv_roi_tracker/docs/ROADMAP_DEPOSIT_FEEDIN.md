@@ -130,6 +130,68 @@ sprzed korekt.
 2025 wciąż niewyjaśnione mimo korekty Taurona) zostaje jako osobny temat do decyzji po naprawie
 parsera — czy dochodzić dalej, czy zostawić z etykietą niepewności.
 
+## Aktualizacja (28.09.2026) — user: „kontynuuj dla obu"; Część B rozwiązana
+
+Plan Etapu 2 (fix parsera + śledztwo maj/czerwiec) zatwierdzony, skopiowany do
+`docs/BLUEPRINT_DEPOSIT_FEEDIN_ETAP2.md`. **Część B (śledztwo maj/czerwiec) zamknięta bez
+dalszego kodu — przyczyna znaleziona.**
+
+Sprawdzono POLICZONO vs NALEŻAŁO POLICZYĆ na korektach styczeń–lipiec 2025 (nie tylko kwiecień):
+
+| Korekta (koryguje miesiąc) | Stare (POLICZONO) | Nowe (NALEŻAŁO POLICZYĆ) | Zmiana |
+|---|---|---|---|
+| luty→koryguje styczeń | 25,92 zł | 35,83 zł | +38% (≈ ×1,23 z zaokrągleniem) |
+| marzec→koryguje luty | 66,75 zł | 82,10 zł | **+23,0%** — dokładnie ×1,23 |
+| kwiecień→koryguje marzec | 68,06 zł | 74,31 zł | +9,2% — **częściowa**, nie ×1,23 |
+| maj→koryguje kwiecień | 34,31 zł | 34,31 zł | **0% — brak korekty** |
+| czerwiec→koryguje maj | 18,14 zł | 18,14 zł | **0% — brak korekty** |
+| lipiec→koryguje czerwiec | 31,68 zł | 31,68 zł | **0% — brak korekty** |
+
+**Wniosek: to nie błąd naszego modelu ani naszego parsera (poza kwietniem, patrz niżej) — to
+własna, niekonsekwentna korekta Taurona.** List przewodni batcha z 01.01.2026 obiecuje
+„powiększenie wartości depozytu wypracowanego **od 1.01.2025 r.** o współczynnik 1,23" — luty i
+marzec dostały to poprawnie (marzec dokładnie ×1,23), ale **kwiecień tylko częściowo, a
+maj/czerwiec/lipiec wcale**, mimo że mieszczą się w zakresie „od 1.01.2025" z listu. Sprawdzono też
+dopasowanie realnej ceny maja/czerwca do innych miesięcy RCEm (na wypadek złego przesunięcia
+miesiąca po stronie Taurona) — **brak dopasowania do jakiegokolwiek miesiąca 2023–2025** w
+posiadanych danych (realna cena 40–59 PLN/MWh netto, poniżej najniższej opublikowanej RCEm w
+całym okresie, 136,30 dla czerwca 2025) — to nie jest przesunięty miesiąc, to brakująca korekta.
+
+**Rekomendacja (zamiast kodu): user zgłasza reklamację do Taurona** (infolinia 32 606 0 606, wg
+listu z korekty), powołując się na numery faktur korygujących T/K1/BN567872/0010/25…0013/25
+(kwiecień–lipiec) i cytat z ich własnego listu o „powiększeniu o współczynnik 1,23 od 1.01.2025" —
+niekonsekwentnie zastosowany. Add-on **nie może** tego naprawić kodem (to nie błąd w naszych
+danych/logice) — może tylko to widocznie flagować w UI (patrz Część A.5 niżej, rozszerzenie
+istniejącej etykiety jakości z 0.42.0).
+
+**Część A (fix parsera) w toku** — patrz `docs/BLUEPRINT_DEPOSIT_FEEDIN_ETAP2.md` za szczegóły
+implementacji.
+
+## Wynik Części A (28.09.2026) — fix parsera zaimplementowany, wydanie 0.43.0
+
+Zamiast planowanego `extraction_mode='layout'` (pypdf) — **odrzucone empirycznie**: dla tego
+szablonu korekty tryb `layout` co prawda naprawia kolejność, ale **duplikuje każdą linię tekstu**
+(np. „NALEŻAèO POLICZYĆ:NALEŻAèO POLICZYĆ:”), co psuje inne pola liczbowe (przetestowane na żywo —
+`deposit_used_pln` wyszło 74,317 zamiast 74,31, `amount_due_pln` 77,388 zamiast 77,38). Zamiast tego:
+**strategia „ostatnie dopasowanie w pełnym tekście plain”** — zweryfikowana na 6 żywych korektach
+(2025-02…2025-07): każde pole depozytu/kwoty do zapłaty ma w tekście 2 lub 4 wystąpienia (stara/nowa
+wartość, czasem zduplikowane przez powtórzony załącznik ZAŁĄCZNIK), a **ostatnie zawsze jest
+poprawne**. Nowa funkcja `_last_float_multi` (analogiczna do istniejącej `_first_float_multi`),
+użyta tylko dla `_is_korekta` przez lokalny closure `_field()`. Przy okazji naprawiony
+`correction_delta_pln` (regex nie obsługiwał znaku minus — ujemne korekty, jak kwiecień -6,25 zł,
+dawały `None`).
+
+10 nowych testów (`test_invoice_parser.py`): syntetyczny wariant symulujący dokładnie zaobserwowany
+reordering pypdf (uruchamiany zawsze) + 7 testów na prawdziwym pliku korekty kwietnia 2025
+(`/data/home/.claude/uploads/kor_2025-04_T_K1_BN567872_0010_25.pdf`, wzorem istniejącego
+`TestRealPdf` — `skipif` gdy plik niedostępny, plik poza repo). **587/587 testów zielonych, zero
+regresji.** Zweryfikowano bezpośrednio `parse_invoice()` na wszystkich 6 pobranych żywych korektach
+(2025-02…2025-07) — wszystkie zwracają teraz poprawną, skorygowaną wartość.
+
+CHANGELOG/README zaktualizowane, wersja podbita do **0.43.0** (`config.yaml` + `__init__.py`).
+Dalej: wydanie GitHub, aktualizacja Supervisora, reparse 24 faktur z korektą, weryfikacja
+rekonsyliacji na żywo, Playwright.
+
 ## Context
 
 Podprojekty YoY (0.38.0), Pompa ciepła (0.41.0) i Dług depozytowy (0.42.0) są zamknięte.

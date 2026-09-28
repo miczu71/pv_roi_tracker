@@ -36,6 +36,17 @@ Od v0.21.0 parser obsługuje trzy typy dokumentów Tauron:
 
 Korekty są wyświetlane jako **zagnieżdżone pod-wiersze** (badge KOREKTA/NOTA + „było → jest" dla depozytu + delta PLN + powód). Sensory stawek MQTT (źródło prawdy) pomijają korekty i noty — bazują wyłącznie na fakturach rozliczeniowych.
 
+**v0.43.0 — poprawka wyciągania sekcji NALEŻAŁO POLICZYĆ.** `pypdf`'s domyślna
+ekstrakcja tekstu (`extraction_mode='plain'`) dla dwukolumnowego szablonu korekty
+potrafiła zwrócić tekst w kolejności innej niż wizualna — stara wartość
+POLICZONO lądowała w strumieniu PO etykiecie NALEŻAŁO POLICZYĆ, przed prawdziwą
+nową wartością, więc parser (mimo próby scope'owania po pozycji markera) łapał
+starą. Od 0.43.0 pola depozytu/kwoty do zapłaty na korektach biorą **ostatnie**
+dopasowanie w pełnym tekście zamiast pierwszego (zweryfikowane na 6 żywych
+korektach: każde pole ma 2 lub 4 wystąpienia — stare/nowe, czasem powielone
+przez załącznik — a ostatnie jest zawsze poprawne). Wszystkie 24 historyczne
+faktury z korektą zostały re-sparsowane po wydaniu.
+
 Oryginalne wgrane pliki PDF są **trwale przechowywane** w `/data/pdfs/`, obok `invoices.json`. Każdy wiersz faktury ma przyciski **PDF** (podgląd oryginału) i **↻ PDF** (przeliczenie faktury ponownie z zapisanego pliku — przydatne po poprawce parsera, bez ponownego wgrywania).
 
 ### Najnowsza faktura jako jedno źródło prawdy (+ zakładka Taryfa)

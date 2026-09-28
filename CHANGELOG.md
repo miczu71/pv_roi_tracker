@@ -2,6 +2,41 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.43.0] — 2026-09-28
+
+Podprojekt „Depozyt: zasilenie 2025-04/06 + B8" (`docs/ROADMAP_DEPOSIT_FEEDIN.md`) —
+naprawa parsera faktur korygujących ("korekta"). Tauron wysłał 01.01.2026 masową serię
+24 faktur korygujących ("aktualizacja wartości depozytu wg RCE + doliczenie
+współczynnika ×1,23 wstecznie od 1.01.2025"). Każda korekta ma dwie sekcje —
+"POLICZONO" (stara wartość) i "NALEŻAŁO POLICZYĆ" (nowa, poprawna) — a parser
+próbował wyciąć tylko drugą, ale `pypdf.extract_text()` (tryb plain) dla tego
+dwukolumnowego szablonu zwraca tekst w kolejności innej niż wizualna: stara wartość
+POLICZONO potrafiła wylądować w strumieniu PO etykiecie NALEŻAŁO POLICZYĆ, przed
+prawdziwą nową wartością — parser łapał starą. Potwierdzone na żywej korekcie
+kwietnia 2025 (T/K1/BN567872/0010/25): `deposit_previous_pln` = 68,06 zł zamiast
+poprawnych 74,31 zł.
+
+- `invoice_parser.py`: nowa funkcja `_last_float_multi` — dla dokumentów korekty
+  pola depozytu/kwoty do zapłaty biorą **ostatnie** dopasowanie regexu w pełnym
+  tekście (nie pierwsze). Zweryfikowane na 6 żywych korektach (2025-02…2025-07):
+  każde pole występuje 2× lub 4× w tekście (stara/nowa wartość, czasem powielone
+  przez załącznik), a ostatnie dopasowanie jest zawsze tym poprawnym/końcowym.
+  Zwykłe faktury mają jedno wystąpienie na pole — bez zmiany zachowania.
+- Przy okazji naprawiony `correction_delta_pln`: regex nie obsługiwał znaku minus
+  ("Zwiększenie wartości brutto: -6,25 zł" parsowało się jako `None`).
+- 10 nowych testów: syntetyczny wariant symulujący reordering pypdf (uruchamiany
+  zawsze) + 7 testów na prawdziwej korekcie kwietnia 2025 (uruchamiane, gdy plik
+  PDF jest lokalnie dostępny, jak istniejący `TestRealPdf`). 587 razem.
+- Wszystkie 24 faktury z korektą re-sparsowane (`/api/invoice/reparse`) po
+  wydaniu, żeby poprawka zadziałała retroaktywnie na całej historii.
+
+Śledztwo w `docs/ROADMAP_DEPOSIT_FEEDIN.md` pokazało też, że **maj/czerwiec 2025
+NIE są objaśnione tym fixem** — korekta Taurona dla tych miesięcy nie zmieniła
+wartości (POLICZONO = NALEŻAŁO POLICZYĆ), mimo że deklarowany zakres korekty
+("od 1.01.2025") powinien je obejmować. To osobny, niedomknięty problem po
+stronie Taurona — nie do naprawienia kodem; rekomendacja to kontakt z infolinią
+Taurona, szczegóły w roadmapie.
+
 ## [0.42.0] — 2026-09-28
 
 Etap 2 podprojektu „Dług depozytowy" (`docs/ROADMAP_DEPOSIT.md`) — poprawka

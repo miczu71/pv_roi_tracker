@@ -902,6 +902,110 @@ class TestKorekta:
         assert parsed.requires_payment is None
 
 
+def _make_korekta_text_reordered() -> str:
+    """
+    Synthetic korekta text where the POLICZONO (old) deposit figure comes
+    AFTER the "NALEZALO POLICZYC:" label, simulating the out-of-visual-order
+    text pypdf's plain-mode extraction produced on a real two-column korekta
+    PDF (confirmed live on the 2025-04 correction: the old '68,06' value
+    landed in the stream right after the NALEZALO POLICZYC marker, ahead of
+    the real corrected '74,31'). Regression test for that bug: deposit
+    fields must still resolve to the corrected value even when a naive
+    "text after the NALEZALO POLICZYC marker" scope would hit the old one
+    first — see _field()'s last-match strategy in invoice_parser.py.
+    """
+    return (
+        'FAKTURA VAT KOREKTA NR T/K1/BN567872/0010/25\n'
+        'DO FAKTURY VAT NR T/K1/0443532/25 z dnia 12.05.2025\n'
+        'ZA ENERGIE ELEKTRYCZNA I USLUGI DYSTRYBUCJI\n'
+        'za okres od 01.04.2025 do 30.04.2025\n'
+        'Przyczyna korekty: zaktualizowalismy wartosc depozytu\n'
+        'Pobrano z sieci 120\n'
+        'Wprowadzono do sieci 315\n'
+        '\n'
+        # NALEZALO POLICZYC's own label appears first in the stream (as it
+        # would after slicing at the marker), but the POLICZONO section's
+        # numbers are interleaved in right after it — before the real
+        # NALEZALO POLICZYC numbers further down. This is the reordering.
+        'NALEZALO POLICZYC:\n'
+        'Depozyt prosumencki w rozliczanym okresie (zl) 0,00\n'
+        'Depozyt prosumencki z okresow poprzednich (zl) 68,06\n'
+        'Rozliczenie depozytu ( 4 + 5 + 6 ) 68,06\n'
+        'Do zaplaty (zl) ( 3 - 7 ) 83,63\n'
+        'Depozyt prosumencki w rozliczanym okresie (zl) 0,00\n'
+        'Depozyt prosumencki z okresow poprzednich (zl) 74,31\n'
+        'Rozliczenie depozytu ( 4 + 5 + 6 ) 74,31\n'
+        'Do zaplaty (zl) ( 3 - 7 ) 77,38\n'
+        '\n'
+        'Zwiekszenie wartosci brutto: -6,25 zl\n'
+    )
+
+
+class TestKorektaReorderedText:
+    """
+    Regression test for the pypdf plain-mode reordering bug (see
+    _make_korekta_text_reordered's docstring): even when the OLD value
+    physically precedes the NEW one in the extracted stream, _field()'s
+    last-match strategy must still pick the corrected value.
+    """
+
+    @pytest.fixture(scope='class')
+    def parsed(self):
+        return _parse_text(_make_korekta_text_reordered())
+
+    def test_deposit_previous_is_corrected_not_stale(self, parsed):
+        assert parsed.deposit_previous_pln == pytest.approx(74.31, abs=0.01)
+
+    def test_deposit_used_is_corrected_not_stale(self, parsed):
+        assert parsed.deposit_used_pln == pytest.approx(74.31, abs=0.01)
+
+    def test_amount_due_is_corrected_not_stale(self, parsed):
+        assert parsed.amount_due_pln == pytest.approx(77.38, abs=0.01)
+
+    def test_negative_correction_delta_parsed(self, parsed):
+        """correction_delta_pln must capture the sign (was silently dropped before)."""
+        assert parsed.correction_delta_pln == pytest.approx(-6.25, abs=0.01)
+
+
+_KOREKTA_2025_04_PDF_PATH = Path(
+    '/data/home/.claude/uploads/kor_2025-04_T_K1_BN567872_0010_25.pdf'
+)
+
+
+@pytest.mark.skipif(not _KOREKTA_2025_04_PDF_PATH.exists(),
+                    reason='2025-04 correction PDF not available')
+class TestRealKorektaPdf:
+    """
+    Regression test on the actual PDF that surfaced this bug: Tauron's
+    01.01.2026 batch correction for April 2025 (invoice T/K1/BN567872/0010/25).
+    Before the fix, deposit_previous_pln parsed as 68.06 (the stale POLICZONO
+    value); the corrected NALEZALO POLICZYC value is 74.31.
+    """
+
+    @pytest.fixture(scope='class')
+    def parsed(self):
+        return parse_invoice(_KOREKTA_2025_04_PDF_PATH.read_bytes())
+
+    def test_doc_type_is_korekta(self, parsed):
+        assert parsed.doc_type == 'korekta'
+
+    def test_deposit_previous_is_corrected(self, parsed):
+        assert parsed.deposit_previous_pln == pytest.approx(74.31, abs=0.01)
+
+    def test_deposit_used_is_corrected(self, parsed):
+        assert parsed.deposit_used_pln == pytest.approx(74.31, abs=0.01)
+
+    def test_amount_due_is_corrected(self, parsed):
+        assert parsed.amount_due_pln == pytest.approx(77.38, abs=0.01)
+
+    def test_negative_correction_delta(self, parsed):
+        assert parsed.correction_delta_pln == pytest.approx(-6.25, abs=0.01)
+
+    def test_prev_deposit_previous_is_stale_value(self, parsed):
+        """The 'bylo' (old, POLICZONO) value for the UI diff display."""
+        assert parsed.prev_deposit_previous_pln == pytest.approx(68.06, abs=0.01)
+
+
 # ── Document type: NOTA OBCIAZENIOWA ─────────────────────────────────────────
 
 def _make_nota_text() -> str:
