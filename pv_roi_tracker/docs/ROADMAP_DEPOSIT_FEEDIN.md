@@ -57,6 +57,79 @@ prognozie, user potwierdza brak zwrotów/umorzeń historycznie.
 
 **Checkpoint: czeka na „go" na krok 1 (weryfikacja scrapera vs niezależne źródło RCEm).**
 
+## Aktualizacja tego samego dnia (28.09.2026) — krok 1 wykonany, ZUPEŁNIE INNA przyczyna znaleziona
+
+Krok 1 z rekomendacji wyżej wykonany: pobrano na żywo `https://www.pse.pl/oire/rcem-rynkowa-miesieczna-cena-energii-elektrycznej`
+tym samym parserem co `rcem_scraper._scrape_all_months_full()`. **`rcem_scraper` jest w 100%
+poprawny** — RCEm marzec/kwiecień/maj/czerwiec 2025 (182,96 / 163,19 / 216,97 / 136,30 PLN/MWh,
+×1,23/1000) dają dokładnie te same ceny co w cache add-onu (0,219973 / 0,200724 / 0,266873 /
+0,167649 zł/kWh — zgodność co do 6. miejsca po przecinku). **Pierwotna rekomendacja Etapu 2 (punkt
+1–2) jest więc zamknięta jako NO-GO — problem nie jest w scraperze.**
+
+Dalsze śledztwo (odtwarzanie `tauron_implied` wstecz z dat publikacji RCEm na pse.pl i dat
+wystawienia faktur) doprowadziło do **faktur korygujących**: 24 z 39 faktur mają korektę
+(`.corrections[]`), w tym cała seria `T/K1/BN567872/0001/25`…`/0016/25` + `/0003/26`…`/0005/26`,
+wysłana masowo z datą **01.01.2026** z listem przewodnim: *„Korekty obejmują: aktualizację wartości
+depozytu w oparciu o rynkowe ceny energii elektrycznej (RCE), powiększenie wartości depozytu
+wypracowanego od 1.01.2025 r. o współczynnik 1,23”* — czyli Tauron sam przyznaje się do błędu w
+naliczaniu depozytu w 2025 r. i koryguje go retroaktywnie.
+
+**Znaleziony konkretny, potwierdzony błąd w `invoice_parser.py`:** każda korekta PDF ma DWIE sekcje
+— „POLICZONO:” (stara, błędna wartość) i „NALEŻAŁO POLICZYĆ:” (nowa, poprawna). Kod (linie
+648–664) **już ma zamysł** wycinania tekstu od markera „NALEŻAŁO POLICZY” w dół, żeby złapać tylko
+poprawną sekcję — ale **nie działa**, bo `pypdf`'s `extract_text()` (bez trybu layout) dla tego
+konkretnego, dwukolumnowego/nakładającego się szablonu PDF **zwraca tekst w innej kolejności niż
+wizualna**: fragment sekcji „POLICZONO” (stara wartość) pojawia się w strumieniu tekstu ZARAZ PO
+markerze „NALEŻAŁO POLICZYĆ:”, przed prawdziwą nową wartością. Zweryfikowane bezpośrednio w Pythonie
+na `kor_04.pdf` (korekta kwietnia): regex po scope'owaniu do `_deposit_text` mimo to trafia
+najpierw na `68,06` (offset 2034 — stara, POLICZONO) i dopiero potem na `74,31` (offset 2736 —
+nowa, NALEŻAŁO POLICZYĆ). `pdftotext -layout` (narzędzie zachowujące układ wizualny) pokazuje
+poprawną kolejność bez tego problemu — więc naprawa to **przejście na ekstrakcję z zachowaniem
+layoutu** (albo `pdftotext -layout` jako subprocess, albo biblioteka z trybem layout, np.
+`pypdf` z `extraction_mode="layout"` — dostępne w nowszych wersjach — do przetestowania) **tylko
+dla ścieżki korekt**, lub dodatkowe zawężenie regexu do NAJDALSZEGO/OSTATNIEGO dopasowania w
+tekście zamiast pierwszego (proste obejście, mniej pewne przy różnych szablonach).
+
+**Skala:** potwierdzono na żywo dla kwietnia 2025 (`deposit_previous` błędnie 68,06 zamiast 74,31,
++6,25 zł), ale maj i czerwiec 2025 sprawdzone tą samą metodą pokazują **brak zmiany** między
+POLICZONO i NALEŻAŁO POLICZYĆ (34,31=34,31, 18,14=18,14, `correction_delta_pln: 0.0`) — więc
+**błąd parsera NIE tłumaczy całości** rozbieżności (zwłaszcza maja, +435%, gdzie i stara, i nowa
+wartość Taurona to prawdziwe 18,14 zł, potwierdzone samą korektą). Skala błędu parsera na pozostałych
+22 niezweryfikowanych korektach (2024-07…2025-01, 2025-07…2025-10, 2025-11…2026-01) nieznana —
+część mogła się realnie zmienić jak kwiecień, część nie jak maj/czerwiec. Do sprawdzenia per-faktura
+w Etapie 2.
+
+**Wciąż otwarte po tym odkryciu:** dlaczego prawdziwe zasilenie maja/czerwca 2025 (18,14 zł /
+364 kWh = 0,050 zł/kWh; 31,68 zł / 435 kWh = 0,073 zł/kWh) jest kilkukrotnie niższe niż oficjalna,
+zweryfikowana RCEm (0,267 / 0,168 zł/kWh) — **nawet po korekcie Taurona się nie zmieniło**, więc to
+nie ten sam mechanizm co błąd parsera. Możliwe wyjaśnienia do zbadania: (a) inny/wcześniejszy etap
+korekty RCEm obowiązujący w momencie ORYGINALNEGO wystawienia (przed 01.01.2026 batch), którego już
+nie widać na dzisiejszej stronie PSE; (b) jeszcze inna zasada naliczania dla tych 2 miesięcy,
+nieudokumentowana na fakturze; (c) błąd po stronie Taurona nienaprawiony tym konkretnym batchem
+korekt (skoro list przewodni mówi tylko o RCE-update + ×1,23, a nie o czymś trzecim). Nie zbadane
+w tej sesji — wymaga albo kontaktu z Tauronem, albo dalszego śledztwa archiwalnych wartości RCEm
+sprzed korekt.
+
+**Rewizja rekomendacji na Etap 2 (zastępuje poprzednią z tego samego pliku wyżej):**
+1. **Priorytet — napraw parser dla ścieżki korekt** (`invoice_parser.py` `_is_korekta` branch):
+   przejść na ekstrakcję zachowującą layout wizualny (do zweryfikowania które podejście, patrz
+   wyżej) zamiast prostego `page.extract_text()`. Test na `kor_04.pdf` (musi dać 74,31, nie 68,06)
+   + regresja na już-poprawnie-sparsowanych korektach (maj/czerwiec — musi zostać 34,31/18,14 bez
+   zmian) + na zwykłych (nie-korekta) fakturach (bez regresji).
+2. Re-parse wszystkich 24 faktur z korektą (`/api/invoice/reparse` — **jawna zgoda usera przed
+   wywołaniem**, bo przelicza też rekonsyliację; restart + weryfikacja po partii, wg lekcji z
+   incydentu 2026-03).
+3. Po re-parse: sprawdzić `deposit.reconciliation` na żywo — ile z 3 odstających miesięcy
+   (2025-04/05/06) się poprawia. Jeśli maj/czerwiec zostają odstające (spodziewane, patrz wyżej) —
+   udokumentować jako osobny, nierozwiązany temat z etykietą w UI, nie blokować wydania.
+4. Testy w `tests/test_invoice_parser.py`: fixture korekty z dwiema sekcjami POLICZONO/NALEŻAŁO
+   POLICZYĆ o różnych wartościach (regresja na dokładnie ten błąd), fixture bez zmiany wartości.
+5. CHANGELOG/README, wydanie 0.43.0 wg `feedback_pv_roi_release_checklist`.
+
+**Checkpoint: czeka na „go" na naprawę parsera (krok 1 rewizji).** Pytanie otwarte (maj/czerwiec
+2025 wciąż niewyjaśnione mimo korekty Taurona) zostaje jako osobny temat do decyzji po naprawie
+parsera — czy dochodzić dalej, czy zostawić z etykietą niepewności.
+
 ## Context
 
 Podprojekty YoY (0.38.0), Pompa ciepła (0.41.0) i Dług depozytowy (0.42.0) są zamknięte.
