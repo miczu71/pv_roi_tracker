@@ -495,6 +495,9 @@ def api_data():
         'degradation': _build_degradation(records, today),
         'yoy': _state.get('yoy'),
         'heatpump': _state.get('heatpump'),
+        # Odróżnia "funkcja wyłączona" (brak encji w opcjach) od "jeszcze
+        # trwa pierwszy przebieg" — oba dają heatpump=None w payloadzie.
+        'heatpump_enabled': bool(__import__('os').environ.get('HEATPUMP_ENERGY_ENTITY')),
         'version': __version__,
     })
 

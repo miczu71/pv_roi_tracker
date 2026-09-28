@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.40.0] — 2026-09-28
+
+Zakładka **🔥 Pompa ciepła** (Etap 2 — UI dla danych z 0.39.0/0.39.1).
+
+- Kafle KPI sezonu w toku: koszt got./ekon., pokrycie PV+bateria %,
+  podział grzanie/CWU, stopniodnie (HDD) i zł got./HDD.
+- Wykres miesięczny: kWh pompy wg źródła (PV / bateria / sieć szczyt /
+  sieć dolina, słupki skumulowane) + linia kosztu gotówkowego.
+- Tabela **„Porównanie sezonów — do tej samej daty"** — uczciwe zestawienie
+  wszystkich sezonów (łącznie z sezonem w toku) na ten sam dzień kalendarzowy,
+  niezależnie od tego, jak mroźna była zima.
+- Zwijana tabela **„Sezony zamknięte — pełne podsumowanie"** (tylko
+  zakończone sezony).
+- Zwijana tabela miesięczna ze wszystkimi źródłami/kosztami i flagą godzin-
+  anomalii (⚠, licznik pompy poza torem pomiarowym licznika domu).
+- Baner „jeszcze trwa pierwszy przebieg" vs „funkcja wyłączona" —
+  rozróżnione nowym polem `heatpump_enabled` w `/api/data`.
+
+Zero zmian w logice backendu — tylko UI nad istniejącym blokiem `heatpump`.
+Playwright: screenshot desktop+mobile, konsola bez błędów.
+
 ## [0.39.1] — 2026-09-28
 
 Ukryty ułomny sezon grzewczy, który powstawał na styku "sezon już zamknięty"

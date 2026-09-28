@@ -270,7 +270,7 @@ Od v0.38.0: kafel "Rok do roku" na stronie głównej (zastępuje wykres „Wachl
 spłaty" w tym miejscu — wachlarz przeniesiony do zakładki **Wykresy**), z
 przełącznikiem metody wyceny eksportu i wykresem wyścigu narastająco.
 
-## Pompa ciepła × PV — prawdziwy koszt grzania (od v0.39.0, dane; UI w przygotowaniu)
+## Pompa ciepła × PV — prawdziwy koszt grzania (od v0.39.0; UI od v0.40.0)
 
 `/api/data`'s `heatpump` key (`null` dopóki `heatpump_energy_entity` puste lub
 jeszcze nic nie pobrano): godzinowa atrybucja zużycia pompy do PV / baterii /

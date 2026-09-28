@@ -5,6 +5,7 @@ let _rceCmpChart = null;
 let _fanChart = null, _waterfallChart = null, _sankeyChart = null, _cpiRealChart = null, _degradChart = null;
 let _billChart = null, _co2Chart = null, _rateTrendChart = null;
 let _batMonthlyChart = null, _batCumChart = null, _batCfgLoaded = false;
+let _hpMonthlyChart = null;
 let _forecastChart = null;
 let _lastRecords = [], _lastInvoices = [], _lastRceMonths = [], _lastRateTrend = null, _lastSummary = null;
 let _yoyChart = null, _yoyMethod = 'estimate', _lastYoy = null;
@@ -45,7 +46,7 @@ document.addEventListener('click', function(e) {
 
 /* -- Tab switching -- */
 function showTab(name) {
-  const TABS = ['hist','pred','years','charts','invoices','tariff','taryfa','rce','battery','forecast'];
+  const TABS = ['hist','pred','years','charts','invoices','tariff','taryfa','rce','battery','heatpump','forecast'];
   TABS.forEach(t => {
     document.getElementById('tab-' + t).style.display = (t === name) ? '' : 'none';
   });
@@ -54,6 +55,7 @@ function showTab(name) {
   );
   if (name === 'rce' && _rceCmpChart) _rceCmpChart.resize();
   if (name === 'battery') [_batMonthlyChart, _batCumChart].forEach(c => c && c.resize());
+  if (name === 'heatpump' && _hpMonthlyChart) _hpMonthlyChart.resize();
   if (name === 'charts') {
     [_fanChart, _rcemChart, _autarkiaChart, _prodChart, _arbitrageChart, _netCostChart,
      _priceSpreadChart, _yieldChart, _energyBalChart, _yearCompChart, _prodRankChart,
@@ -1873,6 +1875,133 @@ async function submitOverride() {
 
 /* -- Main data load -- */
 /* -- Magazyn +5 kWh tab -- */
+function renderHeatpumpTab(hp, enabled) {
+  const waiting = document.getElementById('hpWaiting');
+  const disabled = document.getElementById('hpDisabled');
+  const content = document.getElementById('hpContent');
+  if (!hp) {
+    waiting.style.display = enabled ? '' : 'none';
+    disabled.style.display = enabled ? 'none' : '';
+    content.style.display = 'none';
+    return;
+  }
+  waiting.style.display = 'none';
+  disabled.style.display = 'none';
+  content.style.display = '';
+
+  const cur = hp.current_season_to_date;
+  const cards = [];
+  if (cur) {
+    cards.push({ lbl: 'Sezon w toku — koszt got.', val: pln(cur.cash_pln, 0),
+      sub: 'ekon. ' + pln(cur.econ_pln, 0), cls: 'c-blue' });
+    cards.push({ lbl: 'Pokrycie PV+bateria', val: cur.pv_battery_coverage_pct != null ? pct(cur.pv_battery_coverage_pct) : '—',
+      sub: kwh(cur.kwh_total) + ' łącznie', cls: 'c-green' });
+    cards.push({ lbl: 'Grzanie / CWU', val: kwh(cur.kwh_heating), sub: 'CWU ' + kwh(cur.kwh_dhw) });
+    if (cur.hdd != null) {
+      cards.push({ lbl: 'Stopniodni (HDD)', val: fmt(cur.hdd, 0),
+        sub: cur.cash_pln_per_hdd != null ? fmt(cur.cash_pln_per_hdd, 2, 'zl/HDD') : '' });
+    }
+  }
+  if (hp.anomaly_hours_total) {
+    const pctAnom = hp.hours_total ? (hp.anomaly_hours_total / hp.hours_total * 100) : 0;
+    cards.push({ lbl: 'Godziny-anomalie', val: fmt(hp.anomaly_hours_total, 0),
+      sub: fmt(pctAnom, 1) + '% godzin — licznik pompy poza torem licznika domu' });
+  }
+  document.getElementById('hpKpiCards').innerHTML = cards.map(c =>
+    '<div class="card ' + (c.cls || '') + '">' +
+      '<div class="lbl">' + c.lbl + '</div>' +
+      '<div class="val">' + c.val + '</div>' +
+      (c.sub ? '<div class="sub">' + c.sub + '</div>' : '') +
+    '</div>'
+  ).join('');
+
+  const months = hp.months || [];
+  const labels = months.map(m => m.ym);
+  if (_hpMonthlyChart) _hpMonthlyChart.destroy();
+  _hpMonthlyChart = new Chart(document.getElementById('hpMonthlyChart'), {
+    type: 'bar',
+    data: { labels, datasets: [
+      { label: 'PV', data: months.map(m => m.kwh_pv), backgroundColor: 'rgba(234,179,8,0.85)', stack: 'k' },
+      { label: 'Bateria', data: months.map(m => m.kwh_batt), backgroundColor: 'rgba(22,163,74,0.80)', stack: 'k' },
+      { label: 'Sieć — szczyt', data: months.map(m => m.kwh_grid_peak), backgroundColor: 'rgba(220,38,38,0.75)', stack: 'k' },
+      { label: 'Sieć — dolina', data: months.map(m => m.kwh_grid_offpeak), backgroundColor: 'rgba(220,38,38,0.35)', stack: 'k' },
+      { label: 'Koszt got. (zł)', data: months.map(m => m.cash_pln), type: 'line', yAxisID: 'y1',
+        borderColor: '#1f2937', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 2 },
+    ]},
+    options: { responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { position: 'top', labels: { boxWidth: 12, font: { size: 11 } } } },
+      scales: {
+        x: { stacked: true, ticks: { font: { size: 10 } } },
+        y: { stacked: true, title: { display: true, text: 'kWh' } },
+        y1: { position: 'right', grid: { drawOnChartArea: false }, title: { display: true, text: 'zł' } },
+      } },
+  });
+
+  const seasons = hp.seasons || [];
+  let htmlTd = '<thead><tr><th>Sezon</th><th>Do dnia</th><th>HDD</th><th>Grzanie kWh</th><th>CWU kWh</th>' +
+    '<th>Razem kWh</th><th>Pokrycie PV+bat %</th><th>zł got.</th><th>zł ekon.</th>' +
+    '<th>zł got./HDD</th><th>zł ekon./HDD</th></tr></thead><tbody>';
+  seasons.forEach(s => {
+    const t = s.to_date;
+    htmlTd += '<tr' + (s.is_current ? ' class="cur"' : '') + '><td>' + s.label + (s.is_current ? ' (w toku)' : '') + '</td>' +
+      '<td>' + s.cutoff_date + '</td>' +
+      '<td>' + (t.hdd != null ? fmt(t.hdd, 0) : '—') + '</td>' +
+      '<td>' + kwh(t.kwh_heating) + '</td>' +
+      '<td>' + kwh(t.kwh_dhw) + '</td>' +
+      '<td><b>' + kwh(t.kwh_total) + '</b></td>' +
+      '<td>' + (t.pv_battery_coverage_pct != null ? pct(t.pv_battery_coverage_pct) : '—') + '</td>' +
+      '<td>' + pln(t.cash_pln, 0) + '</td>' +
+      '<td>' + pln(t.econ_pln, 0) + '</td>' +
+      '<td>' + (t.cash_pln_per_hdd != null ? fmt(t.cash_pln_per_hdd, 2) : '—') + '</td>' +
+      '<td>' + (t.econ_pln_per_hdd != null ? fmt(t.econ_pln_per_hdd, 2) : '—') + '</td></tr>';
+  });
+  document.getElementById('hpSeasonToDateTbl').innerHTML = htmlTd + '</tbody>';
+
+  const closed = seasons.filter(s => s.full);
+  let htmlFull = '<thead><tr><th>Sezon</th><th>HDD</th><th>Grzanie kWh</th><th>CWU kWh</th><th>Inne kWh</th>' +
+    '<th>Razem kWh</th><th>Pokrycie PV+bat %</th><th>zł got.</th><th>zł ekon.</th>' +
+    '<th>zł got./HDD</th><th>zł ekon./HDD</th></tr></thead><tbody>';
+  closed.forEach(s => {
+    const f = s.full;
+    htmlFull += '<tr><td>' + s.label + '</td>' +
+      '<td>' + (f.hdd != null ? fmt(f.hdd, 0) : '—') + '</td>' +
+      '<td>' + kwh(f.kwh_heating) + '</td>' +
+      '<td>' + kwh(f.kwh_dhw) + '</td>' +
+      '<td>' + kwh(f.kwh_other) + '</td>' +
+      '<td><b>' + kwh(f.kwh_total) + '</b></td>' +
+      '<td>' + (f.pv_battery_coverage_pct != null ? pct(f.pv_battery_coverage_pct) : '—') + '</td>' +
+      '<td>' + pln(f.cash_pln, 0) + '</td>' +
+      '<td>' + pln(f.econ_pln, 0) + '</td>' +
+      '<td>' + (f.cash_pln_per_hdd != null ? fmt(f.cash_pln_per_hdd, 2) : '—') + '</td>' +
+      '<td>' + (f.econ_pln_per_hdd != null ? fmt(f.econ_pln_per_hdd, 2) : '—') + '</td></tr>';
+  });
+  document.getElementById('hpSeasonFullTbl').innerHTML = htmlFull + '</tbody>';
+
+  let htmlM = '<thead><tr><th>Miesiąc</th><th>Grzanie</th><th>CWU</th><th>Inne</th><th>Razem kWh</th>' +
+    '<th>PV</th><th>Bateria</th><th>Sieć szczyt</th><th>Sieć dolina</th>' +
+    '<th>zł got.</th><th>zł ekon.</th><th>Pokrycie %</th><th>HDD</th></tr></thead><tbody>';
+  for (let i = months.length - 1; i >= 0; i--) {
+    const m = months[i];
+    htmlM += '<tr><td>' + m.ym + (m.anomaly_hours ? ' <span class="proj-hint" title="' + m.anomaly_hours + ' godz. z anomalią licznika">&#9888;</span>' : '') + '</td>' +
+      '<td>' + kwh(m.kwh_heating) + '</td>' +
+      '<td>' + kwh(m.kwh_dhw) + '</td>' +
+      '<td>' + kwh(m.kwh_other) + '</td>' +
+      '<td><b>' + kwh(m.kwh_total) + '</b></td>' +
+      '<td>' + kwh(m.kwh_pv) + '</td>' +
+      '<td>' + kwh(m.kwh_batt) + '</td>' +
+      '<td>' + kwh(m.kwh_grid_peak) + '</td>' +
+      '<td>' + kwh(m.kwh_grid_offpeak) + '</td>' +
+      '<td>' + pln(m.cash_pln, 2) + '</td>' +
+      '<td>' + pln(m.econ_pln, 2) + '</td>' +
+      '<td>' + (m.pv_battery_coverage_pct != null ? pct(m.pv_battery_coverage_pct) : '—') + '</td>' +
+      '<td>' + (m.hdd != null ? fmt(m.hdd, 0) : '—') + '</td></tr>';
+  }
+  document.getElementById('hpMonthlyTbl').innerHTML = htmlM + '</tbody>';
+  document.getElementById('hpFoot').textContent =
+    'Koszt gotowkowy: PV/bateria = 0 zl, placi sie tylko za kWh z sieci. Koszt ekonomiczny: PV/bateria wyceniane po RCEm miesiaca (utracona sprzedaz). ' +
+    '⚠ = godziny, w ktorych zuzycie pompy przewyzszylo policzone zuzycie domu (inny tor pomiarowy) — nadwyzka doliczona do sieci.';
+}
+
 function renderBatteryTab(bs) {
   const waiting = document.getElementById('batWaiting');
   const content = document.getElementById('batContent');
@@ -2086,6 +2215,7 @@ async function loadData() {
     if (d.tariff_comparison) renderTariffTab(d.tariff_comparison);
     if (d.rce_comparison) renderRceTab(d.rce_comparison);
     renderBatteryTab(d.battery_sim);
+    renderHeatpumpTab(d.heatpump, !!d.heatpump_enabled);
     renderForecastTab(d.lifetime_forecast, d.summary);
     // v0.17.0
     _lastRecords = d.records || [];

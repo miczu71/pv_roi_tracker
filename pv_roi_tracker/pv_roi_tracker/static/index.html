@@ -51,6 +51,7 @@
       <button class="tab-btn"        onclick="showTab('taryfa')">&#128209; Taryfa</button>
       <button class="tab-btn"        onclick="showTab('rce')">&#9889; RCE vs RCEm</button>
       <button class="tab-btn"        onclick="showTab('battery')">&#128267; Magazyn +5 kWh</button>
+      <button class="tab-btn"        onclick="showTab('heatpump')">&#128293; Pompa ciepła</button>
       <button class="tab-btn"        onclick="showTab('forecast')">&#128200; Prognoza 25 lat</button>
     </div>
     <div class="tab-panel">
@@ -423,6 +424,40 @@
               <span id="batMsg"></span>
             </div>
           </div>
+        </div>
+      </div>
+      <!-- Pompa ciepła tab -->
+      <div id="tab-heatpump" style="display:none;padding:12px">
+        <div id="hpWaiting" style="margin-bottom:12px;padding:10px 14px;background:#fff3cd;border-left:4px solid #f0ad4e;border-radius:4px;font-size:13px">
+          &#8987; Bilans pompy ciepła jeszcze trwa — pierwszy przebieg po starcie/aktualizacji add-onu dociąga kilka lat godzinowych statystyk (może potrwać kilka minut). Odśwież za chwilę.
+        </div>
+        <div id="hpDisabled" style="display:none;margin-bottom:12px;padding:10px 14px;background:var(--bg);border:1px solid var(--border);border-radius:4px;font-size:13px">
+          Funkcja wyłączona — ustaw <code>heatpump_energy_entity</code> w opcjach add-onu.
+        </div>
+        <div id="hpContent" style="display:none">
+          <div class="docs-body" style="margin-bottom:14px"><div class="intro-box">
+            <b>Ile naprawdę kosztuje grzanie i CWU?</b> Godzinowa atrybucja zużycia pompy do PV /
+            baterii / sieci — pompa dostaje taki sam miks źródeł co cały dom w danej godzinie.
+            Koszt w dwóch wersjach: <b>gotówkowy</b> (PV = 0 zł, płacisz tylko sieć) i
+            <b>ekonomiczny</b> (PV/bateria wycenione po RCEm miesiąca — utracona sprzedaż). Bez
+            licznika ciepła — porównanie sezonów przez stopniodnie (HDD), nie przez uzysk cieplny.
+          </div></div>
+          <div id="hpKpiCards" class="cards" style="margin-bottom:14px"></div>
+          <div class="chart-wrap" style="height:300px;margin-bottom:14px">
+            <h3>Miesięczne kWh pompy wg źródła + koszt</h3>
+            <canvas id="hpMonthlyChart"></canvas>
+          </div>
+          <h3 style="margin:0 0 8px;font-size:13px;font-weight:600">Porównanie sezonów — do tej samej daty (niezależnie od pogody)</h3>
+          <div class="tbl-wrap" style="margin-bottom:14px"><table id="hpSeasonToDateTbl"></table></div>
+          <details style="margin-bottom:14px">
+            <summary style="cursor:pointer;font-weight:600;font-size:13px;padding:6px 0">&#128203; Sezony zamknięte — pełne podsumowanie</summary>
+            <div class="tbl-wrap" style="margin-top:8px"><table id="hpSeasonFullTbl"></table></div>
+          </details>
+          <details style="margin-bottom:14px">
+            <summary style="cursor:pointer;font-weight:600;font-size:13px;padding:6px 0">&#128203; Bilans miesiąc po miesiącu</summary>
+            <div class="tbl-wrap" style="margin-top:8px"><table id="hpMonthlyTbl"></table></div>
+            <div class="tbl-foot" id="hpFoot"></div>
+          </details>
         </div>
       </div>
       <!-- Prognoza 25 lat tab -->
