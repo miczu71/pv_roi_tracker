@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.40.1] — 2026-09-28
+
+Fix: wykres miesięczny w zakładce „Pompa ciepła" (kWh wg źródła + linia
+kosztu) czasem renderował się jako pusty canvas mimo poprawnych danych —
+złapane w samoweryfikacji Playwright tego samego wydania (zniknął po
+odczekaniu na animację, więc timing, nie logika). Fix: `animation: false`
+(wykres nie musi się dorysowywać przy każdym przełączeniu zakładki — pojawia
+się od razu) + jawny `type: 'linear'` na drugiej osi (zł), zamiast liczyć na
+domyślne wnioskowanie typu przy mieszanym wykresie słupki+linia.
+
 ## [0.40.0] — 2026-09-28
 
 Zakładka **🔥 Pompa ciepła** (Etap 2 — UI dla danych z 0.39.0/0.39.1).

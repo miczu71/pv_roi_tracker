@@ -1928,12 +1928,12 @@ function renderHeatpumpTab(hp, enabled) {
       { label: 'Koszt got. (zł)', data: months.map(m => m.cash_pln), type: 'line', yAxisID: 'y1',
         borderColor: '#1f2937', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 2 },
     ]},
-    options: { responsive: true, maintainAspectRatio: false,
+    options: { responsive: true, maintainAspectRatio: false, animation: false,
       plugins: { legend: { position: 'top', labels: { boxWidth: 12, font: { size: 11 } } } },
       scales: {
         x: { stacked: true, ticks: { font: { size: 10 } } },
         y: { stacked: true, title: { display: true, text: 'kWh' } },
-        y1: { position: 'right', grid: { drawOnChartArea: false }, title: { display: true, text: 'zł' } },
+        y1: { type: 'linear', position: 'right', grid: { drawOnChartArea: false }, title: { display: true, text: 'zł' } },
       } },
   });
 
