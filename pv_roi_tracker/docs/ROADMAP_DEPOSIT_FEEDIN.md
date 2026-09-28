@@ -192,6 +192,42 @@ CHANGELOG/README zaktualizowane, wersja podbita do **0.43.0** (`config.yaml` + `
 Dalej: wydanie GitHub, aktualizacja Supervisora, reparse 24 faktur z korektą, weryfikacja
 rekonsyliacji na żywo, Playwright.
 
+## Wynik końcowy (28.09.2026) — 0.43.0 wydane, live, zweryfikowane
+
+Release opublikowany (`gh release create v0.43.0`), Supervisor zaktualizował add-on
+(`update.pv_roi_tracker_update` 0.42.0→0.43.0), health `ok`. Wszystkie **23 faktury korygujące**
+re-sparsowane (`/api/invoice/reparse`, 3 partie w tle, ~2 min/partię — `_invoice_reconcile_callback`
+odświeża dane po każdym wywołaniu; jedna niepowiązana pre-istniejąca walidacja „średnia cena poza
+zakresem" na 2 fakturach z 2024-07/08, niezmieniona tym fixem, do zbadania osobno jeśli będzie
+przeszkadzać). 2026-03 (`nota`) pominięta zgodnie z planem — noty nie mają sekcji POLICZONO/NALEŻAŁO
+POLICZYĆ.
+
+**Efekt na żywych danych:**
+- `deposit.reconciliation.totals`: **diff_pct -3,3%** (model 371,08 zł vs Tauron 383,60 zł) — wcześniej
+  pojedyncze miesiące (kwiecień–czerwiec 2025) sięgały +84% do +435%.
+- Kwiecień/maj/czerwiec 2025 poprawnie przeszły ze statusu `ok` (z fałszywie precyzyjnym, błędnym
+  `diff_pct`) na `capped` — **wykluczone z rekonsyliacji jako niepewne**, zgodnie z ustaleniem z
+  Części B: korekta Taurona faktycznie nie naprawiła tych miesięcy, więc pokazywanie ich jako
+  „zweryfikowane" byłoby fałszywą precyzją. To poprawny, uczciwy wynik, nie regresja.
+- `verified_months/total_months`: **16/39** (spadek z 21/39 w 0.42.0) — spadek jest **oczekiwany i
+  poprawny**: 0.42.0 fałszywie liczyło część miesięcy jako „zweryfikowane" na podstawie źle
+  odczytanych korekt; teraz liczba jest mniejsza, ale prawdziwa.
+- `balance_model`: **436,63 zł** (z 474,72 zł) — headline się zmienił, opisane w CHANGELOG/README.
+- Pozostały widoczny temat: styczeń 2025 nadal -27,7% (Tauron 35,83 vs model 25,92) — mniejszy niż
+  poprzednio, ale nie zbadany w tej sesji (poza zakresem kwiecień–czerwiec); kandydat do osobnego,
+  krótkiego sprawdzenia w przyszłości, nieblokujący.
+
+**Playwright** (direct-IP `172.30.33.15:8099`, desktop 1400×900 + mobile 390×844, zakładka Faktury):
+oba renderują się poprawnie, karty depozytu spójne, konsola bez nowych błędów (tylko nieszkodliwy
+404 favicon.ico). Zrzuty: `playwright/deposit_faktury_desktop_0_43_0.jpg`,
+`playwright/deposit_faktury_mobile_0_43_0.jpg`.
+
+**Podprojekt „Depozyt: zasilenie 2025-04/06 + B8" zamknięty.** B8 zamknięty bez kodu (Część B
+pierwotna), diff_pct zbadany i naprawiony w dostępnym zakresie (Część A — realny błąd parsera),
+maj/czerwiec 2025 zdiagnozowane jako osobny, nie do naprawienia kodem problem po stronie Taurona
+(rekomendacja: kontakt z infolinią, patrz wyżej) — nie blokuje wydania, poprawnie oznaczone `capped`
+w UI.
+
 ## Context
 
 Podprojekty YoY (0.38.0), Pompa ciepła (0.41.0) i Dług depozytowy (0.42.0) są zamknięte.
