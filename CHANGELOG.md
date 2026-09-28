@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.41.0] — 2026-09-28
+
+Etap 3 (ostatni) — linia o pompie ciepła w pushu miesięcznym (`notify.family`,
+opcja `monthly_notify`). Wzór: „Pompa ciepła: X kWh (grzanie Y / CWU Z),
+z sieci Q zł (ekon. W zł), PV+bateria pokryły P%.". Przed wysłaniem świeży
+`heatpump_job(fetch_lts=True)`, żeby linia opisywała właśnie zamknięty
+miesiąc, nie wczorajszy cache; brak danych (funkcja wyłączona lub błąd
+obliczenia) → linia po prostu pominięta, reszta podsumowania bez zmian.
+Nowa czysta funkcja `_format_heatpump_push_line()` (main.py), 3 nowe testy
+(571 razem). Zamyka podprojekt „Pompa ciepła × PV" (Etapy 1–3,
+`pv_roi_tracker/docs/ROADMAP_HEATPUMP.md`).
+
 ## [0.40.1] — 2026-09-28
 
 Fix: wykres miesięczny w zakładce „Pompa ciepła" (kWh wg źródła + linia

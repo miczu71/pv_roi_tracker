@@ -174,6 +174,19 @@ def _heal_action(reason: Optional[tuple[str, str]], reconciled: bool) -> str:
     return 'heal'
 
 
+def _format_heatpump_push_line(hp_month: dict) -> str:
+    """Jedna linia o pompie ciepła do pushu miesięcznego (Etap 3, docs/
+    ROADMAP_HEATPUMP.md) z jednego wiersza `heatpump.aggregate_months()`.
+    Pure formatting — split out so it's testable without booting main()."""
+    cov = hp_month.get('pv_battery_coverage_pct')
+    return (
+        f"Pompa ciepła: {hp_month['kwh_total']:.0f} kWh "
+        f"(grzanie {hp_month['kwh_heating']:.0f} / CWU {hp_month['kwh_dhw']:.0f}), "
+        f"z sieci {hp_month['cash_pln']:.0f} zł (ekon. {hp_month['econ_pln']:.0f} zł)"
+        + (f", PV+bateria pokryły {cov:.0f}%." if cov is not None else '.')
+    )
+
+
 def _notify_ha(title: str, message: str) -> None:
     import requests as _req
     token = os.environ.get('SUPERVISOR_TOKEN', '')
@@ -594,13 +607,15 @@ def main() -> None:
 
     _heatpump_lock = _threading.Lock()
 
-    def heatpump_job(fetch_lts: bool = True) -> None:
+    def heatpump_job(fetch_lts: bool = True) -> Optional[dict]:
         """Dociągnij godzinowy bilans pompy (w paczkach miesięcznych — LTS
         payload dla ~3+ lat na raz przeciążyłby WS), przelicz koszt got./ekon.,
-        odśwież UI. Nieaktywne, gdy HEATPUMP_ENERGY_ENTITY nie skonfigurowane."""
+        odśwież UI. Nieaktywne, gdy HEATPUMP_ENERGY_ENTITY nie skonfigurowane.
+        Zwraca policzony payload (albo None) — używane też przez push
+        miesięczny (`_monthly_summary_notification`) do świeżej linii."""
         if not HEATPUMP_ENERGY_ENTITY:
             _web.update_heatpump(None)
-            return
+            return None
         _heatpump_lock.acquire()
         try:
             from datetime import datetime as _dthp, timedelta as _tdhp, timezone as _tzhp
@@ -634,7 +649,7 @@ def main() -> None:
                     heatpump_store.save_hours(hours, HEATPUMP_HOURS_PATH)
             if not hours:
                 _record_job('heatpump', False, 'brak godzinowych danych pompy ciepła')
-                return
+                return None
 
             records = historic_store.load(HISTORIC_PATH)
             rcem_by_month = {f'{r.year}-{r.month:02d}': r.feedin_price_pln_kwh
@@ -681,9 +696,11 @@ def main() -> None:
             if payload:
                 logger.info('Heatpump: %d godz., %d anomalii, %d mies.',
                            payload['hours_total'], payload['anomaly_hours_total'], len(payload['months']))
+            return payload
         except Exception:
             logger.exception('Heatpump cost calculation failed')
             _record_job('heatpump', False, 'obliczenie kosztu pompy ciepła nie powiodło się')
+            return None
         finally:
             _heatpump_lock.release()
 
@@ -1075,8 +1092,20 @@ def main() -> None:
                 parts.append(f'do spłaty {result.remaining_to_recover:.0f} zł')
             if result.payback_date:
                 parts.append(f'przewidywana spłata {result.payback_date.isoformat()[:7]}')
+        message = ', '.join(p for p in parts if p) + '.'
+
+        hp_line = None
+        try:
+            hp_payload = heatpump_job(fetch_lts=True)
+            hp_ym = f'{today.year}-{today.month:02d}'
+            hp_month = next((m for m in (hp_payload or {}).get('months', []) if m['ym'] == hp_ym), None)
+            if hp_month:
+                hp_line = _format_heatpump_push_line(hp_month)
+        except Exception:
+            logger.exception('Heatpump line for monthly push failed — pomijam linię')
+
         _notify_ha(f'PV — podsumowanie {today.year}-{today.month:02d}',
-                   ', '.join(p for p in parts if p) + '.')
+                   message + ('\n' + hp_line if hp_line else ''))
 
     def month_close_job() -> None:
         try:

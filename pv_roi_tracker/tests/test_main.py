@@ -11,6 +11,7 @@ from datetime import date
 from pv_roi_tracker.main import (
     previous_month, month_present, month_has_data,
     _months_since_commissioning, _heal_month_if_needed, _heal_action,
+    _format_heatpump_push_line,
 )
 from pv_roi_tracker.models import MonthlyRecord
 
@@ -184,3 +185,29 @@ def test_heal_action_skips_balance_breach_when_reconciled():
     month with a balance breach must be skipped, not rebuilt."""
     reason = ('balance_breach', 'niespójny bilans')
     assert _heal_action(reason, reconciled=True) == 'skip_reconciled'
+
+
+# ── _format_heatpump_push_line (Etap 3: linia w pushu miesięcznym) ────────────
+
+def _hp_month(**overrides):
+    base = {'kwh_total': 151.6, 'kwh_heating': 70.7, 'kwh_dhw': 75.0,
+            'cash_pln': 56.23, 'econ_pln': 67.87, 'pv_battery_coverage_pct': 53.3}
+    base.update(overrides)
+    return base
+
+
+def test_format_heatpump_push_line_includes_all_parts():
+    line = _format_heatpump_push_line(_hp_month())
+    assert line == ('Pompa ciepła: 152 kWh (grzanie 71 / CWU 75), '
+                    'z sieci 56 zł (ekon. 68 zł), PV+bateria pokryły 53%.')
+
+
+def test_format_heatpump_push_line_handles_missing_coverage():
+    line = _format_heatpump_push_line(_hp_month(pv_battery_coverage_pct=None))
+    assert line.endswith('(ekon. 68 zł).')
+    assert 'pokryły' not in line
+
+
+def test_format_heatpump_push_line_rounds_to_whole_numbers():
+    line = _format_heatpump_push_line(_hp_month(kwh_total=0.4, kwh_heating=0.0, kwh_dhw=0.4))
+    assert 'Pompa ciepła: 0 kWh (grzanie 0 / CWU 0)' in line
