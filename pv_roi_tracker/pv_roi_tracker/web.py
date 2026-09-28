@@ -39,6 +39,7 @@ _layouts_path = None
 _tariff_config_path = None
 _ebok_sync_callback = None
 _ebok_status_callback = None
+_ebok_payment_status_callback = None
 
 
 def set_rcem_override_callback(fn) -> None:
@@ -97,6 +98,13 @@ def set_ebok_status_callback(fn) -> None:
     """fn() -> dict — last-sync/blocked-until state for the UI, without triggering a sync."""
     global _ebok_status_callback
     _ebok_status_callback = fn
+
+
+def set_ebok_payment_status_callback(fn) -> None:
+    """fn() -> dict — cached nearest-unpaid-invoice status for the top-of-page bar
+    (docs/ROADMAP_EBOK_PAYMENT_STATUS.md Etap 3). Never triggers a live eBOK call."""
+    global _ebok_payment_status_callback
+    _ebok_payment_status_callback = fn
 
 
 def set_layouts_path(path) -> None:
@@ -1047,6 +1055,13 @@ def ebok_status():
     if _ebok_status_callback is None:
         return jsonify({'configured': False})
     return jsonify(_ebok_status_callback())
+
+
+@app.route('/api/ebok/payment-status')
+def ebok_payment_status():
+    if _ebok_payment_status_callback is None:
+        return jsonify({'active': None})
+    return jsonify(_ebok_payment_status_callback())
 
 
 @app.route('/api/invoice/debug', methods=['POST'])

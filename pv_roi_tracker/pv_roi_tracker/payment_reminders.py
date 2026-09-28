@@ -60,6 +60,41 @@ def _reminder_message(doc, kind: str) -> str:
     return f'Faktura {doc.signature}: termin płatności dziś ({due}) lub już minął, nadal niezapłacona.'
 
 
+def snapshot_documents(docs) -> dict:
+    """Per-signature due_date/paid/amount snapshot for display (docs/ROADMAP_EBOK_PAYMENT_STATUS.md
+    Etap 3) — docs without a due_date (notes) are skipped, same as decide_reminders."""
+    return {
+        doc.signature: {
+            'due_date': doc.due_date.isoformat(),
+            'paid': doc.paid,
+            'amount_gross_pln': doc.amount_gross_pln,
+        }
+        for doc in docs if doc.due_date is not None
+    }
+
+
+def select_active_payment(state: dict, today: date) -> Optional[dict]:
+    """Nearest unpaid invoice with a known due_date, for the status bar. None when
+    nothing needs attention (nothing unpaid, or state has no due_date snapshots yet)."""
+    candidates = []
+    for signature, entry in state.items():
+        if entry.get('paid') or not entry.get('due_date'):
+            continue
+        candidates.append((date.fromisoformat(entry['due_date']), signature, entry))
+    if not candidates:
+        return None
+    due, signature, entry = min(candidates, key=lambda c: c[0])
+    days_until_due = (due - today).days
+    urgency = 'alarm' if days_until_due <= 0 else ('warning' if days_until_due == 1 else 'neutral')
+    return {
+        'signature': signature,
+        'due_date': due.isoformat(),
+        'amount_gross_pln': entry.get('amount_gross_pln'),
+        'days_until_due': days_until_due,
+        'urgency': urgency,
+    }
+
+
 def load_payment_state(path: Path) -> dict:
     if not path.exists():
         return {}

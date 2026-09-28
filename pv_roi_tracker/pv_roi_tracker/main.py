@@ -694,6 +694,8 @@ def main() -> None:
 
             payment_state = _pr.load_payment_state(EBOK_PAYMENT_STATE_PATH)
             notifications, new_state = _pr.build_reminder_notifications(docs, payment_state, _date.today())
+            for signature, snap in _pr.snapshot_documents(docs).items():
+                new_state.setdefault(signature, {'reminded_before': False, 'reminded_due': False}).update(snap)
             _pr.save_payment_state(EBOK_PAYMENT_STATE_PATH, new_state)
 
             for note in notifications:
@@ -733,9 +735,18 @@ def main() -> None:
                 'blocked_until': state.get('blocked_until'),
                 'health': _job_health.get('ebok')}
 
+    def _ebok_payment_status() -> dict:
+        """Cached (job-refreshed) payment status for the status bar — never hits
+        eBOK live, just reads the last ebok_payment_check() snapshot."""
+        from . import payment_reminders as _pr
+        from datetime import date as _date
+        state = _pr.load_payment_state(EBOK_PAYMENT_STATE_PATH)
+        return {'active': _pr.select_active_payment(state, _date.today())}
+
     if EBOK_USERNAME and EBOK_PASSWORD:
         _web.set_ebok_sync_callback(ebok_sync)
     _web.set_ebok_status_callback(_ebok_status)
+    _web.set_ebok_payment_status_callback(_ebok_payment_status)
 
     from . import tariff_config as _tc
     _tc.seed_if_missing(TARIFF_CONFIG_PATH)

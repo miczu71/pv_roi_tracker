@@ -2241,6 +2241,7 @@ async function loadData() {
     renderCo2Chart(d.records, d.summary.co2_factor_kg_kwh || 0.597);
     renderRateTrendChart(d.rate_trend);
     if (d.version) document.getElementById('appVer').textContent = 'v' + d.version;
+    _refreshPaymentBar();
   } catch (e) {
     document.getElementById('updated').textContent = 'Blad polaczenia';
     console.error(e);
@@ -2311,6 +2312,28 @@ async function ebokSync() {
   } finally {
     btn.disabled = false;
   }
+}
+
+/* -- Pasek statusu platnosci (docs/ROADMAP_EBOK_PAYMENT_STATUS.md Etap 3) -- */
+async function _refreshPaymentBar() {
+  const bar = document.getElementById('paymentBar');
+  if (!bar) return;
+  try {
+    const r = await fetch('api/ebok/payment-status');
+    const d = await r.json();
+    const a = d.active;
+    if (!a) { bar.style.display = 'none'; return; }
+    const amount = a.amount_gross_pln != null ? a.amount_gross_pln.toFixed(2).replace('.', ',') + ' zl' : '';
+    const dueFmt = a.due_date.split('-').reverse().join('.');
+    let when;
+    if (a.days_until_due < 0) when = 'termin minal ' + (-a.days_until_due) + ' dni temu';
+    else if (a.days_until_due === 0) when = 'termin platnosci dzis';
+    else if (a.days_until_due === 1) when = 'termin platnosci jutro';
+    else when = 'termin platnosci ' + dueFmt;
+    bar.className = 'payment-bar ' + a.urgency;
+    bar.textContent = 'Faktura ' + a.signature + (amount ? ': ' + amount : '') + ' — ' + when + ' (' + dueFmt + '), nadal niezaplacona.';
+    bar.style.display = '';
+  } catch (e) { /* cicho — nieblokujące */ }
 }
 
 async function _refreshEbokStatus() {

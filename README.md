@@ -261,6 +261,7 @@ Add `https://github.com/miczu71/pv_roi_tracker` in **Settings → Add-ons → Ad
 | `/data/battery_config.json` | Parametry wirtualnego drugiego modułu magazynu (edycja w zakładce Magazyn) |
 | `/data/battery_sim.json` | Cache godzinowego eksportu/importu z LTS dla symulacji magazynu |
 | `/data/ebok_state.json` | Ostatnia synchronizacja eBOK + ewentualna blokada logowań (24h) — patrz niżej |
+| `/data/ebok_payment_state.json` | Per-fakturze: termin płatności, status zapłacona, kwota, flagi wysłanych przypomnień — patrz niżej |
 
 All files are backed up daily to `/share/pv_roi_tracker`.
 
@@ -328,6 +329,24 @@ Jak to działa:
 
 Szczegóły spike'a (potwierdzony flow logowania, format CSV/HTML, brak
 captchy/OTP) i plan etapów: [`pv_roi_tracker/docs/ROADMAP_EBOK_IMPORT.md`](pv_roi_tracker/docs/ROADMAP_EBOK_IMPORT.md).
+
+### Termin płatności i status „zapłacona" (od v0.45.0)
+
+Ten sam CSV eBOK zwraca też `TERMIN PŁATNOŚCI` i `ZAPŁACONA` dla każdego dokumentu —
+add-on to wykorzystuje do przypomnień, niezależnie od importu faktur:
+
+- **Codzienny job** (07:00, samo CSV — bez pobierania PDF-ów, więc tani) sprawdza
+  wszystkie niezapłacone dokumenty z terminem i wysyła `notify.kacper`:
+  **dzień przed terminem**, i ponownie **w dniu terminu**, jeśli nadal niezapłacona.
+  Każde przypomnienie wysyłane raz (stan w `/data/ebok_payment_state.json`), więc
+  restart lub powtórne uruchomienie joba tego samego dnia nie duplikuje pushy.
+- **Pasek statusu** na górze strony głównej (pod nagłówkiem) pokazuje najbliższą
+  niezapłaconą fakturę z terminem — ukryty, gdy nic nie wymaga uwagi. Kolor rośnie
+  z pilnością: neutralny (>1 dzień), żółty (jutro), czerwony (dziś lub po terminie).
+  Dane pochodzą z cache'u ostatniego joba (`GET /api/ebok/payment-status`) — strona
+  nigdy sama nie loguje się do eBOK.
+
+Plan etapów: [`pv_roi_tracker/docs/ROADMAP_EBOK_PAYMENT_STATUS.md`](pv_roi_tracker/docs/ROADMAP_EBOK_PAYMENT_STATUS.md).
 
 ## Architecture
 

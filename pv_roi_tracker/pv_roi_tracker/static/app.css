@@ -19,6 +19,11 @@ header h1 { font-size: 17px; font-weight: 700; flex: 1; }
            white-space: nowrap; }
 .csv-btn:hover { background: rgba(255,255,255,.12); }
 
+.payment-bar { font-size: 12.5px; font-weight: 600; padding: 8px 24px; text-align: center; }
+.payment-bar.neutral { background: #eef2f7; color: var(--text); }
+.payment-bar.warning { background: #fef3c7; color: var(--yellow); }
+.payment-bar.alarm   { background: #fee2e2; color: var(--red); }
+
 main { max-width: 1600px; margin: 0 auto; padding: 18px 16px; }
 .loading { text-align: center; padding: 60px 0; color: var(--muted); font-size: 15px; }
 

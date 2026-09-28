@@ -12,15 +12,18 @@ from pv_roi_tracker.payment_reminders import (
     decide_reminders,
     load_payment_state,
     save_payment_state,
+    select_active_payment,
+    snapshot_documents,
 )
 
 
 class _Doc:
     """Minimal stand-in for EbokDocument (only the attrs decide_reminders needs)."""
-    def __init__(self, signature, due_date, paid):
+    def __init__(self, signature, due_date, paid, amount_gross_pln=None):
         self.signature = signature
         self.due_date = due_date
         self.paid = paid
+        self.amount_gross_pln = amount_gross_pln
 
 
 def test_paid_invoice_gets_no_reminders():
@@ -144,3 +147,76 @@ def test_build_reminder_notifications_preserves_unrelated_existing_state_entries
     _, new_state = build_reminder_notifications(docs, state, date(2026, 10, 4))
     assert new_state['OTHER/SIG'] == {'reminded_before': True, 'reminded_due': True}
     assert new_state['SIG/1'] == {'reminded_before': True, 'reminded_due': False}
+
+
+# ── snapshot_documents() ────────────────────────────────────────────────────
+
+def test_snapshot_documents_includes_docs_with_due_date():
+    docs = [_Doc('SIG/1', date(2026, 10, 5), paid=False, amount_gross_pln=63.3)]
+    snap = snapshot_documents(docs)
+    assert snap == {'SIG/1': {'due_date': '2026-10-05', 'paid': False, 'amount_gross_pln': 63.3}}
+
+
+def test_snapshot_documents_skips_docs_without_due_date():
+    docs = [_Doc('NOTA/1', None, paid=False, amount_gross_pln=50.0)]
+    snap = snapshot_documents(docs)
+    assert snap == {}
+
+
+def test_snapshot_documents_multiple_docs():
+    docs = [
+        _Doc('SIG/1', date(2026, 10, 5), paid=False, amount_gross_pln=63.3),
+        _Doc('SIG/2', date(2026, 11, 1), paid=True, amount_gross_pln=80.0),
+    ]
+    snap = snapshot_documents(docs)
+    assert set(snap.keys()) == {'SIG/1', 'SIG/2'}
+    assert snap['SIG/2']['paid'] is True
+
+
+# ── select_active_payment() ─────────────────────────────────────────────────
+
+def test_select_active_payment_no_state_returns_none():
+    assert select_active_payment({}, date(2026, 10, 4)) is None
+
+
+def test_select_active_payment_all_paid_returns_none():
+    state = {'SIG/1': {'due_date': '2026-10-05', 'paid': True, 'amount_gross_pln': 63.3}}
+    assert select_active_payment(state, date(2026, 10, 4)) is None
+
+
+def test_select_active_payment_picks_soonest_unpaid():
+    state = {
+        'SIG/LATER': {'due_date': '2026-11-01', 'paid': False, 'amount_gross_pln': 80.0},
+        'SIG/SOON': {'due_date': '2026-10-05', 'paid': False, 'amount_gross_pln': 63.3},
+    }
+    active = select_active_payment(state, date(2026, 10, 4))
+    assert active['signature'] == 'SIG/SOON'
+    assert active['amount_gross_pln'] == 63.3
+    assert active['days_until_due'] == 1
+    assert active['urgency'] == 'warning'
+
+
+def test_select_active_payment_urgency_neutral_when_due_later():
+    state = {'SIG/1': {'due_date': '2026-10-12', 'paid': False, 'amount_gross_pln': 63.3}}
+    active = select_active_payment(state, date(2026, 10, 4))
+    assert active['urgency'] == 'neutral'
+    assert active['days_until_due'] == 8
+
+
+def test_select_active_payment_urgency_alarm_when_due_today():
+    state = {'SIG/1': {'due_date': '2026-10-04', 'paid': False, 'amount_gross_pln': 63.3}}
+    active = select_active_payment(state, date(2026, 10, 4))
+    assert active['urgency'] == 'alarm'
+    assert active['days_until_due'] == 0
+
+
+def test_select_active_payment_urgency_alarm_when_overdue():
+    state = {'SIG/1': {'due_date': '2026-10-01', 'paid': False, 'amount_gross_pln': 63.3}}
+    active = select_active_payment(state, date(2026, 10, 4))
+    assert active['urgency'] == 'alarm'
+    assert active['days_until_due'] == -3
+
+
+def test_select_active_payment_ignores_entries_without_due_date():
+    state = {'SIG/1': {'reminded_before': True, 'reminded_due': False}}
+    assert select_active_payment(state, date(2026, 10, 4)) is None

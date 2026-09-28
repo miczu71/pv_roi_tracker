@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.45.0] — 2026-09-28
+
+Termin płatności + status „zapłacona" z eBOK (Etap 3,
+`docs/ROADMAP_EBOK_PAYMENT_STATUS.md`) — domyka podprojekt zaczęty tego samego
+dnia po auto-imporcie faktur (0.44.0/0.44.1).
+
+- `ebok_client.py`: `EbokDocument` dostaje `due_date` (`TERMIN PŁATNOŚCI`) i
+  `paid` (`ZAPŁACONA == "zapłacona"`) z tego samego CSV, który już zasilał
+  import — bez dodatkowego żądania.
+- Nowy `payment_reminders.py` (czyste funkcje, bez I/O): `decide_reminders`
+  (before/due, idempotentne przez `reminded_before`/`reminded_due`),
+  `snapshot_documents` + `select_active_payment` (najbliższa niezapłacona
+  pozycja dla UI), stan w `/data/ebok_payment_state.json` — osobno od
+  `invoice_store` (rdzeń rekonsyliacji finansowej).
+- Nowy codzienny job `ebok_payment_check` (07:00, samo CSV — bez PDF-ów, więc
+  tani): przypomnienie `notify.kacper` dzień przed terminem i w dniu terminu,
+  jeśli nadal niezapłacona; każde wysyłane raz.
+- `GET /api/ebok/payment-status` + pasek statusu na górze strony głównej —
+  czyta wyłącznie cache ostatniego joba, nigdy nie loguje się do eBOK z
+  poziomu przeglądarki. Kolor rośnie z pilnością (neutralny/żółty/czerwony),
+  ukryty gdy nic nie wymaga uwagi.
+- 12 nowych testów (`test_payment_reminders.py`, `test_ebok_client.py`) — 654
+  zielone razem, zero regresji.
+
 ## [0.44.1] — 2026-09-28
 
 Bugfix parsera: **rozpoznanie „NOTA UZNANIOWA" (nota kredytowa)**. Pierwsza realna
