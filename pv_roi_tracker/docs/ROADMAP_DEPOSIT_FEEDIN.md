@@ -3,6 +3,60 @@
 
 Kopia zatwierdzonego planu z `/data/home/.claude/plans/`.
 
+## Wynik Etapu 1 (28.09.2026) — spike zakończony, GO na Etap 2 (zawężony zakres)
+
+**H1 (Tauron liczy zasilenie po RCE godzinowej) odrzucone jednoznacznie.** Tekst faktur (2025-04,
+2025-05) wprost: *„Depozyt prosumencki wyliczany jest na podstawie iloczynu ilości energii
+wprowadzonej do sieci i rynkowej **miesięcznej** ceny energii elektrycznej”* — RCEm, nie RCE
+godzinowa. Potwierdza to też komentarz w `rce_hourly.py`: moduł to tylko *hipotetyczna* symulacja
+„co by było gdyby”, przejście na RCE godzinową jest nieodwracalną decyzją, której nie podjęto.
+
+**Wolumen (kWh eksportu) NIE jest przyczyną.** Porównanie `exported_kwh` z rekordów add-onu z
+kolumną „Ilość energii wprowadzonej do sieci” na fakturach 2025-02…2025-07 — **identyczne co do
+kWh** (151, 372, 315, 364, 435, 355) — bo rekordy już są zrebase'owane do prawdy fakturowej
+(`project_pv_roi_energy_rebase_0_35`). Formuła `accrued = exported_kwh × feedin_price` też się
+zgadza wewnętrznie (np. 315 × 0,200724 = 63,23 = dokładnie `feedin_revenue` w rekordzie).
+
+**Znaleziono realną przyczynę: rozszyfrowanie `tauron_implied`.** Dla Sty–Lip 2025 każda faktura
+ma `deposit_used == deposit_previous` i `deposit_current == 0` (`verified: true`, saldo w pełni
+drenowane co miesiąc) — to oznacza, że pole `deposit_previous` na fakturze za miesiąc M to **czyste
+zasilenie z miesiąca M−1** (poprzednia rata i tak wyzerowana rachunkiem za M−1). Odczytane wprost:
+
+| Miesiąc (zasilenie) | Realne zasilenie (z faktury M+1, previous) | Model (`accrued` = kWh×RCEm) | Różnica |
+|---|---|---|---|
+| 2025-03 | 68,06 zł (kWh 372, cena 0,183 zł/kWh) | 81,83 zł (cena 0,220) | +20% |
+| 2025-04 | 34,31 zł (kWh 315, cena 0,109 zł/kWh) | 63,23 zł (cena 0,201) | +84% |
+| 2025-05 | 18,14 zł (kWh 364, cena 0,050 zł/kWh) | 97,14 zł (cena 0,267) | **+435%** |
+| 2025-06 | 31,68 zł (kWh 435, cena 0,073 zł/kWh) | 72,93 zł (cena 0,168) | +130% |
+
+**Cała rozbieżność siedzi w cenie (RCEm), nie w kWh ani w mechanizmie.** Cena wynikająca z faktur
+(realna) **spada** marzec→maj 2025 (0,183→0,109→0,050 zł/kWh) mimo rosnącego eksportu — spójne z
+udokumentowanym krachem RCEm wiosną 2025 (nadpodaż PV, rekordowe godziny ujemnych cen). Cena
+zeskrobana przez `rcem_scraper` (już z ×1,23 wg noweli OZE) jest w tym oknie **wyraźnie zawyżona**
+względem tego, co faktycznie zasiliło depozyt — margines rośnie miesiąc po miesiącu do 435% w maju,
+po czym spada (czerwiec 130%, sierpień z powrotem ~0%). Wypróbowane i odrzucone: usunięcie
+współczynnika ×1,23 poprawia tylko marzec (0,220/1,23=0,179 ≈ 0,183 realne), nie tłumaczy
+kwietnia/maja/czerwca — więc to nie jest prosty błąd współczynnika, tylko coś specyficznego dla
+zeskrobanej ceny RCEm w tym 4-miesięcznym oknie.
+
+**B8 zamknięte** (patrz `ROADMAP_DEPOSIT.md`) — bez wpływu na żadną liczbę dziś ani w 12-mies.
+prognozie, user potwierdza brak zwrotów/umorzeń historycznie.
+
+**Rekomendacja na Etap 2 (zawężona względem oryginalnego planu):**
+1. Zweryfikować źródło `rcem_scraper` (strona PSE, tabela RCEm) dla marca–czerwca 2025 wprost
+   przeciw niezależnemu źródłu (archiwum RCEm PSE / TGE) — sprawdzić, czy to błąd parsowania
+   (zła kolumna/wiersz), błąd przypisania miesiąca, czy PSE faktycznie opublikowało/skorygowało
+   inną wartość niż to, co jest w cache `rcem_scraper`.
+2. Jeśli scraper się myli: poprawka parsera + re-scrape tych miesięcy, re-run `deposit_job`
+   (bez zmiany logiki FIFO/przedawnienia — tylko wejściowa cena).
+3. Jeśli scraper ma rację (PSE opublikowało wyższą wartość niż to, co realnie trafiło do depozytu):
+   temat wykracza poza add-on — do zgłoszenia/wyjaśnienia u Taurona, model zostaje z etykietą
+   niepewności w tym oknie (adnotacja w UI), bez zmiany kodu.
+4. Testy w `tests/test_deposit.py`/`tests/test_rcem_scraper` dla przypadku 2025-03…06 jeśli
+   poprawka wejdzie.
+
+**Checkpoint: czeka na „go" na krok 1 (weryfikacja scrapera vs niezależne źródło RCEm).**
+
 ## Context
 
 Podprojekty YoY (0.38.0), Pompa ciepła (0.41.0) i Dług depozytowy (0.42.0) są zamknięte.
