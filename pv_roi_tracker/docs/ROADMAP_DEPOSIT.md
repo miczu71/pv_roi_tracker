@@ -2,6 +2,19 @@
 
 Kopia zatwierdzonego planu z `/data/home/.claude/plans/`.
 
+## Otwarty temat wydzielony do osobnego podprojektu (28.09.2026)
+
+Zawyżone `diff_pct` w rekonsyliacji dla 2025-04/05/06 (zanotowane w wyniku Etapu 2) oraz pytanie
+B8 (zegar przedawnienia) przeniesione do `docs/ROADMAP_DEPOSIT_FEEDIN.md`.
+
+**B8 zamknięte bez kodu w ramach tego podprojektu**: żywe dane (28.09.2026) pokazują
+`expired_refund_total = expired_forfeit_total = 0` w historii i w 12-mies. prognozie (FIFO
+zjada partie kilka miesięcy przed terminem przedawnienia), user potwierdza że Tauron nigdy nie
+zwrócił ani nie umorzył środków — przesunięcie zegara eksport/zaksięgowanie o 1–2 mies. nie
+zmienia dziś żadnej liczby. `diff_pct` pozostaje otwarte, bada je Etap 1 spike w
+`ROADMAP_DEPOSIT_FEEDIN.md` (hipoteza H1: Tauron wycenia zasilenie godzinową RCE z regułą
+ujemna→0, nie miesięczną RCEm).
+
 ## Wynik Etapu 3 (28.09.2026) — ZAMKNIĘTE, bez nowego wydania
 
 Weryfikacja pokazała, że oba pozostałe punkty Etapu 3 były już faktycznie rozwiązane przez
