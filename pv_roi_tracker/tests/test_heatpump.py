@@ -3,6 +3,7 @@ from datetime import date
 
 import pytest
 
+from pv_roi_tracker import heatpump as heatpump_module
 from pv_roi_tracker.heatpump import (
     BatteryPool,
     attribute_heatpump,
@@ -18,6 +19,14 @@ from pv_roi_tracker.heatpump import (
     season_label,
     season_start_year,
 )
+
+
+@pytest.fixture(autouse=False)
+def _no_season_min_hours(monkeypatch):
+    """Testy poniżej używają jednogodzinnych sezonów syntetycznych — wyłącz
+    próg `_MIN_SEASON_HOURS_FOR_INCLUSION` (osobno przetestowany niżej), żeby
+    sprawdzić samą logikę przypisania/odcięcia sezonu."""
+    monkeypatch.setattr(heatpump_module, '_MIN_SEASON_HOURS_FOR_INCLUSION', 0)
 
 
 # ── hourly_flows ────────────────────────────────────────────────────────────────
@@ -284,7 +293,7 @@ def test_aggregate_months_groups_by_ym_and_computes_hdd():
     assert by_ym['2024-01']['pv_battery_coverage_pct'] == pytest.approx(0.0)
 
 
-def test_aggregate_seasons_assigns_july_and_january_to_different_seasons():
+def test_aggregate_seasons_assigns_july_and_january_to_different_seasons(_no_season_min_hours):
     hours = _hours_two_days()
     rates = {'2023-07': (1.2, 0.6), '2024-01': (1.2, 0.6)}
     rcem = {'2023-07': 0.35, '2024-01': 0.35}
@@ -295,7 +304,7 @@ def test_aggregate_seasons_assigns_july_and_january_to_different_seasons():
     assert '2023-2024' in by_key  # styczeń 2024 -> sezon 2023/24
 
 
-def test_aggregate_seasons_to_date_respects_cutoff():
+def test_aggregate_seasons_to_date_respects_cutoff(_no_season_min_hours):
     hours = _hours_two_days()
     rates = {'2023-07': (1.2, 0.6), '2024-01': (1.2, 0.6)}
     rcem = {'2023-07': 0.35, '2024-01': 0.35}
@@ -309,7 +318,7 @@ def test_aggregate_seasons_to_date_respects_cutoff():
     assert by_key['2023-2024']['to_date']['kwh_total'] == pytest.approx(2.0)
 
 
-def test_aggregate_seasons_to_date_excludes_hours_after_cutoff():
+def test_aggregate_seasons_to_date_excludes_hours_after_cutoff(_no_season_min_hours):
     hours = _hours_two_days()
     rates = {'2023-07': (1.2, 0.6), '2024-01': (1.2, 0.6)}
     rcem = {'2023-07': 0.35, '2024-01': 0.35}
@@ -320,6 +329,56 @@ def test_aggregate_seasons_to_date_excludes_hours_after_cutoff():
     by_key = {s['season']: s for s in seasons}
     assert by_key['2022-2023']['to_date']['kwh_total'] == pytest.approx(0.0)
     assert by_key['2023-2024']['to_date']['kwh_total'] == pytest.approx(0.0)
+
+
+def _many_hours(season_start_year_: int, n: int) -> dict:
+    """`n` godzinowych wpisów (kolejne godziny zegarowe kolejnych dni,
+    zaczynając 1 września `season_start_year_`), zerowe zużycie — sam
+    dopełniacz liczby godzin dla progu `_MIN_SEASON_HOURS_FOR_INCLUSION`.
+    Wymaga n <= 24*365, żeby nie wyjść poza jeden sezon (IX–VIII)."""
+    from datetime import timedelta
+    out = {}
+    start = date(season_start_year_, 9, 1)
+    for i in range(n):
+        d = start + timedelta(days=i // 24)
+        hour = i % 24
+        out[f'{d.isoformat()}T{hour:02d}'] = {
+            'produced': 0.0, 'exported': 0.0, 'imported': 0.0,
+            'batt_charge': 0.0, 'batt_discharge': 0.0,
+            'hp_kwh': 0.0, 'heat_h': 0.0, 'dhw_h': 0.0, 't_out': None,
+        }
+    return out
+
+
+def test_aggregate_seasons_hides_past_season_with_too_little_data():
+    # Sezon 2022/23 ma tylko 1 syntetyczną godzinę (jak np. licznik pompy
+    # zaczynający się w środku sezonu) — poniżej progu, sezon już zamknięty,
+    # nie jest bieżący -> pomijany całkowicie.
+    hours = {'2023-07-10T12': {'produced': 5.0, 'exported': 3.0, 'imported': 0.0,
+                               'batt_charge': 0.0, 'batt_discharge': 0.0,
+                               'hp_kwh': 1.0, 'heat_h': 0.0, 'dhw_h': 1.0, 't_out': 25.0}}
+    rows = run_hours(hours, {'2023-07': (1.2, 0.6)}, {'2023-07': 0.35})
+    seasons = aggregate_seasons(rows, today=date(2026, 9, 28))
+    assert seasons == []
+
+
+def test_aggregate_seasons_keeps_past_season_at_or_above_threshold():
+    hours = _many_hours(2022, heatpump_module._MIN_SEASON_HOURS_FOR_INCLUSION)
+    rows = run_hours(hours, {}, {})
+    seasons = aggregate_seasons(rows, today=date(2026, 9, 28))
+    assert len(seasons) == 1
+    assert seasons[0]['season'] == '2022-2023'
+
+
+def test_aggregate_seasons_always_keeps_current_season_even_below_threshold():
+    hours = {'2026-09-15T12': {'produced': 0.0, 'exported': 0.0, 'imported': 1.0,
+                               'batt_charge': 0.0, 'batt_discharge': 0.0,
+                               'hp_kwh': 1.0, 'heat_h': 1.0, 'dhw_h': 0.0, 't_out': 10.0}}
+    rows = run_hours(hours, {'2026-09': (1.2, 0.6)}, {'2026-09': 0.35})
+    seasons = aggregate_seasons(rows, today=date(2026, 9, 28))
+    assert len(seasons) == 1
+    assert seasons[0]['season'] == '2026-2027'
+    assert seasons[0]['is_current'] is True
 
 
 def test_compute_returns_none_when_no_hours():

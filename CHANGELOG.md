@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.39.1] — 2026-09-28
+
+Ukryty ułomny sezon grzewczy, który powstawał na styku "sezon już zamknięty"
+i "dane zaczęły się w środku sezonu" — licznik pompy ma historię od
+2023-06, więc sezon 2022/23 (wrzesień–sierpień) wychodził jako sam
+czerwiec–sierpień 2023 (bez rozbicia grzanie/CWU, bo `sensor.pompa_heating`/
+`sensor.pompa_hot_water` mają historię dopiero od 2023-10). Zamknięty sezon
+z danymi pokrywającymi mniej niż ~166 dni (4000 h) jest teraz pomijany
+całkowicie zamiast pokazywać myląco niepełne liczby; sezon w toku pokazywany
+zawsze, nawet z 1 dniem danych. 4 nowe testy (568 razem).
+
 ## [0.39.0] — 2026-09-28
 
 Pompa ciepła × PV — prawdziwy koszt grzania i CWU (Etap 1: backend/dane;

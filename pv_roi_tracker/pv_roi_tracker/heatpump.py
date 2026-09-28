@@ -319,9 +319,23 @@ def aggregate_months(rows: list[dict], hdd_base: float = 15.0) -> list[dict]:
     return out
 
 
+# Poniżej tego progu godzin sezon jest pomijany (poza sezonem w toku) — nie
+# dlatego, że jeszcze trwa, tylko dlatego, że dane (licznik pompy) zaczęły
+# się w środku tego sezonu grzewczego (np. instalacja licznika w czerwcu przy
+# sezonie liczonym od września). Taki fragment (np. same 3 letnie miesiące
+# pod etykietą sezonu sprzed 2 lat) myliłby porównanie sezonów, więc jest
+# ukrywany całkowicie, a nie tylko oznaczany jako niepełny. ~166 dni (4000 h)
+# to bezpieczny margines poniżej najkrótszego realnego sezonu w danych
+# (najmniejszy pełny sezon w tej instalacji ma >8700 h).
+_MIN_SEASON_HOURS_FOR_INCLUSION = 4000
+
+
 def aggregate_seasons(rows: list[dict], today: date, hdd_base: float = 15.0) -> list[dict]:
     """Sezony IX–VIII: agregat pełny (gdy sezon już zamknięty) i 'do tej samej
-    daty' (dla uczciwego porównania sezonu w toku z poprzednimi)."""
+    daty' (dla uczciwego porównania sezonu w toku z poprzednimi). Sezon w toku
+    jest zawsze pokazywany (nawet z 1 dniem danych); zamknięty sezon z
+    danymi pokrywającymi tylko jego fragment (dane zaczęły się w środku
+    sezonu) jest pomijany — patrz `_MIN_SEASON_HOURS_FOR_INCLUSION`."""
     start_years = sorted({r['season_start_year'] for r in rows})
     cur_start = season_start_year(today)
     out = []
@@ -337,10 +351,13 @@ def aggregate_seasons(rows: list[dict], today: date, hdd_base: float = 15.0) -> 
             has_full = True
             if r['date'] <= cutoff:
                 _add_hour(todate_bucket, r, hdd_base)
+        is_current = sy == cur_start
+        if not is_current and full_bucket['hours'] < _MIN_SEASON_HOURS_FOR_INCLUSION:
+            continue
         season_ended = today >= date(sy + 1, _SEASON_START_MONTH, 1)
         out.append({
             'season': season_key(sy), 'label': season_label(sy),
-            'is_current': sy == cur_start,
+            'is_current': is_current,
             'full': _finalize_bucket(full_bucket) if (has_full and season_ended) else None,
             'to_date': _finalize_bucket(todate_bucket),
             'cutoff_date': cutoff.isoformat(),
