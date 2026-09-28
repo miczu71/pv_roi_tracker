@@ -124,7 +124,9 @@ cache: dociąganie z zakładką.
 
 ## Backlog dalszej rozbudowy (kolejność do ustalenia z userem po tym podprojekcie)
 
-- **Auto-import faktur z maila (IMAP)** — mniej ręcznej roboty, dziś PDF wgrywany ręcznie co miesiąc.
+- **Auto-import faktur** — mniej ręcznej roboty, dziś PDF wgrywany ręcznie co miesiąc. Wybrany jako
+  kolejny podprojekt 28.09.2026 (po Zasilenie depozytu 0.43.0), źródło eBOK TAURON zamiast IMAP
+  (`ebok.tauron.pl`, to samo konto co `tauron_amiplus`), plan i przebieg w `docs/ROADMAP_EBOK_IMPORT.md`.
 - **Symulator +kWp paneli** — „czy dołożyć paneli?": godzinowa symulacja jak Magazyn +5 kWh, z net-billingiem i depozytem.
 - **UX / dashboard HA** — widok „PV ROI" w Lovelace z kluczowymi liczbami r/r, uproszczenie 10 zakładek na mobile.
 - **Dług depozytowy** → wybrany jako kolejny podprojekt 28.09.2026, plan i przebieg w `docs/ROADMAP_DEPOSIT.md`.
