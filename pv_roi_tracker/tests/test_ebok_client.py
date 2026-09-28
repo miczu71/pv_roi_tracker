@@ -146,6 +146,8 @@ def test_list_documents_returns_parsed_rows():
     assert len(docs) == 1
     assert docs[0].signature == 'T/K1/TEST/0001/26'
     assert docs[0].amount_gross_pln == pytest.approx(100.50)
+    assert docs[0].due_date == date(2026, 1, 15)
+    assert docs[0].paid is True
 
 
 def test_list_documents_bad_status_raises():
@@ -211,6 +213,28 @@ def test_parse_documents_csv_handles_dash_amount():
     ).encode('windows-1250')
     docs = parse_documents_csv(csv_bytes)
     assert docs[0].amount_gross_pln is None
+
+
+def test_parse_documents_csv_unpaid_row_has_paid_false():
+    csv_bytes = (
+        'SYGNATURA;NAZWA DOKUMENTU;DATA WYSTAWIENIA;DODATKOWE INFORMACJE;'
+        'KWOTA BRUTTO;TERMIN PŁATNOŚCI;KWOTA DO ZAPŁATY;ZAPŁACONA\r\n'
+        'T/K1/TEST/0006/26;Faktura rzeczywista;01.03.2026;---;80,00;15.03.2026;80,00;niezapłacona\r\n'
+    ).encode('windows-1250')
+    docs = parse_documents_csv(csv_bytes)
+    assert docs[0].paid is False
+    assert docs[0].due_date == date(2026, 3, 15)
+
+
+def test_parse_documents_csv_missing_or_dash_due_date_is_none():
+    csv_bytes = (
+        'SYGNATURA;NAZWA DOKUMENTU;DATA WYSTAWIENIA;DODATKOWE INFORMACJE;'
+        'KWOTA BRUTTO;TERMIN PŁATNOŚCI;KWOTA DO ZAPŁATY;ZAPŁACONA\r\n'
+        'K1N0474969;Nota uznaniowa;01.03.2026;---;50,00;---;---;---\r\n'
+    ).encode('windows-1250')
+    docs = parse_documents_csv(csv_bytes)
+    assert docs[0].due_date is None
+    assert docs[0].paid is False
 
 
 def test_parse_archive_html_maps_signature_to_numeric_id():

@@ -59,6 +59,7 @@ EBOK_USERNAME      = os.environ.get('EBOK_USERNAME', '')
 EBOK_PASSWORD      = os.environ.get('EBOK_PASSWORD', '')
 EBOK_PAYER_ID      = os.environ.get('EBOK_PAYER_ID', '')
 EBOK_STATE_PATH    = Path(os.environ.get('EBOK_STATE_PATH', '/data/ebok_state.json'))
+EBOK_PAYMENT_STATE_PATH = Path(os.environ.get('EBOK_PAYMENT_STATE_PATH', '/data/ebok_payment_state.json'))
 ASSET_LIFETIME_YEARS       = float(os.environ.get('ASSET_LIFETIME_YEARS', '25.0'))
 PANEL_DEGRADATION_PCT_YEAR = float(os.environ.get('PANEL_DEGRADATION_PCT_YEAR', '0.5'))
 
@@ -659,6 +660,71 @@ def main() -> None:
 
     def ebok_job() -> None:
         ebok_sync()
+
+    def ebok_payment_check() -> dict:
+        """Lekki, codzienny check: samo CSV (bez PDF), termin płatności/status
+        dla niezapłaconych faktur, przypomnienie dzień przed terminem i w dniu
+        terminu (docs/ROADMAP_EBOK_PAYMENT_STATUS.md Etap 2). Nigdy nie rzuca —
+        błędy trafiają do wyniku i health, tak jak ebok_sync()."""
+        from . import ebok_client as _ec
+        from . import payment_reminders as _pr
+        from datetime import date as _date, datetime as _dt, timedelta as _td
+
+        if not EBOK_USERNAME or not EBOK_PASSWORD:
+            return {'ok': False, 'error': 'eBOK nie skonfigurowany (brak ebok_username/ebok_password)'}
+
+        state = _load_ebok_state()
+        blocked_until = state.get('blocked_until')
+        if blocked_until and _dt.now().isoformat() < blocked_until:
+            _record_job('ebok_payment', False, f'eBOK zablokowane do {blocked_until}')
+            return {'ok': False, 'blocked': True, 'blocked_until': blocked_until}
+
+        client = _ebok_get_client()
+        try:
+            client.login()
+            if EBOK_PAYER_ID:
+                client_id = client.find_client_id(EBOK_PAYER_ID)
+                if not client_id:
+                    raise _ec.EbokError(f'Płatnik {EBOK_PAYER_ID} nie znaleziony na /wyborKlienta')
+                client.select_client(client_id)
+
+            date_from = _date(2022, 1, 1)
+            date_to = _date.today() + _td(days=1)
+            docs = client.list_documents(date_from, date_to)
+
+            payment_state = _pr.load_payment_state(EBOK_PAYMENT_STATE_PATH)
+            notifications, new_state = _pr.build_reminder_notifications(docs, payment_state, _date.today())
+            _pr.save_payment_state(EBOK_PAYMENT_STATE_PATH, new_state)
+
+            for note in notifications:
+                _notify_ha('PV ROI Tracker — termin płatności', note['message'], target='kacper')
+
+            _record_job('ebok_payment', True, f'wysłano {len(notifications)} przypomnień')
+            return {'ok': True, 'sent': len(notifications)}
+
+        except _ec.EbokLoginBlocked as exc:
+            blocked_until = (_dt.now() + _td(hours=24)).isoformat()
+            state['blocked_until'] = blocked_until
+            _save_ebok_state(state)
+            _record_job('ebok_payment', False, 'zablokowane logowanie')
+            _notify_ha('PV ROI Tracker — eBOK',
+                       f'Tauron zablokował logowania do eBOK ({exc}). Wstrzymuję próby do jutra.',
+                       target='kacper')
+            return {'ok': False, 'blocked': True, 'error': str(exc)}
+        except _ec.EbokError as exc:
+            _record_job('ebok_payment', False, str(exc))
+            _notify_ha('PV ROI Tracker — eBOK', f'Sprawdzenie terminu płatności nie powiodło się: {exc}',
+                       target='kacper')
+            return {'ok': False, 'error': str(exc)}
+        except Exception as exc:
+            logger.exception('eBOK payment check — nieoczekiwany błąd')
+            _record_job('ebok_payment', False, str(exc))
+            _notify_ha('PV ROI Tracker — eBOK', f'Sprawdzenie terminu płatności — nieoczekiwany błąd: {exc}',
+                       target='kacper')
+            return {'ok': False, 'error': str(exc)}
+
+    def ebok_payment_check_job() -> None:
+        ebok_payment_check()
 
     def _ebok_status() -> dict:
         state = _load_ebok_state()
@@ -1443,6 +1509,11 @@ def main() -> None:
                           id='ebok_sync_daily', name='eBOK sync (billing window)', **_JOB_DEFAULTS)
         scheduler.add_job(ebok_job, CronTrigger(day_of_week='mon', hour=7, minute=45),
                           id='ebok_sync_weekly', name='eBOK sync (weekly catch-up)', **_JOB_DEFAULTS)
+        # Termin płatności/status zapłacona (docs/ROADMAP_EBOK_PAYMENT_STATUS.md Etap 2):
+        # codziennie (nie tylko dni 1-15) — terminy płatności wypadają w dowolny dzień
+        # miesiąca; samo CSV, bez pobierania PDF-ów, więc tanie.
+        scheduler.add_job(ebok_payment_check_job, CronTrigger(hour=7, minute=0),
+                          id='ebok_payment_check', name='eBOK payment status check', **_JOB_DEFAULTS)
     else:
         logger.info('eBOK: ebok_username/ebok_password nieustawione — auto-import wyłączony')
 

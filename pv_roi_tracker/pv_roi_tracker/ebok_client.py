@@ -66,6 +66,8 @@ class EbokDocument:
     doc_name: str                           # NAZWA DOKUMENTU, e.g. "Faktura rzeczywista"
     issued_on: str                          # DATA WYSTAWIENIA, "DD.MM.YYYY"
     amount_gross_pln: Optional[float]
+    due_date: Optional[date] = None         # TERMIN PŁATNOŚCI — None for docs without one (e.g. noty)
+    paid: bool = False                      # ZAPŁACONA — only "zapłacona" counts as paid
     numeric_id: Optional[str] = None        # filled in later by locate_ids()
 
 
@@ -198,8 +200,20 @@ def parse_documents_csv(raw: bytes) -> list:
             doc_name=(row.get('NAZWA DOKUMENTU') or '').strip(),
             issued_on=(row.get('DATA WYSTAWIENIA') or '').strip(),
             amount_gross_pln=amount,
+            due_date=_parse_ddmmyyyy((row.get('TERMIN PŁATNOŚCI') or '').strip()),
+            paid=(row.get('ZAPŁACONA') or '').strip() == 'zapłacona',
         ))
     return docs
+
+
+def _parse_ddmmyyyy(raw: str) -> Optional[date]:
+    """Parse a "DD.MM.YYYY" cell; None for missing/placeholder ("---") values."""
+    if not raw or raw == '---':
+        return None
+    try:
+        return date(*reversed([int(p) for p in raw.split('.')]))
+    except (ValueError, TypeError):
+        return None
 
 
 _ARCHIVE_ROW_RE = re.compile(
