@@ -119,6 +119,33 @@ endpoint wyszukiwania po numerze dokumentu, żeby tego uniknąć).
 scoping domen → pętla przekierowań) odnotowane — `ebok_client.py` ma trzymać pełny `requests.Session`
 (pickle) albo `cookiejar`, nie płaski dict.
 
+## Wynik końcowy (28.09.2026) — 0.44.0 wydane, live, pierwsza realna synchronizacja OK
+
+Release opublikowany, Supervisor zaktualizował add-on (0.43.0→0.44.0), health `ok`. User wpisał
+`ebok_username`/`ebok_password` w Konfiguracji add-onu i zrestartował. Playwright (desktop+mobile)
+potwierdził: przycisk „Pobierz brakujące z eBOK" poprawnie **ukryty** przy `configured: false` (przed
+restartem), zero nowych błędów konsoli.
+
+**Pierwsza realna synchronizacja (po restarcie) — pełny łańcuch zadziałał end-to-end:**
+1. Logowanie do eBOK: `eBOK: zalogowano`.
+2. CSV pełnej historii pobrany, porównany z `invoices.json` — znalezione 2 brakujące miesiące
+   (2026-03, 2026-05) + jedna nota uznaniowa.
+3. PDF-y pobrane przez `/podgladFaktury/id/<id>`, sparsowane, zreconciled — **2026-03 i 2026-05
+   zaimportowane** przez tę samą ścieżkę co ręczny upload.
+4. Nota uznaniowa (`K1N0474969`) — parser jej nie rozpoznał (`Imported kWh not found`, oczekiwane:
+   noty nie mają pól energii/kWh) → poprawnie zapisana jako stub `needs_training`, nie zgubiona.
+5. **Push na `notify.kacper` wysłany** dokładnie w tej jednej sytuacji (problem) — potwierdzone w
+   logu add-onu: `HA notification sent (kacper): eBOK — zaimportowano 2 nowych dokumentów, ale:
+   wymaga treningu: ebok_K1N0474969.pdf`.
+
+**Otwarty, nieblokujący temat:** parser nie ma dedykowanego wzorca dla „Nota uznaniowa” (inny typ niż
+już obsługiwana „NOTA OBCIĄŻENIOWA” w `_parse_nota`) — do treningu ręcznego przez UI, albo do rozszerzenia
+`invoice_parser.py` jeśli trening nie wystarczy. Nie blokuje działania auto-importu.
+
+**Podprojekt „Auto-import faktur z eBOK TAURON” zamknięty.** Cel z wywiadu (zero ręcznej roboty +
+uzupełnienie historii + szybsze dane po zamknięciu miesiąca) osiągnięty i zweryfikowany na żywych
+danych, nie tylko testach.
+
 ## Weryfikacja
 - Etap 0: `git log origin/main` pokazuje commit.
 - Etap 1: tabela lista eBOK vs `invoice_store`; PDF z eBOK parsuje się identycznie jak istniejący rekord.
