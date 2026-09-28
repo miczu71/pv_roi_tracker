@@ -28,6 +28,9 @@ export HEATPUMP_HEATING_HOURS_ENTITY=$(jq -r '.heatpump_heating_hours_entity // 
 export HEATPUMP_DHW_HOURS_ENTITY=$(jq -r '.heatpump_dhw_hours_entity // ""' "$CONFIG")
 export HEATPUMP_OUTDOOR_TEMP_ENTITY=$(jq -r '.heatpump_outdoor_temp_entity // ""' "$CONFIG")
 export HEATPUMP_HDD_BASE_TEMP=$(jq -r '.heatpump_hdd_base_temp // "15.0"' "$CONFIG")
+export EBOK_USERNAME=$(jq -r '.ebok_username // ""' "$CONFIG")
+export EBOK_PASSWORD=$(jq -r '.ebok_password // ""' "$CONFIG")
+export EBOK_PAYER_ID=$(jq -r '.ebok_payer_id // ""' "$CONFIG")
 
 export HISTORIC_PATH="/data/historic.json"
 export RCEM_HISTORY_PATH="/data/rcem_history.json"

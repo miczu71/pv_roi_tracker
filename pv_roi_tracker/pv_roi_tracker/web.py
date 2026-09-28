@@ -37,6 +37,8 @@ _apply_rebase_callback = None
 _invoice_path = None
 _layouts_path = None
 _tariff_config_path = None
+_ebok_sync_callback = None
+_ebok_status_callback = None
 
 
 def set_rcem_override_callback(fn) -> None:
@@ -82,6 +84,19 @@ def set_invoice_remove_callback(fn) -> None:
 def set_invoice_train_callback(fn) -> None:
     global _invoice_train_callback
     _invoice_train_callback = fn
+
+
+def set_ebok_sync_callback(fn) -> None:
+    """fn() -> dict — runs one eBOK sync (missing-invoice pull) synchronously and
+    returns a JSON-able summary. See main.py `ebok_job`."""
+    global _ebok_sync_callback
+    _ebok_sync_callback = fn
+
+
+def set_ebok_status_callback(fn) -> None:
+    """fn() -> dict — last-sync/blocked-until state for the UI, without triggering a sync."""
+    global _ebok_status_callback
+    _ebok_status_callback = fn
 
 
 def set_layouts_path(path) -> None:
@@ -1002,56 +1017,36 @@ def invoice_upload():
     files = request.files.getlist('files') or request.files.getlist('file')
     if not files:
         return jsonify({'ok': False, 'error': 'no file(s) attached (field name: files)'}), 400
-    from .invoice_parser import parse_invoice, parse_invoice_debug, InvoiceParseError
-    results = []
-    parsed_list = []
-    raw_texts: dict = {}    # fname → raw text (for warnings-aware storage)
-    pdf_bytes_map: dict = {}  # fname → original PDF bytes (persisted so we can return to it)
-    for f in files:
-        fname = f.filename or 'upload'
-        pdf_bytes = f.read()
-        pdf_bytes_map[fname] = pdf_bytes
+    from .invoice_ingest import ingest_pdfs
+    ingested = ingest_pdfs([(f.filename or 'upload', f.read()) for f in files], _invoice_path)
+    if ingested['parsed_list']:
         try:
-            data = parse_invoice(pdf_bytes)
-            data._filename = fname  # type: ignore[attr-defined]
-            parsed_list.append(data)
-            if data.warnings:
-                # Store raw text so Train can work later
-                debug = parse_invoice_debug(pdf_bytes)
-                raw_texts[fname] = debug.get('text', '')
-            results.append({'filename': fname, 'month': f'{data.year}-{data.month:02d}',
-                             'doc_type': getattr(data, 'doc_type', 'rozliczeniowa'),
-                             'imported_kwh': data.imported_kwh, 'exported_kwh': data.exported_kwh,
-                             'peak_gross': data.peak_gross, 'offpeak_gross': data.offpeak_gross,
-                             'amount_due': data.amount_due_pln, 'deposit_used': data.deposit_used_pln,
-                             'correction_delta_pln': getattr(data, 'correction_delta_pln', None),
-                             'warnings': data.warnings,
-                             'ok': True})
-        except InvoiceParseError as exc:
-            # Store failed parse as a stub so user can train later
-            error_msg = str(exc)
-            stub_key = None
-            if _invoice_path is not None:
-                try:
-                    debug = parse_invoice_debug(pdf_bytes)
-                    raw_text = debug.get('text', '')
-                    from . import invoice_store as _is
-                    stub_key = _is.upsert_stub(fname, raw_text, error_msg, _invoice_path,
-                                               pdf_bytes=pdf_bytes)
-                except Exception:
-                    log.exception('Failed to store stub for %s', fname)
-            results.append({'filename': fname, 'ok': False, 'needs_training': True,
-                             'error': error_msg, 'stub_key': stub_key})
-        except Exception as exc:
-            log.exception('Invoice parse error: %s', fname)
-            results.append({'filename': fname, 'ok': False, 'error': str(exc)})
-    if parsed_list:
-        try:
-            _invoice_reconcile_callback(parsed_list, raw_texts, pdf_bytes_map)
+            _invoice_reconcile_callback(ingested['parsed_list'], ingested['raw_texts'],
+                                        ingested['pdf_bytes_map'])
         except Exception as exc:
             log.exception('Invoice reconcile callback failed')
-            return jsonify({'ok': False, 'error': str(exc), 'results': results}), 500
-    return jsonify({'ok': True, 'results': results})
+            return jsonify({'ok': False, 'error': str(exc), 'results': ingested['results']}), 500
+    return jsonify({'ok': True, 'results': ingested['results']})
+
+
+@app.route('/api/ebok/sync', methods=['POST'])
+def ebok_sync():
+    """Trigger one eBOK sync (download+ingest missing invoices/corrections)."""
+    if _ebok_sync_callback is None:
+        return jsonify({'ok': False, 'error': 'eBOK nie skonfigurowany (brak danych logowania)'}), 503
+    try:
+        summary = _ebok_sync_callback()
+        return jsonify(summary)
+    except Exception as exc:
+        log.exception('eBOK sync failed')
+        return jsonify({'ok': False, 'error': str(exc)}), 500
+
+
+@app.route('/api/ebok/status')
+def ebok_status():
+    if _ebok_status_callback is None:
+        return jsonify({'configured': False})
+    return jsonify(_ebok_status_callback())
 
 
 @app.route('/api/invoice/debug', methods=['POST'])

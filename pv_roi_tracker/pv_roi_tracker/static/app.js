@@ -2280,6 +2280,62 @@ async function uploadInvoices() {
   }
 }
 
+/* -- eBOK auto-import -- */
+async function ebokSync() {
+  const btn = document.getElementById('ebokSyncBtn');
+  const msg = document.getElementById('ebokMsg');
+  btn.disabled = true;
+  msg.className = ''; msg.textContent = 'Synchronizacja z eBOK...';
+  try {
+    const r = await fetch('api/ebok/sync', {method: 'POST'});
+    const d = await r.json();
+    if (d.ok) {
+      const imported = d.imported || [];
+      let parts = [];
+      parts.push(imported.length ? 'Pobrano: ' + imported.join(', ') : 'Brak nowych dokumentów');
+      if ((d.needs_training || []).length)
+        parts.push('⚠ trening: ' + d.needs_training.join(', '));
+      if ((d.not_found_in_archive || []).length)
+        parts.push('⚠ nie znaleziono w archiwum: ' + d.not_found_in_archive.join(', '));
+      msg.className = (d.needs_training || []).length || (d.not_found_in_archive || []).length ? '' : 'ok';
+      msg.textContent = parts.join('; ');
+      if (imported.length) setTimeout(loadData, 1500);
+    } else if (d.blocked) {
+      msg.className = 'err';
+      msg.textContent = 'eBOK zablokowane do ' + (d.blocked_until || '?') + ' — spróbuj później';
+    } else {
+      msg.className = 'err'; msg.textContent = 'Błąd: ' + (d.error || 'nieznany');
+    }
+  } catch (e) {
+    msg.className = 'err'; msg.textContent = 'Błąd połączenia';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function _refreshEbokStatus() {
+  const btn = document.getElementById('ebokSyncBtn');
+  const msg = document.getElementById('ebokMsg');
+  if (!btn || !msg) return;
+  try {
+    const r = await fetch('api/ebok/status');
+    const d = await r.json();
+    if (!d.configured) {
+      btn.style.display = 'none';
+      return;
+    }
+    btn.style.display = '';
+    if (msg.textContent) return;  // nie nadpisuj wyniku właśnie zakończonej synchronizacji
+    if (d.blocked_until) {
+      msg.textContent = 'zablokowane do ' + d.blocked_until;
+    } else if (d.last_sync) {
+      msg.textContent = 'ostatnia synchronizacja: ' + d.last_sync.replace('T', ' ').slice(0, 16);
+    } else {
+      msg.textContent = 'jeszcze nie synchronizowano';
+    }
+  } catch (e) { /* cicho — nieblokujące */ }
+}
+
 /* ─────────────────────────────────────────────────────────────
    Faktury tab renderer
    ───────────────────────────────────────────────────────────── */
@@ -2288,6 +2344,7 @@ function renderInvoicesTab(invoices, tariffDrift, records, layoutsSummary, costB
   _renderDriftBanner(tariffDrift);
   _renderCoverageGrid(invoices, records);
   _renderCostBreakdown(costBreakdown);
+  _refreshEbokStatus();
   renderRateTrendChart(rateTrend);
   // wykres depozytu rysuje renderDepositSection (fallback: renderDepositChart)
   _renderInvoiceTable(invoices);

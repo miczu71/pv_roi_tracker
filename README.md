@@ -243,6 +243,8 @@ Add `https://github.com/miczu71/pv_roi_tracker` in **Settings → Add-ons → Ad
 | `heatpump_dhw_hours_entity` | `sensor.pompa_hot_water` | Same, for domestic hot water mode |
 | `heatpump_outdoor_temp_entity` | `sensor.termometr_dwor_temperature` | Outdoor temperature source for degree-day (HDD) season comparison |
 | `heatpump_hdd_base_temp` | `15.0` | HDD base temperature (°C) |
+| `ebok_username` / `ebok_password` | `` | Login do `ebok.tauron.pl` (to samo konto co `tauron_amiplus`); **puste = auto-import wyłączony**, ręczny upload PDF działa jak dotychczas (od v0.44.0) |
+| `ebok_payer_id` | `` | Numer płatnika (np. `60567872`) — tylko gdy konto ma więcej niż jeden punkt poboru na `/wyborKlienta`; puste = pierwszy/jedyny |
 
 ## Data files
 
@@ -258,6 +260,7 @@ Add `https://github.com/miczu71/pv_roi_tracker` in **Settings → Add-ons → Ad
 | `/data/cpi_history.json` | GUS CPI chain index |
 | `/data/battery_config.json` | Parametry wirtualnego drugiego modułu magazynu (edycja w zakładce Magazyn) |
 | `/data/battery_sim.json` | Cache godzinowego eksportu/importu z LTS dla symulacji magazynu |
+| `/data/ebok_state.json` | Ostatnia synchronizacja eBOK + ewentualna blokada logowań (24h) — patrz niżej |
 
 All files are backed up daily to `/share/pv_roi_tracker`.
 
@@ -298,6 +301,33 @@ miesięczne i sezonowe (sezon grzewczy IX–VIII) ze stopniodniami (HDD) do
 uczciwego porównania mroźnych i ciepłych zim. Bez licznika ciepła — celowo
 brak COP i zł/kWh ciepła. Pełny opis i uzasadnienie decyzji projektowych:
 [`pv_roi_tracker/docs/ROADMAP_HEATPUMP.md`](pv_roi_tracker/docs/ROADMAP_HEATPUMP.md).
+
+## Auto-import faktur z eBOK TAURON (od v0.44.0)
+
+Zamiast ręcznie wgrywać PDF co miesiąc, add-on może samodzielnie logować się
+do `ebok.tauron.pl` (Keycloak SSO, to samo konto co `tauron_amiplus`) i pobierać
+faktury, korekty i noty — przez ten sam parser i tę samą ścieżkę rekonsyliacji
+co ręczny upload. Wyłączony domyślnie (`ebok_username`/`ebok_password` puste).
+
+Jak to działa:
+1. **Lista dokumentów** — eksport CSV eBOK (`/content/platnosci/csv/...`)
+   zwraca całą historię płatnika w jednym żądaniu; add-on porównuje numery
+   dokumentów (`SYGNATURA`) z tym, co już ma w `invoices.json`, i pobiera
+   **tylko brakujące** (dedup po numerze faktury, nie po dacie/kolejności).
+2. **PDF** brakujących dokumentów pobierany przez `/podgladFaktury/id/<id>`
+   (numeryczne id odczytywane ze stron archiwum HTML, max 50/stronę).
+3. Harmonogram: codziennie 07:30 w dniach 1–15 (kiedy zwykle pojawia się nowa
+   faktura rozliczeniowa) + raz w tygodniu (poniedziałek 07:45) poza tym oknem
+   — żeby złapać korekty/noty wystawiane poza cyklem (jak masowy batch korekt
+   Taurona z 01.01.2026, patrz `docs/ROADMAP_DEPOSIT_FEEDIN.md`). Przycisk
+   **„Pobierz brakujące z eBOK"** w zakładce Faktury odpala synchronizację ręcznie.
+4. **Push tylko przy problemie** (`notify.kacper`) — błąd logowania, blokada
+   logowań (Tauron limituje próby; add-on wtedy wstrzymuje kolejne na 24h,
+   stan w `/data/ebok_state.json`), dokument wymagający treningu parsera, lub
+   nieznaleziony w archiwum. Czysty sukces jest cichy.
+
+Szczegóły spike'a (potwierdzony flow logowania, format CSV/HTML, brak
+captchy/OTP) i plan etapów: [`pv_roi_tracker/docs/ROADMAP_EBOK_IMPORT.md`](pv_roi_tracker/docs/ROADMAP_EBOK_IMPORT.md).
 
 ## Architecture
 

@@ -55,6 +55,10 @@ INFLATION_RATE     = float(os.environ.get('INFLATION_RATE', '0.05'))
 COMPARISON_YIELD   = float(os.environ.get('COMPARISON_YIELD_RATE', '0.055'))
 CO2_FACTOR         = float(os.environ.get('CO2_FACTOR_KG_KWH', '0.597'))
 DEPOSIT_REFUND_PCT = float(os.environ.get('DEPOSIT_REFUND_PCT', '0.20'))
+EBOK_USERNAME      = os.environ.get('EBOK_USERNAME', '')
+EBOK_PASSWORD      = os.environ.get('EBOK_PASSWORD', '')
+EBOK_PAYER_ID      = os.environ.get('EBOK_PAYER_ID', '')
+EBOK_STATE_PATH    = Path(os.environ.get('EBOK_STATE_PATH', '/data/ebok_state.json'))
 ASSET_LIFETIME_YEARS       = float(os.environ.get('ASSET_LIFETIME_YEARS', '25.0'))
 PANEL_DEGRADATION_PCT_YEAR = float(os.environ.get('PANEL_DEGRADATION_PCT_YEAR', '0.5'))
 
@@ -187,7 +191,7 @@ def _format_heatpump_push_line(hp_month: dict) -> str:
     )
 
 
-def _notify_ha(title: str, message: str) -> None:
+def _notify_ha(title: str, message: str, target: str = 'family') -> None:
     import requests as _req
     token = os.environ.get('SUPERVISOR_TOKEN', '')
     if not token:
@@ -195,12 +199,12 @@ def _notify_ha(title: str, message: str) -> None:
         return
     try:
         _req.post(
-            'http://supervisor/core/api/services/notify/family',
+            f'http://supervisor/core/api/services/notify/{target}',
             headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'},
             json={'title': title, 'message': message},
             timeout=5,
         )
-        logger.info('HA notification sent: %s', message)
+        logger.info('HA notification sent (%s): %s', target, message)
     except Exception:
         logger.exception('HA notification failed')
 
@@ -243,13 +247,29 @@ def _health_snapshot() -> tuple[str, dict]:
     return state, attrs
 
 
+def _load_ebok_state() -> dict:
+    import json
+    if not EBOK_STATE_PATH.exists():
+        return {}
+    try:
+        return json.loads(EBOK_STATE_PATH.read_text())
+    except Exception:
+        return {}
+
+
+def _save_ebok_state(state: dict) -> None:
+    import json
+    EBOK_STATE_PATH.write_text(json.dumps(state, indent=2, ensure_ascii=False))
+
+
 def _backup_data() -> None:
     import shutil
     try:
         BACKUP_SHARE.mkdir(parents=True, exist_ok=True)
         for src in [HISTORIC_PATH, RCEM_HISTORY_PATH, RCEM_CORRECTIONS_PATH,
                     INVOICE_PATH, INVOICE_LAYOUTS_PATH, RCE_HOURLY_CACHE_PATH,
-                    TARIFF_CONFIG_PATH, BATTERY_CONFIG_PATH, BATTERY_HOURS_PATH]:
+                    TARIFF_CONFIG_PATH, BATTERY_CONFIG_PATH, BATTERY_HOURS_PATH,
+                    EBOK_STATE_PATH]:
             if src.exists():
                 shutil.copy2(src, BACKUP_SHARE / src.name)
         logger.info('Data backed up to %s', BACKUP_SHARE)
@@ -513,6 +533,143 @@ def main() -> None:
     _web.set_invoice_train_callback(_invoice_train)
     _web.set_invoice_path(INVOICE_PATH)
     _web.set_layouts_path(INVOICE_LAYOUTS_PATH)
+
+    # ── eBOK TAURON auto-import (docs/ROADMAP_EBOK_IMPORT.md) ──────────────────
+    # Session kept in memory for the add-on's process lifetime — login() is a
+    # no-op once already logged in, so re-syncs are cheap; a restart just logs
+    # in again (rare, and login itself is cheap/safe per the Etap 1 spike).
+    _ebok_client_holder: dict = {}
+
+    def _ebok_get_client():
+        from . import ebok_client as _ec
+        client = _ebok_client_holder.get('client')
+        if client is None:
+            client = _ec.EbokClient(EBOK_USERNAME, EBOK_PASSWORD)
+            _ebok_client_holder['client'] = client
+        return client
+
+    def ebok_sync() -> dict:
+        """One eBOK sync: list the full invoice history, download+ingest only the
+        documents not already present (dedup by invoice_number), push on problems.
+        Returns a JSON-able summary; never raises (errors are captured in the result)."""
+        from . import ebok_client as _ec
+        from datetime import date as _date, datetime as _dt, timedelta as _td
+
+        if not EBOK_USERNAME or not EBOK_PASSWORD:
+            return {'ok': False, 'error': 'eBOK nie skonfigurowany (brak ebok_username/ebok_password)'}
+
+        state = _load_ebok_state()
+        blocked_until = state.get('blocked_until')
+        if blocked_until and _dt.now().isoformat() < blocked_until:
+            detail = f'eBOK zablokowane do {blocked_until}'
+            _record_job('ebok', False, detail)
+            return {'ok': False, 'blocked': True, 'blocked_until': blocked_until}
+
+        client = _ebok_get_client()
+        try:
+            client.login()
+            if EBOK_PAYER_ID:
+                client_id = client.find_client_id(EBOK_PAYER_ID)
+                if not client_id:
+                    raise _ec.EbokError(f'Płatnik {EBOK_PAYER_ID} nie znaleziony na /wyborKlienta')
+                client.select_client(client_id)
+
+            date_from = _date(2022, 1, 1)  # przed 2023-08 (start konta wg spike'a Etapu 1)
+            date_to = _date.today() + _td(days=1)
+            docs = client.list_documents(date_from, date_to)
+
+            existing = invoice_store.load(INVOICE_PATH)
+            known_numbers = {rec.get('invoice_number') for rec in existing.values()
+                             if rec.get('invoice_number')}
+            missing = [d for d in docs if d.signature not in known_numbers]
+
+            if not missing:
+                state['last_sync'] = _dt.now().isoformat()
+                state.pop('blocked_until', None)
+                _save_ebok_state(state)
+                _record_job('ebok', True, 'brak nowych dokumentów')
+                return {'ok': True, 'imported': [], 'skipped_existing': len(docs), 'errors': []}
+
+            id_map = client.locate_ids({d.signature for d in missing}, date_from, date_to)
+            files = []
+            not_found = []
+            for d in missing:
+                doc_id = id_map.get(d.signature)
+                if not doc_id:
+                    not_found.append(d.signature)
+                    continue
+                try:
+                    pdf_bytes = client.download_pdf(doc_id)
+                    files.append((f'ebok_{d.signature.replace("/", "-")}.pdf', pdf_bytes))
+                except Exception:
+                    logger.exception('eBOK: pobranie PDF %s nie powiodło się', d.signature)
+                    not_found.append(d.signature)
+
+            from .invoice_ingest import ingest_pdfs
+            ingested = ingest_pdfs(files, INVOICE_PATH)
+            if ingested['parsed_list']:
+                _invoice_reconcile(ingested['parsed_list'], ingested['raw_texts'],
+                                   ingested['pdf_bytes_map'])
+
+            imported = [r['month'] for r in ingested['results'] if r.get('ok')]
+            needs_training = [r['filename'] for r in ingested['results'] if r.get('needs_training')]
+            errors = [r for r in ingested['results'] if not r.get('ok') and not r.get('needs_training')]
+
+            state['last_sync'] = _dt.now().isoformat()
+            state.pop('blocked_until', None)
+            _save_ebok_state(state)
+
+            problem = bool(needs_training or errors or not_found)
+            _record_job('ebok', not problem,
+                        f'zaimportowano {len(imported)}, problem: {problem}' if problem
+                        else f'zaimportowano {len(imported)}')
+            if problem:
+                lines = [f'eBOK — zaimportowano {len(imported)} nowych dokumentów, ale:']
+                if needs_training:
+                    lines.append(f'wymaga treningu: {", ".join(needs_training)}')
+                if errors:
+                    lines.append(f'błędy parsera: {len(errors)}')
+                if not_found:
+                    lines.append(f'nie znaleziono id w archiwum: {", ".join(not_found)}')
+                _notify_ha('PV ROI Tracker — eBOK', ' '.join(lines), target='kacper')
+
+            return {'ok': True, 'imported': imported, 'needs_training': needs_training,
+                    'errors': errors, 'not_found_in_archive': not_found}
+
+        except _ec.EbokLoginBlocked as exc:
+            blocked_until = (_dt.now() + _td(hours=24)).isoformat()
+            state['blocked_until'] = blocked_until
+            _save_ebok_state(state)
+            _record_job('ebok', False, 'zablokowane logowanie')
+            _notify_ha('PV ROI Tracker — eBOK',
+                       f'Tauron zablokował logowania do eBOK ({exc}). Wstrzymuję próby do jutra.',
+                       target='kacper')
+            return {'ok': False, 'blocked': True, 'error': str(exc)}
+        except _ec.EbokError as exc:
+            _record_job('ebok', False, str(exc))
+            _notify_ha('PV ROI Tracker — eBOK', f'Synchronizacja eBOK nie powiodła się: {exc}',
+                       target='kacper')
+            return {'ok': False, 'error': str(exc)}
+        except Exception as exc:
+            logger.exception('eBOK sync — nieoczekiwany błąd')
+            _record_job('ebok', False, str(exc))
+            _notify_ha('PV ROI Tracker — eBOK', f'Synchronizacja eBOK — nieoczekiwany błąd: {exc}',
+                       target='kacper')
+            return {'ok': False, 'error': str(exc)}
+
+    def ebok_job() -> None:
+        ebok_sync()
+
+    def _ebok_status() -> dict:
+        state = _load_ebok_state()
+        return {'configured': bool(EBOK_USERNAME and EBOK_PASSWORD),
+                'last_sync': state.get('last_sync'),
+                'blocked_until': state.get('blocked_until'),
+                'health': _job_health.get('ebok')}
+
+    if EBOK_USERNAME and EBOK_PASSWORD:
+        _web.set_ebok_sync_callback(ebok_sync)
+    _web.set_ebok_status_callback(_ebok_status)
 
     from . import tariff_config as _tc
     _tc.seed_if_missing(TARIFF_CONFIG_PATH)
@@ -1276,6 +1433,18 @@ def main() -> None:
     # godzinę, wynik miesięczny/sezonowy — wolno); pierwszy przebieg w tle.
     scheduler.add_job(heatpump_job, CronTrigger(hour=5, minute=45),
                       id='heatpump', name='Heat pump cost calculation', **_JOB_DEFAULTS)
+
+    # eBOK auto-import (docs/ROADMAP_EBOK_IMPORT.md): daily early in the billing
+    # cycle (dni 1–15, kiedy zwykle pojawia się nowa faktura rozliczeniowa),
+    # plus raz w tygodniu poza tym oknem — żeby złapać korekty/noty wystawiane
+    # poza cyklem (jak masowy batch korekt z 01.01.2026).
+    if EBOK_USERNAME and EBOK_PASSWORD:
+        scheduler.add_job(ebok_job, CronTrigger(day='1-15', hour=7, minute=30),
+                          id='ebok_sync_daily', name='eBOK sync (billing window)', **_JOB_DEFAULTS)
+        scheduler.add_job(ebok_job, CronTrigger(day_of_week='mon', hour=7, minute=45),
+                          id='ebok_sync_weekly', name='eBOK sync (weekly catch-up)', **_JOB_DEFAULTS)
+    else:
+        logger.info('eBOK: ebok_username/ebok_password nieustawione — auto-import wyłączony')
 
     logger.info('PV ROI Tracker v%s started — poll every %d min', __version__, POLL_INTERVAL)
 

@@ -2,6 +2,39 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.44.0] — 2026-09-28
+
+Auto-import faktur z eBOK TAURON (Etap 2, `docs/ROADMAP_EBOK_IMPORT.md`) —
+wybrany przez użytkownika kolejny podprojekt po Zasilenie depozytu (0.43.0),
+zastępuje wcześniejszy pomysł importu z IMAP.
+
+- Nowy moduł `ebok_client.py`: logowanie Keycloak do `ebok.tauron.pl` (wzorem
+  `PiotrMachowski/Tauron-AMIplus`), lista dokumentów przez eksport CSV
+  (pełna historia w jednym żądaniu, windows-1250), mapowanie numeru dokumentu
+  → numeryczne id przez paginowane archiwum HTML (max 50/stronę), pobranie
+  PDF przez `/podgladFaktury/id/<id>`. Bez nowych zależności (tylko `requests`).
+- Nowa opcja `ebok_username`/`ebok_password` (login do eBOK, to samo konto co
+  `tauron_amiplus`) i opcjonalna `ebok_payer_id` — **puste domyślnie, auto-import
+  wyłączony**, ręczny upload PDF bez zmian.
+- `invoice_ingest.py`: wydzielona wspólna logika parsowania+zapisu PDF z
+  `web.invoice_upload` — używana teraz też przez sync eBOK, żadnej duplikacji.
+- `POST /api/ebok/sync` + przycisk „Pobierz brakujące z eBOK" w zakładce
+  Faktury — pobiera tylko dokumenty, których jeszcze nie ma (dedup po numerze
+  faktury), przez tę samą ścieżkę rekonsyliacji co ręczny upload.
+- Harmonogram: codziennie 07:30 w dniach 1–15, plus raz w tygodniu (pon. 07:45)
+  poza tym oknem — żeby złapać korekty/noty wystawiane poza cyklem rozliczeniowym.
+- Push na `notify.kacper` tylko przy problemie (błąd logowania, blokada
+  logowań Taurona — wtedy wstrzymanie prób na 24h w `/data/ebok_state.json`,
+  dokument wymagający treningu parsera, nieznaleziony w archiwum). Czysty
+  sukces jest cichy.
+- 25 nowych testów (`test_ebok_client.py`, `test_invoice_ingest.py`) — fake
+  HTTP session (bez nowej zależności typu `requests_mock`), plus regresja na
+  realnych fixture'ach ze spike'a Etapu 1 (poza repo, jak istniejący wzorzec
+  `TestRealPdf`). 612 zielone (+13 skip bez lokalnych plików realnych).
+
+Etap 1 (spike logowania/API) opisany w `docs/ROADMAP_EBOK_IMPORT.md` — flow
+logowania, format CSV/HTML, brak captchy/OTP w 5 testowych logowaniach.
+
 ## [0.43.0] — 2026-09-28
 
 Podprojekt „Depozyt: zasilenie 2025-04/06 + B8" (`docs/ROADMAP_DEPOSIT_FEEDIN.md`) —
