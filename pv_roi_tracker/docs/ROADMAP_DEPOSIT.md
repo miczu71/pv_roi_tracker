@@ -2,6 +2,56 @@
 
 Kopia zatwierdzonego planu z `/data/home/.claude/plans/`.
 
+## Wynik Etapu 1 (28.09.2026) — GO
+
+Spike: pobrano 39 PDF-ów faktur (`/api/invoice/pdf?key=YYYY-MM`), sparsowano `pdftotext -layout`
+wiersze rozliczenia depozytu (4/5/6/7) i sprzedaży energii (wiersz 1). Wynik: **reguła Taurona
+znaleziona z zerowymi naruszeniami na 39/39 fakturach**:
+
+> `deposit_used(M) = min(saldo_dostępne_przed(M), energia_gross(M) − opłata_handlowa_gross(M))`
+
+gdzie `opłata_handlowa_gross` to osobna pozycja na fakturze (28,86 zł netto / 35,50 zł brutto,
+czasem 30,92 zł przy niepełnym miesiącu) wliczona w wiersz „1. Sprzedaży energii elektrycznej",
+ale **nieuprawniona do pokrycia depozytem** — Tauron usunął tę pozycję z faktury od 2025-08
+(fee=0 od tego miesiąca), co tłumaczy, czemu obecny kod widzi „capping" tylko od ~2025-08.
+
+Rozbicie 39 faktur:
+- **20/39 „cap-bound"** (`used == cap` dokładnie, ±0,03 zł) — depozyt ograniczony kosztem energii,
+  **saldo w tym miesiącu nieznane** (tylko dolna granica). 7 z nich (2025-08…2026-08) już wykryte
+  przez istniejący `deposit_capped` w `invoice_parser.py`; **13 wcześniejszych (2023-08…2025-07)
+  NIE są wykrywane**, bo obecna definicja `deposit_capped` porównuje `used` z surowym
+  `energy_sale_gross_pln`, bez odjęcia opłaty handlowej.
+- **19/39 „balance-bound"** (`used == previous`, `used < cap`) — depozyt w pełni wyczerpany,
+  **saldo prawdziwe i wiarygodne** (świeże potwierdzenie na fakturze).
+- 1 wyjątek: pierwsza faktura (2023-06) — jednorazowy artefakt rozruchu (naliczono bieżący
+  okres bez zwykłego opóźnienia księgowania; `used=5,88` ≈ `accrued(2023-06)=5,90` z modelu).
+- 2024-01, 2023-07: `previous=used=0` — brak salda do rozliczenia, brak naruszenia.
+
+**Diagnoza źródła zawyżenia/niepewności salda 474,72 zł**: strona konsumpcji w `deposit.py` już
+jest poprawna (`want = inv_used`, czyli bezpośrednio z faktury — to zawsze zgodne z regułą).
+Winna jest **rekonsyliacja/wykrywanie lagu** (`_ym_shift`/`implied`/`posting_lag` w `deposit.py`)
+i **anchor fallback**: obie mechaniki traktują tych 13 przeoczonych miesięcy cap-bound jak
+wiarygodne odczyty salda, mieszając je z prawdziwymi w medianie log-ratio — to wyjaśnia
+skokowe `diff_pct` (300–2000%) widoczne w `deposit.reconciliation.rows` dla miesięcy sąsiadujących
+z tymi 13 przeoczeniami.
+
+**Rekomendacja (zmienia zakres Etapu 2 — mniejszy niż oryginalny plan replay-ledger):**
+1. `invoice_parser.py`: nowe pole `trade_fee_gross_pln` (wiersz „Opłata Handlowa"/„opłata handlowa",
+   domyślnie 0,0 gdy nieobecny).
+2. Poprawić `deposit_capped = abs(deposit_used_pln - (energy_sale_gross_pln - trade_fee_gross_pln)) <= 0.02`.
+3. Re-parse istniejących 39 faktur (`/api/invoice/reparse` per miesiąc albo migracja `invoice_store`),
+   żeby `deposit_capped` był poprawny retroaktywnie na całej historii, nie tylko od 2025-08.
+4. `deposit.py` automatycznie zacznie poprawnie wykluczać 20/39 (nie 7/39) miesięcy z `implied`/
+   `posting_lag` i z kotwicy fakturowej — bez zmiany logiki, tylko dzięki poprawnej fladze.
+5. Nowe pole jakości w `DepositResult`: udział miesięcy „balance-bound" w całej historii
+   (`verified_months / total_months`), pokazane w UI przy saldzie jako miara wiarygodności
+   („X z Y miesięcy potwierdzonych na fakturze") — żeby nie prezentować liczby z fałszywą precyzją.
+6. B8 (zegar przedawnienia: eksport vs zaksięgowanie) — **wciąż otwarte**, do zbadania w Etapie 2
+   po naprawie rekonsyliacji (13 nowo odkrytych cap-bound miesięcy zanieczyszczało też tę analizę).
+
+Surowe dane spike'u (parsowanie 39 PDF, tabela dopasowań) w scratchpadzie sesji — nieprzechowywane
+w repo (odtwarzalne z `/api/invoice/pdf`).
+
 ## Kontekst
 
 Pompa ciepła × PV (Etapy 0–3, 0.41.0) i Rok do roku (0.38.0) są zamknięte. Z backlogu
@@ -44,18 +94,27 @@ Skrypt w scratchpadzie. Wejście: `/api/data` (39 faktur + `deposit.months`), PD
 **Checkpoint:** tabela faktura × hipoteza, odtworzone saldo Taurona na koniec 2026-08 vs `balance_model` 474,72 zł, rekomendacja.
 Wynik dopisany do tego pliku.
 
-### Etap 2 — ledger wg reguły Taurona (tylko przy GO), wydanie 0.42.0
-- `deposit.py`: nowa czysta funkcja replay (zasilenie z lagiem, konsumpcja wg reguły z Etapu 1, FIFO + przedawnienie
-  wg ustalonego zegara, czyli domknięcie B8). Wynik `balance_tauron` z flagą jakości (ile faktur odtworzonych).
-  Stała `DEFAULT_POSTING_LAG` i logika log-ratio zostają tylko wtedy, gdy spike je potwierdzi.
-- Headline salda (`main.py:820`, sensor MQTT, kafle UI) = `balance_tauron`. `balance_model` i `balance_estimate`
-  zostają jako diagnostyka albo zostają usunięte, zależnie od wyniku spike’u (decyzja na checkpoincie 1).
-- Prognoza 12 mies. i `expiring_*` liczone z nowego ledgera; konsumpcja w prognozie wg tej samej reguły, nie średnia sezonowa.
-- Testy w `tests/test_deposit.py`: odtworzenie `used` dla 39 faktur (fixture z żywych danych), przypadek capped,
-  jesienne zdjęcie nadwyżki, przedawnienie od właściwego miesiąca, bieżący miesiąc częściowy.
-- CHANGELOG, README (tabela encji: zmiana znaczenia sensora salda), release zgodnie z `feedback_pv_roi_release_checklist`
-  (bump `pv_roi_tracker/config.yaml` + `__init__.py`, published release, update przez Supervisora).
-- UI: tylko etykiety i źródło salda w zakładce faktur, cache-busting `?v=` jest już zrobiony; Playwright direct-IP `172.30.33.15:8099`.
+### Etap 2 — poprawka `deposit_capped` + jakość salda (zmieniony zakres po Etapie 1), wydanie 0.42.0
+Reguła Taurona jest już poprawnie zaimplementowana po stronie konsumpcji (`want = inv_used`) —
+**nie potrzeba nowego ledgera/replay**. Naprawa jest węższa:
+1. `invoice_parser.py`: pole `trade_fee_gross_pln` (wiersz „Opłata Handlowa", domyślnie 0,0).
+2. Poprawiony `deposit_capped = abs(deposit_used_pln - (energy_sale_gross_pln - trade_fee_gross_pln)) <= 0.02`.
+3. Migracja/reparse 39 istniejących faktur, żeby flaga była poprawna retroaktywnie (nie tylko od 2025-08) —
+   przez `/api/invoice/reparse` per miesiąc; **ręczne wywołanie z jawną zgodą usera**, bo reparse
+   przelicza też rekonsyliację (patrz lekcja z incydentu 2026-03 w `[[project_pv_roi_deposit]]`);
+   restart add-onu i weryfikacja po każdej partii.
+4. `deposit.py`: bez zmian logiki — `implied`/`posting_lag`/kotwica automatycznie zaczną poprawnie
+   wykluczać 20/39 (nie 7/39) miesięcy cap-bound dzięki poprawnej fladze z kroku 2.
+5. Nowe pole jakości w `DepositResult`: `verified_months`/`total_months` (udział miesięcy
+   balance-bound w historii) — pokazane w UI przy saldzie („X z Y miesięcy potwierdzonych na fakturze").
+6. Testy w `tests/test_deposit.py` i `tests/test_invoice_parser.py`: parsowanie `trade_fee_gross_pln`
+   (obecny/nieobecny wariant), poprawiona flaga `deposit_capped` na fixture z 2023-08 i 2025-08,
+   pole jakości.
+- CHANGELOG, README (tabela encji: zmiana znaczenia sensora salda + nowe pole jakości), release
+  zgodnie z `feedback_pv_roi_release_checklist` (bump `pv_roi_tracker/config.yaml` + `__init__.py`,
+  published release, update przez Supervisora).
+- UI: etykieta jakości przy kaflu salda w zakładce faktur, cache-busting `?v=` jest już zrobiony;
+  Playwright direct-IP `172.30.33.15:8099`.
 
 ### Etap 3 — domknięcie reszty długu, wydanie 0.42.1
 - Retro-fix `needs_training` faktury 2024-01. `/api/invoice/reparse` przelicza też rekonsyliację,
