@@ -140,6 +140,7 @@ _state: dict = {
     'battery_sim': None,
     'lifetime_forecast': None,
     'yoy': None,
+    'heatpump': None,
 }
 
 def update_state(result: RoiResult, records: list[MonthlyRecord],
@@ -183,6 +184,12 @@ def update_lifetime_forecast(payload: Optional[dict]) -> None:
     """Store the forecast_lifetime() payload (called from main.py poll loop)."""
     with _lock:
         _state['lifetime_forecast'] = payload
+
+
+def update_heatpump(payload: Optional[dict]) -> None:
+    """Store the heatpump.compute() payload (called from main.py's heatpump_job)."""
+    with _lock:
+        _state['heatpump'] = payload
 
 
 def update_yoy(payload: Optional[dict]) -> None:
@@ -487,6 +494,7 @@ def api_data():
         'lifetime_forecast': _state.get('lifetime_forecast'),
         'degradation': _build_degradation(records, today),
         'yoy': _state.get('yoy'),
+        'heatpump': _state.get('heatpump'),
         'version': __version__,
     })
 

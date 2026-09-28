@@ -223,6 +223,11 @@ Add `https://github.com/miczu71/pv_roi_tracker` in **Settings → Add-ons → Ad
 | `co2_factor_kg_kwh` | `0.597` | Grid CO₂ emission factor for the avoided-emissions sensor (KOBiZE, end-user electricity) |
 | `deposit_refund_pct` | `0.20` | Refund cap on expired deposit: `0.20` under RCEm, `0.30` under hourly RCE |
 | `timezone` | `Europe/Warsaw` | Container timezone. Must match the HA host TZ so month-close fires **before** utility meters reset at midnight. |
+| `heatpump_energy_entity` | `sensor.energia_pompa_ciepla_energy` | Heat pump lifetime energy meter (`total_increasing`); **empty disables the "Pompa ciepła" cost calculation entirely** (od v0.39.0) |
+| `heatpump_heating_hours_entity` | `sensor.pompa_heating` | Daily-resetting `history_stats` counter for the heating mode (splits kWh into heating/DHW) |
+| `heatpump_dhw_hours_entity` | `sensor.pompa_hot_water` | Same, for domestic hot water mode |
+| `heatpump_outdoor_temp_entity` | `sensor.termometr_dwor_temperature` | Outdoor temperature source for degree-day (HDD) season comparison |
+| `heatpump_hdd_base_temp` | `15.0` | HDD base temperature (°C) |
 
 ## Data files
 
@@ -264,6 +269,20 @@ backtest obu metod: [`pv_roi_tracker/docs/ROADMAP_YOY.md`](pv_roi_tracker/docs/R
 Od v0.38.0: kafel "Rok do roku" na stronie głównej (zastępuje wykres „Wachlarz
 spłaty" w tym miejscu — wachlarz przeniesiony do zakładki **Wykresy**), z
 przełącznikiem metody wyceny eksportu i wykresem wyścigu narastająco.
+
+## Pompa ciepła × PV — prawdziwy koszt grzania (od v0.39.0, dane; UI w przygotowaniu)
+
+`/api/data`'s `heatpump` key (`null` dopóki `heatpump_energy_entity` puste lub
+jeszcze nic nie pobrano): godzinowa atrybucja zużycia pompy do PV / baterii /
+sieci — pompa dostaje taki sam miks źródeł co cały dom w danej godzinie,
+proporcjonalnie do jej zużycia; bateria ma własny koszt jednostkowy śledzony
+metodą średniej ważonej ładowań. Koszt w dwóch wersjach obok siebie:
+**gotówkowej** (PV = 0 zł) i **ekonomicznej** (PV/bateria wyceniane po RCEm
+miesiąca — utracona sprzedaż). Podział kWh na grzanie/CWU/inne, agregaty
+miesięczne i sezonowe (sezon grzewczy IX–VIII) ze stopniodniami (HDD) do
+uczciwego porównania mroźnych i ciepłych zim. Bez licznika ciepła — celowo
+brak COP i zł/kWh ciepła. Pełny opis i uzasadnienie decyzji projektowych:
+[`pv_roi_tracker/docs/ROADMAP_HEATPUMP.md`](pv_roi_tracker/docs/ROADMAP_HEATPUMP.md).
 
 ## Architecture
 

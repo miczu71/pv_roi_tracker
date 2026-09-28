@@ -1,5 +1,5 @@
 name: PV ROI Tracker
-version: "0.38.0"
+version: "0.39.0"
 slug: pv_roi_tracker
 description: >-
   Tracks the ROI of a residential PV solar system.
@@ -38,6 +38,11 @@ options:
   co2_factor_kg_kwh: 0.597
   deposit_refund_pct: 0.20
   timezone: "Europe/Warsaw"
+  heatpump_energy_entity: "sensor.energia_pompa_ciepla_energy"
+  heatpump_heating_hours_entity: "sensor.pompa_heating"
+  heatpump_dhw_hours_entity: "sensor.pompa_hot_water"
+  heatpump_outdoor_temp_entity: "sensor.termometr_dwor_temperature"
+  heatpump_hdd_base_temp: 15.0
 schema:
   gross_investment: float
   subsidy: float
@@ -59,3 +64,8 @@ schema:
   co2_factor_kg_kwh: float
   deposit_refund_pct: float
   timezone: str?
+  heatpump_energy_entity: str?
+  heatpump_heating_hours_entity: str?
+  heatpump_dhw_hours_entity: str?
+  heatpump_outdoor_temp_entity: str?
+  heatpump_hdd_base_temp: float?

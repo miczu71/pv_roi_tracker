@@ -2,6 +2,51 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.39.0] — 2026-09-28
+
+Pompa ciepła × PV — prawdziwy koszt grzania i CWU (Etap 1: backend/dane;
+UI w kolejnym wydaniu). Pełny opis, wzory i uzasadnienie decyzji projektowych:
+`pv_roi_tracker/docs/ROADMAP_HEATPUMP.md`.
+
+**Nowy blok `heatpump` w `/api/data`** (`null` dopóki `heatpump_energy_entity`
+nie skonfigurowane lub jeszcze nic nie pobrano):
+- Godzinowa atrybucja zużycia pompy do PV / baterii / sieci (szczyt/dolina)
+  — pompa dostaje TAKI SAM miks źródeł co cały dom w danej godzinie
+  (proporcjonalnie do jej zużycia względem zużycia domu); bateria ma
+  własny koszt jednostkowy śledzony metodą średniej ważonej ładowań
+  (z PV = koszt utraconej sprzedaży RCEm, z sieci = cena strefy tej godziny).
+- Koszt w **dwóch wersjach obok siebie**: gotówkowej (PV = 0 zł, płaci się
+  tylko za kWh z sieci) i ekonomicznej (każda kWh ma cenę — z PV/baterii po
+  RCEm miesiąca, utracona sprzedaż).
+- Podział kWh pompy na **grzanie / CWU / inne** godzinowo, wg udziału trybu
+  pracy w danej godzinie (`sensor.pompa_heating`/`sensor.pompa_hot_water`).
+- Agregaty **miesięczne** i **sezonowe** (sezon grzewczy wrzesień–sierpień):
+  kWh, źródła, koszt got./ekon., % pokrycia PV+bateria, stopniodnie (HDD,
+  baza 15°C domyślnie) i kWh/zł grzania na stopniodzień — do uczciwego
+  porównania sezonów niezależnie od tego, jak mroźna była zima. Sezon w toku
+  ma dodatkowo agregat „do tej samej daty" dla porównania z poprzednimi
+  sezonami bez czekania na ich zamknięcie.
+- Godziny, w których zużycie pompy przewyższa policzone zużycie całego domu
+  (inny tor pomiarowy licznika pompy) są flagowane jako anomalia i liczone
+  do sieci — nie zaniżają sztucznie kosztu.
+
+Bez licznika ciepła — celowo brak COP i zł/kWh ciepła; porównanie sezonów
+idzie przez stopniodnie, nie przez uzysk cieplny.
+
+**Nowe moduły**: `pv_roi_tracker/heatpump.py` (czyste funkcje obliczeniowe,
+47 nowych testów) + `pv_roi_tracker/heatpump_store.py` (cache godzinowy,
+wzorzec `battery_store.py`) + `live_reader.get_heatpump_hours()` (godzinowe
+LTS pompy, w paczkach miesięcznych — job `heatpump` codziennie o 05:45 +
+przebieg w tle przy starcie; pierwszy start dociąga historię od 2023-06,
+może potrwać kilka minut).
+
+**Nowe opcje** (z sensownymi domyślnymi dla tej instalacji — puste
+`heatpump_energy_entity` wyłącza funkcję): `heatpump_energy_entity`,
+`heatpump_heating_hours_entity`, `heatpump_dhw_hours_entity`,
+`heatpump_outdoor_temp_entity`, `heatpump_hdd_base_temp`.
+
+Brak nowych sensorów MQTT w tym wydaniu — wyłącznie backend/dane.
+
 ## [0.38.0] — 2026-09-27
 
 Kafel "Rok do roku" na stronie głównej — dane wprowadzone w v0.37.0 mają teraz UI.

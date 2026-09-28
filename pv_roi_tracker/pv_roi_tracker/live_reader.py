@@ -141,6 +141,7 @@ def _ws_statistics(
     period: str,
     end_iso: Optional[str] = None,
     timeout: int = 30,
+    types: Optional[list] = None,
 ) -> dict:
     """
     recorder/statistics_during_period via HA WebSocket (auth handshake included).
@@ -148,6 +149,11 @@ def _ws_statistics(
 
     HA 2026.x removed the REST /api/recorder/statistics_during_period endpoint;
     statistics are available only through the WebSocket API.
+
+    `types` defaults to ['change'] (every existing caller wants the period
+    delta of a total_increasing meter); pass e.g. ['max'] for a daily-resetting
+    measurement counter or ['mean'] for an instantaneous sensor like outdoor
+    temperature (heatpump.py / get_heatpump_hours).
     """
     ws = None
     try:
@@ -158,7 +164,7 @@ def _ws_statistics(
             'start_time': start_iso,
             'period': period,
             'statistic_ids': statistic_ids,
-            'types': ['change'],
+            'types': types or ['change'],
         }
         if end_iso:
             req['end_time'] = end_iso
@@ -360,6 +366,110 @@ def get_hourly_energy(start_iso: str, end_iso: Optional[str] = None) -> dict:
     except Exception as exc:
         logger.warning('get_hourly_energy failed: %s', exc)
         return {}
+
+
+def _daily_counter_hourly_deltas(rows: list) -> dict:
+    """Zamień godzinowe 'max' dziennie-resetującego się licznika (history_stats
+    sensor, np. `sensor.pompa_heating`) na deltę PRZYROSTU w danej godzinie.
+
+    Pierwsza godzina dnia (albo pierwsza po luce) = sama wartość max (licznik
+    liczy od północy); spadek w środku dnia (nieoczekiwany reset) traktowany
+    tak samo, żeby nie wygenerować ujemnej delty."""
+    out: dict = {}
+    prev_val: Optional[float] = None
+    prev_day = None
+    for entry in sorted(rows, key=lambda e: e.get('start') or 0):
+        start_ms = entry.get('start')
+        val = entry.get('max')
+        if start_ms is None or val is None:
+            continue
+        val = float(val)
+        dt = _dt.fromtimestamp(start_ms / 1000)
+        day = dt.date()
+        key = dt.strftime('%Y-%m-%dT%H')
+        delta = val if (prev_day != day or prev_val is None or val < prev_val) else val - prev_val
+        out[key] = out.get(key, 0.0) + max(0.0, delta)
+        prev_val, prev_day = val, day
+    return out
+
+
+def get_heatpump_hours(
+    start_iso: str,
+    end_iso: str,
+    energy_entity: str,
+    heating_hours_entity: str = '',
+    dhw_hours_entity: str = '',
+    outdoor_entity: str = '',
+) -> dict:
+    """Godzinowy bilans pompy ciepła dla jednego przedziału (main.py wywołuje
+    to w paczkach miesięcznych — patrz heatpump_store/main.heatpump_job).
+
+    Zwraca {'YYYY-MM-DDTHH': {produced,exported,imported,batt_charge,
+    batt_discharge,hp_kwh,heat_h,dhw_h,t_out}} w czasie lokalnym (kolizja DST
+    jesienią: kumulacja jak w get_hourly_energy — nie nadpisywanie). Puste przy
+    błędzie WS; brakujące encje trybu/temperatury dają 0.0/None dla tych pól."""
+    sources = get_energy_dashboard_sources()
+    meter_ids = _all_role_entities(sources) + [energy_entity]
+    mode_ids = [e for e in (heating_hours_entity, dhw_hours_entity) if e]
+    temp_ids = [outdoor_entity] if outdoor_entity else []
+    all_ids = list(dict.fromkeys(meter_ids + mode_ids + temp_ids))
+    if not all_ids:
+        return {}
+    try:
+        data = _ws_statistics(all_ids, start_iso, 'hour', end_iso=end_iso, timeout=60,
+                              types=['change', 'max', 'mean'])
+    except Exception as exc:
+        logger.warning('get_heatpump_hours failed for %s..%s: %s', start_iso, end_iso, exc)
+        return {}
+
+    def _role_changes(entities: list) -> dict:
+        merged: dict = {}
+        for eid in entities:
+            for entry in data.get(eid, []):
+                start_ms = entry.get('start')
+                change = entry.get('change')
+                if start_ms is None or change is None:
+                    continue
+                change_f = float(change)
+                if change_f < 0:
+                    continue
+                key = _dt.fromtimestamp(start_ms / 1000).strftime('%Y-%m-%dT%H')
+                merged[key] = merged.get(key, 0.0) + change_f
+        return merged
+
+    produced = _role_changes(sources['solar'])
+    exported = _role_changes(sources['grid_export'])
+    imported = _role_changes(sources['grid_import'])
+    batt_charge = _role_changes(sources['battery_charge'])
+    batt_discharge = _role_changes(sources['battery_discharge'])
+    hp_kwh = _role_changes([energy_entity])
+    heat_h = (_daily_counter_hourly_deltas(data.get(heating_hours_entity, []))
+             if heating_hours_entity else {})
+    dhw_h = (_daily_counter_hourly_deltas(data.get(dhw_hours_entity, []))
+            if dhw_hours_entity else {})
+    t_out: dict = {}
+    if outdoor_entity:
+        for entry in data.get(outdoor_entity, []):
+            start_ms = entry.get('start')
+            m = entry.get('mean')
+            if start_ms is None or m is None:
+                continue
+            key = _dt.fromtimestamp(start_ms / 1000).strftime('%Y-%m-%dT%H')
+            t_out[key] = float(m)
+
+    all_keys = set(produced) | set(exported) | set(imported) | set(batt_charge) \
+        | set(batt_discharge) | set(hp_kwh) | set(heat_h) | set(dhw_h) | set(t_out)
+    hours = {}
+    for key in all_keys:
+        hours[key] = {
+            'produced': produced.get(key, 0.0), 'exported': exported.get(key, 0.0),
+            'imported': imported.get(key, 0.0), 'batt_charge': batt_charge.get(key, 0.0),
+            'batt_discharge': batt_discharge.get(key, 0.0), 'hp_kwh': hp_kwh.get(key, 0.0),
+            'heat_h': heat_h.get(key, 0.0), 'dhw_h': dhw_h.get(key, 0.0),
+            't_out': t_out.get(key),
+        }
+    logger.info('get_heatpump_hours: %d godzin od %s', len(hours), start_iso)
+    return hours
 
 
 def get_ha_monthly_stats(entity_ids: list, start_month: str = '2024-12-01',

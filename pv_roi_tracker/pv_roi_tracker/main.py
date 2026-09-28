@@ -36,6 +36,12 @@ MONTHLY_NOTIFY         = os.environ.get('MONTHLY_NOTIFY', 'true').lower() in ('1
 TARIFF_CONFIG_PATH     = Path(os.environ.get('TARIFF_CONFIG_PATH', '/data/tariff_config.json'))
 BATTERY_CONFIG_PATH    = Path(os.environ.get('BATTERY_CONFIG_PATH', '/data/battery_config.json'))
 BATTERY_HOURS_PATH     = Path(os.environ.get('BATTERY_HOURS_PATH', '/data/battery_sim.json'))
+HEATPUMP_HOURS_PATH    = Path(os.environ.get('HEATPUMP_HOURS_PATH', '/data/heatpump_hours.json'))
+HEATPUMP_ENERGY_ENTITY        = os.environ.get('HEATPUMP_ENERGY_ENTITY', '')
+HEATPUMP_HEATING_HOURS_ENTITY = os.environ.get('HEATPUMP_HEATING_HOURS_ENTITY', '')
+HEATPUMP_DHW_HOURS_ENTITY     = os.environ.get('HEATPUMP_DHW_HOURS_ENTITY', '')
+HEATPUMP_OUTDOOR_TEMP_ENTITY  = os.environ.get('HEATPUMP_OUTDOOR_TEMP_ENTITY', '')
+HEATPUMP_HDD_BASE_TEMP        = float(os.environ.get('HEATPUMP_HDD_BASE_TEMP', '15.0'))
 GROSS_INVESTMENT   = float(os.environ.get('GROSS_INVESTMENT', '51900.0'))
 SUBSIDY            = float(os.environ.get('SUBSIDY', '28714.0'))
 SYSTEM_KWP         = float(os.environ.get('SYSTEM_KWP', '6.72'))
@@ -582,6 +588,104 @@ def main() -> None:
 
     _web.set_battery_config_path(BATTERY_CONFIG_PATH)
     _web.set_battery_config_callback(_battery_config_changed)
+
+    # ── Pompa ciepła × PV (zakładka „Pompa ciepła") ───────────────────────────
+    from . import heatpump, heatpump_store
+
+    _heatpump_lock = _threading.Lock()
+
+    def heatpump_job(fetch_lts: bool = True) -> None:
+        """Dociągnij godzinowy bilans pompy (w paczkach miesięcznych — LTS
+        payload dla ~3+ lat na raz przeciążyłby WS), przelicz koszt got./ekon.,
+        odśwież UI. Nieaktywne, gdy HEATPUMP_ENERGY_ENTITY nie skonfigurowane."""
+        if not HEATPUMP_ENERGY_ENTITY:
+            _web.update_heatpump(None)
+            return
+        _heatpump_lock.acquire()
+        try:
+            from datetime import datetime as _dthp, timedelta as _tdhp, timezone as _tzhp
+            from dateutil.relativedelta import relativedelta as _reldelta
+            from . import rce_hourly
+
+            hours = heatpump_store.load_hours(HEATPUMP_HOURS_PATH)
+            if fetch_lts:
+                if hours:
+                    fetch_from = (_dthp.strptime(max(hours), '%Y-%m-%dT%H') - _tdhp(hours=48))
+                    fetch_from = fetch_from.replace(minute=0, second=0, microsecond=0)
+                else:
+                    fetch_from = _dthp(2023, 6, 1)
+                now_local = _dthp.now()
+                cursor = fetch_from
+                fetched_any = False
+                while cursor < now_local:
+                    chunk_end = min(cursor + _reldelta(months=1), now_local)
+                    start_iso = cursor.astimezone().astimezone(_tzhp.utc).strftime('%Y-%m-%dT%H:%M:%S+00:00')
+                    end_iso = chunk_end.astimezone().astimezone(_tzhp.utc).strftime('%Y-%m-%dT%H:%M:%S+00:00')
+                    new = live_reader.get_heatpump_hours(
+                        start_iso, end_iso, HEATPUMP_ENERGY_ENTITY,
+                        heating_hours_entity=HEATPUMP_HEATING_HOURS_ENTITY,
+                        dhw_hours_entity=HEATPUMP_DHW_HOURS_ENTITY,
+                        outdoor_entity=HEATPUMP_OUTDOOR_TEMP_ENTITY)
+                    if new:
+                        hours.update(new)
+                        fetched_any = True
+                    cursor = chunk_end
+                if fetched_any:
+                    heatpump_store.save_hours(hours, HEATPUMP_HOURS_PATH)
+            if not hours:
+                _record_job('heatpump', False, 'brak godzinowych danych pompy ciepła')
+                return
+
+            records = historic_store.load(HISTORIC_PATH)
+            rcem_by_month = {f'{r.year}-{r.month:02d}': r.feedin_price_pln_kwh
+                             for r in records if r.feedin_price_pln_kwh is not None}
+            today = date.today()
+            current_ym = today.strftime('%Y-%m')
+            if current_ym not in rcem_by_month:
+                _est = rce_hourly.estimate_current_month_feedin_price(
+                    rcem_scraper._load_history(RCEM_HISTORY_PATH),
+                    cache_path=RCE_HOURLY_CACHE_PATH, today=today)
+                if _est.get('estimate') is not None:
+                    rcem_by_month[current_ym] = _est['estimate']
+
+            # Cennik sieci per miesiąc: faktura (peak/offpeak_gross realne) >
+            # rekord (buy_price_pln_kwh, spłaszczone) > tariff_config (bieżący
+            # baseline, dla miesięcy bez jeszcze żadnej faktury).
+            stored_invoices = invoice_store.filter_billing(
+                invoice_store.filter_real(invoice_store.load(INVOICE_PATH)))
+            rates_by_month: dict = {}
+            for ym, inv in stored_invoices.items():
+                pk = inv.get('peak_gross')
+                if pk is not None:
+                    rates_by_month[ym] = (pk, inv.get('offpeak_gross'))
+            for r in records:
+                ym = f'{r.year}-{r.month:02d}'
+                if ym not in rates_by_month and r.buy_price_pln_kwh is not None:
+                    rates_by_month[ym] = (r.buy_price_pln_kwh, None)
+            _tcfg_hp = _tc.load(TARIFF_CONFIG_PATH)
+            for ym in sorted({k[:7] for k in hours}):
+                if ym in rates_by_month:
+                    continue
+                rates = _tc.effective_baseline(_tcfg_hp, date(int(ym[:4]), int(ym[5:7]), 28))
+                if rates.get('peak_gross') is not None:
+                    rates_by_month[ym] = (
+                        float(rates['peak_gross']),
+                        float(rates['offpeak_gross']) if rates.get('offpeak_gross') is not None else None)
+
+            payload = heatpump.compute(
+                hours, rates_by_month, rcem_by_month,
+                battery_efficiency=live_reader._BATTERY_RT_EFF,
+                today=today, hdd_base=HEATPUMP_HDD_BASE_TEMP)
+            _web.update_heatpump(payload)
+            _record_job('heatpump', True)
+            if payload:
+                logger.info('Heatpump: %d godz., %d anomalii, %d mies.',
+                           payload['hours_total'], payload['anomaly_hours_total'], len(payload['months']))
+        except Exception:
+            logger.exception('Heatpump cost calculation failed')
+            _record_job('heatpump', False, 'obliczenie kosztu pompy ciepła nie powiodło się')
+        finally:
+            _heatpump_lock.release()
 
     def _rcem_scrape_status(now: date) -> str:
         y, m = (now.year - 1, 12) if now.month == 1 else (now.year, now.month - 1)
@@ -1139,6 +1243,11 @@ def main() -> None:
     scheduler.add_job(battery_job, CronTrigger(hour=5, minute=15),
                       id='battery_sim', name='Battery expansion simulation', **_JOB_DEFAULTS)
 
+    # Pompa ciepła × PV: raz dziennie, jak battery_sim (LTS zmienia się co
+    # godzinę, wynik miesięczny/sezonowy — wolno); pierwszy przebieg w tle.
+    scheduler.add_job(heatpump_job, CronTrigger(hour=5, minute=45),
+                      id='heatpump', name='Heat pump cost calculation', **_JOB_DEFAULTS)
+
     logger.info('PV ROI Tracker v%s started — poll every %d min', __version__, POLL_INTERVAL)
 
     _backup_data()   # ensure /share copy is current on every start
@@ -1195,6 +1304,11 @@ def main() -> None:
 
     # Pierwszy przebieg symulacji magazynu w tle (backfill LTS może potrwać ~30 s)
     _threading.Thread(target=battery_job, daemon=True, name='battery-sim-boot').start()
+
+    # Pierwszy przebieg kosztu pompy ciepła w tle — pierwsze uruchomienie po
+    # 0.39.0 dociąga ~3+ lata godzinowych LTS (paczki miesięczne), może
+    # potrwać kilka minut; kolejne starty dociągają tylko końcówkę z cache.
+    _threading.Thread(target=heatpump_job, daemon=True, name='heatpump-boot').start()
 
     scheduler.start()
 

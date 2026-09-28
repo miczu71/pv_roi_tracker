@@ -23,10 +23,16 @@ export MONTHLY_NOTIFY=$(jq -r '.monthly_notify // "true"' "$CONFIG")
 export CO2_FACTOR_KG_KWH=$(jq -r '.co2_factor_kg_kwh // "0.597"' "$CONFIG")
 export DEPOSIT_REFUND_PCT=$(jq -r '.deposit_refund_pct // "0.20"' "$CONFIG")
 export TZ=$(jq -r '.timezone // "Europe/Warsaw"' "$CONFIG")
+export HEATPUMP_ENERGY_ENTITY=$(jq -r '.heatpump_energy_entity // ""' "$CONFIG")
+export HEATPUMP_HEATING_HOURS_ENTITY=$(jq -r '.heatpump_heating_hours_entity // ""' "$CONFIG")
+export HEATPUMP_DHW_HOURS_ENTITY=$(jq -r '.heatpump_dhw_hours_entity // ""' "$CONFIG")
+export HEATPUMP_OUTDOOR_TEMP_ENTITY=$(jq -r '.heatpump_outdoor_temp_entity // ""' "$CONFIG")
+export HEATPUMP_HDD_BASE_TEMP=$(jq -r '.heatpump_hdd_base_temp // "15.0"' "$CONFIG")
 
 export HISTORIC_PATH="/data/historic.json"
 export RCEM_HISTORY_PATH="/data/rcem_history.json"
 export RCEM_CORRECTIONS_PATH="/data/rcem_corrections.json"
 export INVOICE_LAYOUTS_PATH="/data/invoice_layouts.json"
+export HEATPUMP_HOURS_PATH="/data/heatpump_hours.json"
 
 exec python3 -m pv_roi_tracker.main
