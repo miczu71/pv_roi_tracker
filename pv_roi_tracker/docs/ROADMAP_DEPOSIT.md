@@ -2,6 +2,31 @@
 
 Kopia zatwierdzonego planu z `/data/home/.claude/plans/`.
 
+## Wynik Etapu 3 (28.09.2026) — ZAMKNIĘTE, bez nowego wydania
+
+Weryfikacja pokazała, że oba pozostałe punkty Etapu 3 były już faktycznie rozwiązane przez
+sam reparse z Etapu 2 — bez potrzeby dodatkowego kodu/wydania 0.42.1:
+
+- **`needs_training` faktury 2024-01**: naprawione retroaktywnie jako efekt uboczny reparsu
+  wszystkich 39 faktur w Etapie 2 (parser od 0.35.4 poprawnie liczy `needs_training` z ostrzeżeń,
+  ale stary zapis 2024-01 z przed 0.35.4 nie był ponownie przeliczony aż do teraz). Potwierdzone
+  na żywo: `/api/data` → `needs_training: true` (5 ostrzeżeń: brak stawki jakościowej, opłaty
+  mocowej, abonamentu, składnika stałego sieciowego, `fixed_total_net`), badge „wymaga treningu"
+  widoczny w UI zakładki Faktury (`playwright/needs_training_2024_01_0_42_0.jpg`), rekonsyliacja
+  kWh 2024-01 bez zmian (rekord już `reconciled: true`, flaga nie wyzwala ponownej rekonsyliacji
+  — tylko wyklucza z pętli *pending*, na co ten rekord i tak się nie kwalifikował).
+- **Martwy kod kotwicy fakturowej**: NIE jest martwy — `anchor_balance`/`anchor_source` są nadal
+  aktywnie liczone w `deposit.py`, serwowane przez `web.py` i renderowane w `app.js` (kafel „Stan
+  bieżący"). Etap 2 poprawił tylko *dokładność* flagi `deposit_capped`, którą ta kotwica konsumuje
+  — nie zastąpił mechanizmu. Bez zmian.
+- Backlog w `docs/ROADMAP_HEATPUMP.md` już wskazuje na ten plik (zrobione w Etapie 0).
+
+**Podprojekt „Dług depozytowy" zamknięty.** Cel z wywiadu (wiarygodne saldo) osiągnięty w zakresie
+możliwym z danych fakturowych: reguła Taurona odtworzona z zerowymi naruszeniami (Etap 1), saldo
+teraz niesie jawną etykietę jakości zamiast fałszywej precyzji (Etap 2), księgowe resztki
+posprzątane (Etap 3). Pozostały otwarty temat spoza zakresu: podwyższone `diff_pct` w rekonsyliacji
+dla 2025-04/05/06 (zanotowane w wyniku Etapu 2) — do ewentualnego osobnego podprojektu.
+
 ## Wynik Etapu 2 (28.09.2026) — wydane, zweryfikowane
 
 **0.42.0** opublikowane (GitHub release, nie draft), Supervisor zaktualizował add-on
