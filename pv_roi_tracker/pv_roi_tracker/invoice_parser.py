@@ -593,18 +593,25 @@ def parse_invoice_debug(pdf_bytes: bytes) -> dict:
 
 
 def _parse_nota(text: str) -> InvoiceData:
-    """Parse a NOTA OBCIĄŻENIOWA (debit note) document.
+    """Parse a NOTA OBCIĄŻENIOWA (debit note) or NOTA UZNANIOWA (credit note) document.
 
     Nota documents carry no kWh data, billing period range, or tariff rates.
-    They have a 'Data sprzedaży' date, a 'Do zapłaty' delta, and optionally
-    the 'NIE WYMAGA PŁATNOŚCI' flag.
+    They have a 'Data sprzedaży' date, a 'Do zapłaty' (debit) or 'Do zwrotu'
+    (credit) delta, and optionally the 'NIE WYMAGA PŁATNOŚCI' flag. Both
+    directions map to doc_type='nota' — the existing debit korekta already
+    does the same (a korekta of a debit note is still doc_type='nota', not a
+    separate type), and notas never feed deposit.calculate() either way
+    (see invoice_store.effective_by_month(), which only overlays '~kor~').
     """
     nota_warnings: list = []
 
-    # Invoice number: "NOTA OBCIĄŻENIOWA[ KOREKTA] NR K1NBN567872/025"
+    # Invoice number: "NOTA OBCIĄŻENIOWA[ KOREKTA] NR K1NBN567872/025" (debit note)
+    # or "NOTA UZNANIOWA NR K1N0474969" (credit note — Tauron refunds, "Do zwrotu"
+    # instead of "Do zapłaty"; same layout otherwise, e.g. K1N0474969 later
+    # corrected by the debit-note korekta above).
     invoice_number = (
-        _first(r'NOTA OBCI\S*\s+KOREKTA\s+NR\s+([\w/]+)', text)
-        or _first(r'NOTA OBCI\S*\s+NR\s+([\w/]+)', text)
+        _first(r'NOTA (?:OBCI\S*|UZNANIOWA)\s+KOREKTA\s+NR\s+([\w/]+)', text)
+        or _first(r'NOTA (?:OBCI\S*|UZNANIOWA)\s+NR\s+([\w/]+)', text)
     )
 
     # Corrected document: "do noty nr K1N0474969"
@@ -627,8 +634,12 @@ def _parse_nota(text: str) -> InvoiceData:
         month = int(_date_m.group(2))
         year  = int(_date_m.group(3))
 
-    # Amount: "Do zapłaty: 125,34 zł" — colon variant distinguishes from korekta
-    amount_due_pln = _first_float(r'Do zap.aty[:\s]+([\d ]+,[\d]+)', text)
+    # Amount: "Do zapłaty: 125,34 zł" (debit note) or "Do zwrotu: 125,34 zł"
+    # (credit note — Tauron owes the customer, e.g. NOTA UZNANIOWA)
+    amount_due_pln = (
+        _first_float(r'Do zap.aty[:\s]+([\d ]+,[\d]+)', text)
+        or _first_float(r'Do zwrotu[:\s]+([\d ]+,[\d]+)', text)
+    )
     correction_delta_pln = amount_due_pln
 
     # Reason: "Obniżka kwoty należności (Rozp. MKiŚ …)" first occurrence
@@ -682,7 +693,7 @@ def _parse_text(text: str) -> InvoiceData:
     # Korekta shares the regular billing layout but has two sections:
     #   POLICZONO (old values) and NALEŻAŁO POLICZYĆ (corrected values).
     #   Deposit and amount_due must come from the corrected section.
-    if re.search(r'NOTA OBCI', text, re.IGNORECASE):
+    if re.search(r'NOTA (OBCI\S*|UZNANIOWA)', text, re.IGNORECASE):
         return _parse_nota(text)
     _is_korekta = bool(re.search(r'FAKTURA VAT KOREKTA', text, re.IGNORECASE))
 

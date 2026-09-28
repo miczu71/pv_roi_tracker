@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.44.1] — 2026-09-28
+
+Bugfix parsera: **rozpoznanie „NOTA UZNANIOWA" (nota kredytowa)**. Pierwsza realna
+synchronizacja eBOK (0.44.0) trafiła na dokument, którego parser nie rozpoznawał —
+`invoice_parser.py` klasyfikował tylko `NOTA OBCI…` (nota debetowa) jako `doc_type='nota'`;
+nota kredytowa (Tauron oddaje pieniądze, nagłówek `NOTA UZNANIOWA`, kwota podpisana
+`Do zwrotu:` zamiast `Do zapłaty:`) leciała przez zwykły parser faktury i padała na braku
+pól kWh (`Imported kWh (Pobrano z sieci) not found`).
+
+- Klasyfikacja typu dokumentu i `_parse_nota()` rozszerzone o wariant `UZNANIOWA`/`Do zwrotu`
+  obok istniejącego `OBCI…`/`Do zapłaty`. Oba kierunki mapują na `doc_type='nota'` (tak jak już
+  dziś korekta noty debetowej) — noty i tak nigdy nie zasilają `deposit.calculate()`
+  (`invoice_store.effective_by_month()` overlay'uje tylko korekty faktur, `~kor~`, nigdy
+  `~nota~`), więc fix jest czysto kompletnościowy, nie zmienia żadnej liczby ROI/depozytu.
+- **Automatyczny trening bez klikania w UI**: `main.py` uruchamia `_retry_stubs()` na każdym
+  starcie add-onu — po tym wydaniu istniejący stub (`ebok_K1N0474969.pdf`, nota z 12.01.2024,
+  „Obniżka kwoty należności wg Rozp. MKiŚ z 09.09.2023") zostanie promowany automatycznie,
+  bez ręcznej interwencji.
+- 12 nowych testów (`test_invoice_parser.py`): syntetyczny wariant „NOTA UZNANIOWA" (wzorem
+  istniejącego `_make_nota_text`) + regresja na prawdziwym dokumencie (poza repo, jak istniejący
+  `TestRealKorektaPdf`). 624 zielone razem, zero regresji na istniejącej „NOTA OBCIĄŻENIOWA".
+
 ## [0.44.0] — 2026-09-28
 
 Auto-import faktur z eBOK TAURON (Etap 2, `docs/ROADMAP_EBOK_IMPORT.md`) —

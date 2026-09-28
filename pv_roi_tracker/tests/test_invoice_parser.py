@@ -1072,6 +1072,86 @@ class TestNota:
         assert parsed.deposit_previous_pln is None
 
 
+def _make_nota_uznaniowa_text() -> str:
+    """Synthetic NOTA UZNANIOWA (credit note) text — same underlying case as
+    _make_nota_text() (Rozp. MKiS price-freeze reduction), but as the ORIGINAL
+    credit note ("Do zwrotu") rather than the later debit-note korekta that
+    corrects it. Real-world structure confirmed on a live document surfaced by
+    the eBOK auto-import (2026-09-28): header 'NOTA UZNANIOWA  NR ... ORYGINAŁ'
+    (two spaces, trailing ORYGINAŁ), 'Data Sprzedaży' (capitalised, no colon),
+    no 'NIE WYMAGA PŁATNOŚCI' marker."""
+    return (
+        'NOTA UZNANIOWA  NR K1N0474969 ORYGINAL\n'
+        'Data Sprzedazy 01/01/2024\n'
+        'Lp. Nazwa uslugi Nr PPE Wartosc [zl]\n'
+        '1. Obnizka kwoty naleznosci (Rozp. MKiS z 09.09.2023) 590322415104598073 125,34\n'
+        'Razem: 125,34\n'
+        'Do zwrotu: 125,34\n'
+        'Slownie: sto dwadziescia piec zlotych trzydziesci cztery grosze\n'
+        'Data wystawienia: 12/01/2024\n'
+    )
+
+
+class TestNotaUznaniowa:
+    @pytest.fixture(scope='class')
+    def parsed(self):
+        return _parse_text(_make_nota_uznaniowa_text())
+
+    def test_doc_type_is_nota(self, parsed):
+        assert parsed.doc_type == 'nota'
+
+    def test_billing_period_from_data_sprzedazy(self, parsed):
+        assert parsed.year == 2024
+        assert parsed.month == 1
+
+    def test_invoice_number(self, parsed):
+        assert parsed.invoice_number == 'K1N0474969'
+
+    def test_no_corrects_number(self, parsed):
+        """This is the ORIGINAL note, not a korekta of another one."""
+        assert parsed.corrects_number is None
+
+    def test_amount_due_from_do_zwrotu(self, parsed):
+        assert parsed.amount_due_pln == pytest.approx(125.34, abs=0.01)
+
+    def test_correction_delta_equals_amount_due(self, parsed):
+        assert parsed.correction_delta_pln == parsed.amount_due_pln
+
+    def test_kwh_zero(self, parsed):
+        assert parsed.imported_kwh == 0.0
+        assert parsed.exported_kwh == 0.0
+
+
+_NOTA_UZNANIOWA_PDF_PATH = Path(
+    '/data/home/.claude/uploads/nota_uznaniowa_2024-01_K1N0474969.pdf'
+)
+
+
+@pytest.mark.skipif(not _NOTA_UZNANIOWA_PDF_PATH.exists(),
+                    reason='real Nota uznaniowa PDF not available')
+class TestRealNotaUznaniowaPdf:
+    """Regression test on the real document that surfaced this bug: the eBOK
+    auto-import (2026-09-28) flagged it needs_training because the parser only
+    recognised 'NOTA OBCI...' (debit note), not 'NOTA UZNANIOWA' (credit note)."""
+
+    @pytest.fixture(scope='class')
+    def parsed(self):
+        return parse_invoice(_NOTA_UZNANIOWA_PDF_PATH.read_bytes())
+
+    def test_doc_type_is_nota(self, parsed):
+        assert parsed.doc_type == 'nota'
+
+    def test_billing_period(self, parsed):
+        assert parsed.year == 2024
+        assert parsed.month == 1
+
+    def test_invoice_number(self, parsed):
+        assert parsed.invoice_number == 'K1N0474969'
+
+    def test_amount_due(self, parsed):
+        assert parsed.amount_due_pln == pytest.approx(125.34, abs=0.01)
+
+
 class TestDocTypeClassification:
     def test_regular_invoice_is_rozliczeniowa(self):
         text = _make_minimal_text()
@@ -1086,6 +1166,12 @@ class TestDocTypeClassification:
 
     def test_nota_detected(self):
         data = _parse_text(_make_nota_text())
+        assert data.doc_type == 'nota'
+
+    def test_nota_uznaniowa_detected(self):
+        """Credit note ('NOTA UZNANIOWA', 'Do zwrotu') must classify as 'nota'
+        too, not fall through to the regular billing parser."""
+        data = _parse_text(_make_nota_uznaniowa_text())
         assert data.doc_type == 'nota'
 
     def test_nota_returns_early_skips_billing_fields(self):

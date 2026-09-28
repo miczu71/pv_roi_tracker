@@ -32,7 +32,7 @@ Od v0.21.0 parser obsługuje trzy typy dokumentów Tauron:
 |---|---|---|---|
 | **FAKTURA VAT** (rozliczeniowa) | domyślny | klucz `YYYY-MM` | pełny (jak dotychczas) |
 | **FAKTURA VAT KOREKTA** | nagłówek `FAKTURA VAT KOREKTA NR` | klucz `YYYY-MM~kor~<nr>` obok oryginału | korekta depozytu (NALEŻAŁO POLICZYĆ) zasila `deposit.calculate()` przez `effective_by_month()` |
-| **NOTA OBCIĄŻENIOWA** | nagłówek `NOTA OBCI…` | klucz `YYYY-MM~nota~<nr>` | tylko zapis i podgląd (brak kWh/stawek) |
+| **NOTA OBCIĄŻENIOWA** (debetowa) / **NOTA UZNANIOWA** (kredytowa, od v0.44.1) | nagłówek `NOTA OBCI…` / `NOTA UZNANIOWA` | klucz `YYYY-MM~nota~<nr>` | tylko zapis i podgląd (brak kWh/stawek) |
 
 Korekty są wyświetlane jako **zagnieżdżone pod-wiersze** (badge KOREKTA/NOTA + „było → jest" dla depozytu + delta PLN + powód). Sensory stawek MQTT (źródło prawdy) pomijają korekty i noty — bazują wyłącznie na fakturach rozliczeniowych.
 
