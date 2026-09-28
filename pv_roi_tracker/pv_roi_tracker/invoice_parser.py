@@ -331,11 +331,20 @@ class InvoiceData:
     # w tym miesiącu. Od ok. 2026-05 Tauron zaczął drukować w polu "Depozyt z
     # okresów poprzednich" tę samą wartość zamiast prawdziwego salda (depozyt
     # "zaczepiony" na rachunku), gdy saldo przewyższa rachunek — patrz
-    # deposit_capped niżej i docs/BLUEPRINT.md.
+    # deposit_capped niżej i docs/ROADMAP_DEPOSIT.md.
     energy_sale_gross_pln: Optional[float] = field(default=None)
-    # True gdy deposit_used_pln ≈ energy_sale_gross_pln (linia depozytu zaczepiona
-    # na rachunku za energię, nie pokazuje prawdziwego salda). None = nie do
-    # ustalenia (jedno z dwóch pól nieodczytane — nie mylić z False).
+    # Opłata Handlowa (brutto) — osobna, stała miesięczna pozycja WLICZONA w wiersz
+    # "1. Sprzedaży energii elektrycznej", ale nieuprawniona do pokrycia depozytem
+    # (art. 4b OZE: depozyt rozlicza tylko energię, nie opłaty handlowe). Tauron
+    # usunął tę pozycję z faktury od ok. 2025-08 (wtedy 0.0). Zawsze 0.0, nigdy
+    # None, żeby deposit_capped niżej mógł ją bezwarunkowo odjąć.
+    trade_fee_gross_pln: float = field(default=0.0)
+    # True gdy deposit_used_pln ≈ (energy_sale_gross_pln − trade_fee_gross_pln) —
+    # depozyt ograniczony kosztem energii (linia salda zaczepiona na rachunku,
+    # nie pokazuje prawdziwego salda). Zweryfikowane na 39 fakturach 28.09.2026
+    # (docs/ROADMAP_DEPOSIT.md, Wynik Etapu 1) — zero naruszeń reguły
+    # used = min(saldo, energia_gross − opłata_handlowa). None = nie do ustalenia
+    # (jedno z dwóch pól nieodczytane — nie mylić z False).
     deposit_capped: Optional[bool] = field(default=None)
 
     # Fixed monthly net sum (for comparison with energy_simulation.yaml)
@@ -956,15 +965,21 @@ def _parse_text(text: str) -> InvoiceData:
     # (deposit_capped below) already treats None as "unknown", not "not capped".
     energy_sale_gross_pln = _first_float_multi(_patterns_for('energy_sale_total'), _deposit_text)
 
+    # Opłata Handlowa jest wliczona w "1. Sprzedaży energii elektrycznej", ale
+    # nieuprawniona do pokrycia depozytem — patrz komentarz przy trade_fee_gross_pln
+    # w dataclass. Brutto = netto × 1,23 (ta sama stawka VAT co energia).
+    trade_fee_gross_pln = round(oplata_handlowa_net * 1.23, 2) if oplata_handlowa_net is not None else 0.0
+
     # deposit_capped: Tauron od ok. 2026-05 zaczął czasem drukować w polu
     # "Depozyt z okresów poprzednich" samą kwotę pobraną z rachunku (zaczepioną),
     # nie prawdziwe saldo depozytu — dzieje się to, gdy saldo > rachunek. Wykryte
-    # przez porównanie deposit_used z rachunkiem za energię (patrz docs/BLUEPRINT.md
-    # dla weryfikacji na żywych fakturach). None = nie do ustalenia (brak jednej
-    # z dwóch wartości), nie mylić z False.
+    # przez porównanie deposit_used z rachunkiem za energię MINUS opłata handlowa
+    # (patrz docs/ROADMAP_DEPOSIT.md, Wynik Etapu 1 — reguła zweryfikowana na 39
+    # żywych fakturach z zerowymi naruszeniami). None = nie do ustalenia (brak
+    # jednej z dwóch wartości), nie mylić z False.
     deposit_capped: Optional[bool] = None
     if deposit_used_pln is not None and energy_sale_gross_pln is not None:
-        deposit_capped = abs(deposit_used_pln - energy_sale_gross_pln) <= 0.02
+        deposit_capped = abs(deposit_used_pln - (energy_sale_gross_pln - trade_fee_gross_pln)) <= 0.02
 
     # ── Amount due ────────────────────────────────────────────────────────────
     # For korekta: _amount_text is scoped to NALEŻAŁO POLICZYĆ so we get the
@@ -1081,6 +1096,7 @@ def _parse_text(text: str) -> InvoiceData:
         deposit_previous_pln=deposit_previous_pln,
         deposit_used_pln=deposit_used_pln,
         energy_sale_gross_pln=energy_sale_gross_pln,
+        trade_fee_gross_pln=trade_fee_gross_pln,
         deposit_capped=deposit_capped,
         amount_due_pln=amount_due_pln,
         avg_price_pln_kwh=avg_price_pln_kwh,

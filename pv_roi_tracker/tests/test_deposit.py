@@ -71,6 +71,24 @@ def test_invoice_consumption_overrides_inverter_estimate():
     assert out.invoice_latest_month == '2025-02'
 
 
+def test_quality_counts_only_capped_false_as_verified():
+    """verified_months counts only months where deposit_capped is explicitly
+    False (balance fully drained below the energy-cost cap — a reliable
+    balance reading). Months with no invoice, or deposit_capped True/None,
+    don't count. See docs/ROADMAP_DEPOSIT.md, Wynik Etapu 1."""
+    records = [_rec(2025, 1, feedin=100.0),
+               _rec(2025, 2, feedin=50.0),
+               _rec(2025, 3, feedin=50.0)]
+    invoices = {
+        '2025-01': {'deposit_used_pln': 30.0, 'deposit_capped': False},   # verified
+        '2025-02': {'deposit_used_pln': 20.0, 'deposit_capped': True},    # cap-bound
+        # 2025-03: no invoice at all → deposit_capped unknown
+    }
+    out = calculate(records, invoices, today=date(2025, 4, 1))
+    assert out.total_months == 3
+    assert out.verified_months == 1
+
+
 def test_balance_estimate_anchored_to_latest_invoice():
     records = [
         _rec(2025, 1, feedin=100.0),

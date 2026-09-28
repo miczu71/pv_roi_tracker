@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.42.0] — 2026-09-28
+
+Etap 2 podprojektu „Dług depozytowy" (`docs/ROADMAP_DEPOSIT.md`) — poprawka
+`deposit_capped` po odkryciu prawdziwej reguły Taurona w Etapie 1 (spike na
+39 żywych fakturach, zero naruszeń): `deposit_used = min(saldo, energia_gross
+− opłata_handlowa)`. "Opłata Handlowa" (28,86 zł netto / 35,50 zł brutto) jest
+osobną, stałą pozycją wliczoną w wiersz "1. Sprzedaży energii elektrycznej",
+ale nieuprawnioną do pokrycia depozytem (art. 4b OZE) — Tauron usunął ją z
+faktury od ok. 2025-08 (fee=0 od tego miesiąca).
+
+- `invoice_parser.py`: nowe pole `trade_fee_gross_pln` (domyślnie 0,0, gdy
+  wiersz nieobecny — nigdy `None`).
+- Poprawiony `deposit_capped = |used − (energy_sale_gross − trade_fee_gross)| ≤ 0,02`
+  (był porównywany bez odjęcia opłaty — przez co 13 z 39 miesięcy, 2023-08…
+  2025-07, było błędnie flagowanych jako "niezaczepione" i zanieczyszczało
+  rekonsyliację/wykrywanie lagu księgowania w `deposit.py`).
+- `deposit.py`: nowe pola jakości `verified_months`/`total_months` w
+  `DepositResult` — licznik miesięcy z potwierdzonym (nie tylko dolną granicą)
+  saldem na fakturze (`deposit_capped=False`).
+- UI (zakładka Faktury): kafel "Stan bieżący" pokazuje "X z Y miesięcy
+  potwierdzonych na fakturze", żeby saldo nie było prezentowane z fałszywą
+  precyzją.
+- 6 nowych testów (`test_invoice_parser.py`, `test_deposit.py`), 577 razem.
+- Wszystkie 39 zapisanych faktur re-sparsowane (`/api/invoice/reparse`) po
+  wydaniu, żeby poprawka zadziałała retroaktywnie na całej historii.
+
 ## [0.41.0] — 2026-09-28
 
 Etap 3 (ostatni) — linia o pompie ciepła w pushu miesięcznym (`notify.family`,

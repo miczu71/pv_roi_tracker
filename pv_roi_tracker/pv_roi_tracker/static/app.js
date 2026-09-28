@@ -1730,9 +1730,14 @@ function renderDepositSection(dep, invoices) {
     : (dep.invoice_latest_month
         ? 'model FIFO — faktura ' + dep.invoice_latest_month + ' nie pokazuje salda (zaczepiona na rachunku)'
         : 'model FIFO (brak faktur)');
+  const qualityPct = dep.total_months > 0 ? Math.round(100 * (dep.verified_months || 0) / dep.total_months) : null;
+  const qualitySub = qualityPct != null
+    ? (dep.verified_months || 0) + ' z ' + dep.total_months + ' mies. potwierdzonych na fakturze (' + qualityPct + '%)'
+    : null;
   kpiWrap.innerHTML =
     '<div style="' + kpiStyle + '">' + lbl('Stan bieżący (estymat)') + val(pln(bal, 2)) +
-      '<div style="font-size:10px;color:var(--muted)">' + balSub + '</div></div>' +
+      '<div style="font-size:10px;color:var(--muted)">' + balSub +
+      (qualitySub ? '<br>' + qualitySub : '') + '</div></div>' +
     '<div style="' + kpiStyle + '">' + lbl('Traci ważność za 1 mies.') + val(pln(dep.expiring_1m, 2), dep.expiring_1m > 0 ? '#e67e22' : null) + '</div>' +
     '<div style="' + kpiStyle + '">' + lbl('Traci ważność za 3 mies.') + val(pln(dep.expiring_3m, 2), expCol) + '</div>' +
     '<div style="' + kpiStyle + '">' + lbl('Prognoza 12 mies.: zwrot / umorzenie') +

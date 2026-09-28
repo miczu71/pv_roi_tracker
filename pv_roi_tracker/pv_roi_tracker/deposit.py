@@ -85,6 +85,13 @@ class DepositResult:
     anchor_source: str = 'faktura'                 # 'faktura' | 'model' — skąd wzięto saldo bieżące
     unposted_accrual: float = 0.0                  # zasilenia jeszcze niezaksięgowane przez Taurona
     reconciliation: dict = field(default_factory=dict)  # {rows: [{ym, model_accrued, tauron_implied, status, diff, diff_pct}], totals: {...}}
+    # Jakość salda: ile miesięcy historii ma POTWIERDZONE saldo na fakturze
+    # (deposit_capped=False — depozyt w pełni wyczerpany, previous==used<cap) vs
+    # ile jest tylko dolną granicą (deposit_capped=True — ograniczone kosztem
+    # energii, prawdziwe saldo mogło być wyższe) albo nieznane (brak faktury/flagi).
+    # Patrz docs/ROADMAP_DEPOSIT.md, Wynik Etapu 1 (28.09.2026).
+    verified_months: int = 0
+    total_months: int = 0
 
 
 def _ym_str(d: date) -> str:
@@ -193,9 +200,12 @@ def calculate(
             'expired_forfeit': round(forf, 2),
             'balance': balance,
             'invoice_balance': inv.get('deposit_previous_pln'),
+            'verified': inv.get('deposit_capped') is False,
         })
 
     balance_model = round(sum(lot.remaining for lot in lots), 2)
+    verified_months = sum(1 for m in months_out if m['verified'])
+    total_months = len(months_out)
 
     # ── Rekonsyliacja: zasilenia implikowane z łańcucha faktur ────────────────
     # after(M) = max(0, previous − used) — saldo po fakturze M;
@@ -381,4 +391,6 @@ def calculate(
         anchor_source=anchor_source,
         unposted_accrual=unposted_accrual,
         reconciliation=reconciliation,
+        verified_months=verified_months,
+        total_months=total_months,
     )

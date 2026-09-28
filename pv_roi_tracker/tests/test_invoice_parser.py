@@ -408,6 +408,59 @@ class TestOldFormat:
         assert field_warns == [], f'Unexpected field warnings: {field_warns}'
 
 
+# ── deposit_capped, fee-adjusted (pre-2025-08 layout with Opłata Handlowa) ────
+
+def _make_trade_fee_capped_text() -> str:
+    """Synthetic text with real June 2024 figures: deposit capped at energy
+    cost MINUS the (since-retired) Opłata Handlowa line-item.
+
+    Ground truth verified against the live invoice PDF (docs/ROADMAP_DEPOSIT.md,
+    Wynik Etapu 1, 28.09.2026): energia_gross 42,94 − opłata_handlowa 35,50 =
+    7,44 == deposit_used_pln exactly. Before trade_fee_gross_pln existed, this
+    invoice was wrongly treated as NOT capped (7,44 ≠ 42,94).
+    """
+    return (
+        'Okres rozliczeniowy 01.06.2024 - 30.06.2024\n'
+        'Pobrano z sieci 9\n'
+        'Wprowadzono do sieci 494\n'
+        '1. Sprzedaży energii elektrycznej 34,91 23 8,03 42,94 9\n'
+        'Opłata Handlowa zł/mc 1 28,86000 28,86 23 6,64 35,50\n'
+        '5. Depozyt prosumencki w rozliczanym okresie (zł) 0,00\n'
+        '6. Depozyt prosumencki z okresów poprzednich (zł) 7,44\n'
+        '7. Rozliczenie depozytu ( 4 + 5 + 6 ) 7,44\n'
+        '8. Do zapłaty (zł) ( 3 - 7 ) 75,83\n'
+    )
+
+
+class TestDepositCappedTradeFee:
+    """Deposit consumption capped by energy cost minus Opłata Handlowa —
+    see docs/ROADMAP_DEPOSIT.md, Wynik Etapu 1."""
+
+    @pytest.fixture(scope='class')
+    def parsed(self):
+        return _parse_text(_make_trade_fee_capped_text())
+
+    def test_trade_fee_extracted_gross(self, parsed):
+        # 28,86 net × 1,23 = 35,50 gross
+        assert parsed.trade_fee_gross_pln == pytest.approx(35.50, abs=0.01)
+
+    def test_energy_sale_gross(self, parsed):
+        assert parsed.energy_sale_gross_pln == pytest.approx(42.94, abs=0.01)
+
+    def test_deposit_used(self, parsed):
+        assert parsed.deposit_used_pln == pytest.approx(7.44, abs=0.01)
+
+    def test_deposit_capped_true_once_fee_subtracted(self, parsed):
+        # 7,44 == 42,94 − 35,50 exactly — would be missed (False) without the fix.
+        assert parsed.deposit_capped is True
+
+    def test_trade_fee_defaults_to_zero_when_absent(self):
+        # TestOldFormat's fixture (2025-10, post-retirement of the fee line)
+        # has no Opłata Handlowa row at all.
+        parsed = _parse_text(_make_old_format_text())
+        assert parsed.trade_fee_gross_pln == 0.0
+
+
 # ── Oldest invoice format (brak "Pobrano z sieci", 2025 Q1-Q2) ───────────────
 
 def _make_oldest_format_text() -> str:
