@@ -73,6 +73,52 @@ podejścia (Playwright / skrypt zewnętrzny). **Checkpoint:** wynik dopisany do 
 - Duplikaty przy innym kluczu niż ręczny upload — dedup po numerze dokumentu.
 - Credentiale: tylko opcje add-onu (`password` w schemie), nigdy w logach.
 
+## Wynik Etapu 1 (28.09.2026) — spike zakończony, GO
+
+Skrypt w scratchpadzie (`requests`, credentiale z `secrets.yaml` czytane w procesie, nigdzie nie
+drukowane), 5 logowań w trakcie sesji spike'a — **żadnej blokady** („Przekroczono maksymalną liczbę
+logowań" nie wystąpiło), brak captchy/OTP na żadnym etapie.
+
+**Flow logowania potwierdzony** dokładnie jak w `connector.py` (`login_service`): GET
+`logowanie.tauron.pl/realms/ext/protocol/cas/login?service=https://ebok.tauron.pl` → regex `action`
+z `kc-form-login` → POST `username`/`password`/`credentialId=""` → redirect do `ebok.tauron.pl/wyborKlienta`.
+
+**Wybór klienta:** strona `/wyborKlienta` listuje dwa punkty — płatnik **60567872** (umowa aktywna,
+opis „DOM") = client id **9810070**; drugi (42591637, umowa nieaktywna) = 8456841. Wybór:
+`GET /wyborKlienta/id/9810070`.
+
+**Lista dokumentów — dwa użyteczne źródła:**
+1. `GET /content/platnosci` — ostatnie ~8 dokumentów z linkami `/podgladFaktury/id/<numeric_id>`.
+2. `GET /content/platnosci/csv/dataOd/<YYYY-MM-DD>/dataDo/<YYYY-MM-DD>/type/archiwumFaktur` —
+   **CSV z pełną historią w jednym żądaniu, bez paginacji** (76 wierszy dla `dataOd=2022-01-01`,
+   sięga do 2023-08-29 — początek konta). Kodowanie **windows-1250**. Kolumny: `SYGNATURA` (numer
+   dokumentu), `NAZWA DOKUMENTU` (Faktura rzeczywista/korygująca/rozliczeniowa/prognozowa, Nota
+   uznaniowa, Korekta noty obciążeniowej), `DATA WYSTAWIENIA`, `KWOTA BRUTTO`, `TERMIN PŁATNOŚCI`,
+   `ZAPŁACONA`. **Brak numerycznego id** potrzebnego do pobrania PDF.
+3. `GET /content/platnosci/archiwumFaktur/display/50/dataOd/.../dataDo/...` — HTML, **max 50/stronę**
+   (paginacja wymagana dla >50 dokumentów), mapuje `SYGNATURA` → numeryczne `id` (do PDF). Domyślny
+   filtr dat bez parametrów to tylko ostatnie ~6 mies. — trzeba zawsze podawać `dataOd`/`dataDo`.
+   Strony z pełną historią czasem odpowiadają wolno (>20s) — potrzebny timeout ~45-60s.
+
+**PDF:** `GET /podgladFaktury/id/<numeric_id>` zwraca **bezpośrednio bajty PDF**
+(`Content-Type: application/octet-stream`, `Content-Disposition: attachment; filename=...pdf`,
+magic bytes `%PDF-1.4`) — bez dodatkowego kroku/formularza.
+
+**Zgodność z parserem add-onu potwierdzona na żywo:** pobrany PDF faktury 08.09.2026
+(`T/K1/BN567872/0017/26`, id 557539539) przepuszczony przez `invoice_parser.parse_invoice()` z kodu
+add-onu — **zero `warnings`**, wynik identyczny co do grosza z rekordem już ręcznie wgranym w
+`invoice_store` (`amount_due_pln=63.3`, `deposit_used_pln=57.57`, `deposit_previous_pln=57.57`,
+`tariff=G12W`, `doc_type=rozliczeniowa`).
+
+**Otwarty temat na Etap 2 (nie blokujący GO):** CSV nie daje numerycznego id, więc dla dokumentów
+spoza ostatnich 50 trzeba przejść po stronach HTML archiwum i dopasować po `SYGNATURA` — do
+zaimplementowania jako paginacja w `ebok_client.py` (sprawdzić w Etapie 2, czy istnieje
+endpoint wyszukiwania po numerze dokumentu, żeby tego uniknąć).
+
+**GO na Etap 2.** Ryzyko sesyjnego cache'u z Etapu 1 (spłaszczenie `session.cookies` do dict psuje
+scoping domen → pętla przekierowań) odnotowane — `ebok_client.py` ma trzymać pełny `requests.Session`
+(pickle) albo `cookiejar`, nie płaski dict.
+
 ## Weryfikacja
 - Etap 0: `git log origin/main` pokazuje commit.
 - Etap 1: tabela lista eBOK vs `invoice_store`; PDF z eBOK parsuje się identycznie jak istniejący rekord.
