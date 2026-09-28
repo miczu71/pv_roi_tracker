@@ -2,6 +2,33 @@
 
 Kopia zatwierdzonego planu z `/data/home/.claude/plans/`.
 
+## Wynik Etapu 2 (28.09.2026) — wydane, zweryfikowane
+
+**0.42.0** opublikowane (GitHub release, nie draft), Supervisor zaktualizował add-on
+(`29a4454d_pv_roi_tracker`), health `ok`. Wszystkie 39 zapisanych faktur re-sparsowane
+(`/api/invoice/reparse`, sekwencyjnie — każde wywołanie ~30–60 s, bo `_invoice_reconcile_callback`
+odświeża też dane z HA przez WebSocket; brak błędów, wszystkie `ok:true`).
+
+Efekt na żywych danych:
+- `deposit.verified_months / total_months`: **21 / 39 (54%)** — nowe pole jakości, widoczne w UI
+  jako "21 z 39 mies. potwierdzonych na fakturze (54%)" pod kaflem "Stan bieżący".
+- `reconciliation.rows` status `capped`: **7 → 20** (dokładnie zgodnie z przewidywaniem Etapu 1).
+- Skrajne `diff_pct` w rekonsyliacji spadły z 300–2000% do max. 435% (najczęściej &lt;25%) —
+  te miesiące (2025-04/05/06) to osobny, mniejszy problem spoza zakresu tego Etapu (prawdopodobnie
+  błędna detekcja lagu księgowania na przejściu reżimów opłaty handlowej), zostawiony jako
+  otwarty temat, nie blokuje.
+- `balance_model` bez zmian (474,72 zł) — spójne z oczekiwaniem: strona konsumpcji już była
+  poprawna, fix tylko koryguje FLAGĘ jakości/rekonsyliację, nie samo saldo.
+- Playwright (direct-IP `172.30.33.15:8099`, desktop 1400×900 + mobile 390×844): kafel jakości
+  renderuje się poprawnie na obu, tabela rekonsyliacji pokazuje więcej wierszy „nie do odczytania
+  z faktury" (cap-bound), konsola bez nowych błędów (tylko nieszkodliwy 404 favicon.ico,
+  niezwiązany ze zmianą). Zrzuty: `playwright/deposit_kpi_desktop_0_42_0.jpg`,
+  `playwright/deposit_kpi_mobile_0_42_0.jpg`.
+- Pełny pakiet testów: 577/577 zielone (6 nowych).
+
+**Etap 2 zamknięty.** Etap 3 (retro-fix `needs_training` faktury 2024-01, sprzątanie martwego
+kodu kotwicy) czeka na „go".
+
 ## Wynik Etapu 1 (28.09.2026) — GO
 
 Spike: pobrano 39 PDF-ów faktur (`/api/invoice/pdf?key=YYYY-MM`), sparsowano `pdftotext -layout`
