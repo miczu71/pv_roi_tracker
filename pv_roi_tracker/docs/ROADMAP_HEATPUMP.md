@@ -127,6 +127,4 @@ cache: dociąganie z zakładką.
 - **Auto-import faktur z maila (IMAP)** — mniej ręcznej roboty, dziś PDF wgrywany ręcznie co miesiąc.
 - **Symulator +kWp paneli** — „czy dołożyć paneli?": godzinowa symulacja jak Magazyn +5 kWh, z net-billingiem i depozytem.
 - **UX / dashboard HA** — widok „PV ROI" w Lovelace z kluczowymi liczbami r/r, uproszczenie 10 zakładek na mobile.
-- **Dług depozytowy**: zegar 12-mies. od zaksięgowania (nie eksportu) — B8 z code review 2026-07; który balance
-  (`balance_model` vs `balance_estimate`) jest headline; retro-fix `needs_training` faktury 2024-01;
-  parsowanie linii zasilenia (zasilenie/top-up) depozytu zamiast tylko zużycia.
+- **Dług depozytowy** → wybrany jako kolejny podprojekt 28.09.2026, plan i przebieg w `docs/ROADMAP_DEPOSIT.md`.
