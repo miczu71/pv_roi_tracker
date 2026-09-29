@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.45.1] — 2026-09-29
+
+Porządki po 0.45.0 (`/simplify`), bez zmiany zachowania backendu.
+
+- `main.py`: `ebok_sync` i `ebok_payment_check` korzystają ze wspólnego
+  `_ebok_run(job, what, failed, body)` — konfiguracja, blokada 24h,
+  logowanie/wybór płatnika, lista CSV i obsługa błędów w jednym miejscu.
+  Teksty powiadomień, nazwy jobów w health (`ebok`, `ebok_payment`) i wyniki
+  `POST /api/ebok/sync` bez zmian.
+- `payment_reminders.py`: nowe `refresh_payment_state()` — scalanie flag
+  przypomnień ze snapshotem terminu/kwoty (wcześniej w `main.py`).
+- `ebok_client.py`: `_parse_ddmmyyyy` przez `strptime`.
+- Pasek płatności: przy terminie za >1 dzień pokazuje „termin platnosci za N
+  dni (DD.MM.YYYY)" zamiast dwukrotnie tej samej daty.
+- +1 test (`refresh_payment_state`) — 655 zielonych.
+
 ## [0.45.0] — 2026-09-28
 
 Termin płatności + status „zapłacona" z eBOK (Etap 3,
