@@ -549,10 +549,11 @@ def main() -> None:
             _ebok_client_holder['client'] = client
         return client
 
-    def ebok_sync() -> dict:
-        """One eBOK sync: list the full invoice history, download+ingest only the
-        documents not already present (dedup by invoice_number), push on problems.
-        Returns a JSON-able summary; never raises (errors are captured in the result)."""
+    def _ebok_run(job: str, what: str, failed: str, body) -> dict:
+        """Wspólny szkielet jobów eBOK: konfiguracja, blokada 24h, logowanie + wybór
+        płatnika, lista dokumentów (CSV), potem body(client, docs, state, date_from,
+        date_to) -> dict. Nigdy nie rzuca — błędy trafiają do wyniku, health (`job`)
+        i pusha (`what`/`failed` to tekst komunikatu)."""
         from . import ebok_client as _ec
         from datetime import date as _date, datetime as _dt, timedelta as _td
 
@@ -562,8 +563,7 @@ def main() -> None:
         state = _load_ebok_state()
         blocked_until = state.get('blocked_until')
         if blocked_until and _dt.now().isoformat() < blocked_until:
-            detail = f'eBOK zablokowane do {blocked_until}'
-            _record_job('ebok', False, detail)
+            _record_job(job, False, f'eBOK zablokowane do {blocked_until}')
             return {'ok': False, 'blocked': True, 'blocked_until': blocked_until}
 
         client = _ebok_get_client()
@@ -578,7 +578,35 @@ def main() -> None:
             date_from = _date(2022, 1, 1)  # przed 2023-08 (start konta wg spike'a Etapu 1)
             date_to = _date.today() + _td(days=1)
             docs = client.list_documents(date_from, date_to)
+            return body(client, docs, state, date_from, date_to)
 
+        except _ec.EbokLoginBlocked as exc:
+            blocked_until = (_dt.now() + _td(hours=24)).isoformat()
+            state['blocked_until'] = blocked_until
+            _save_ebok_state(state)
+            _record_job(job, False, 'zablokowane logowanie')
+            _notify_ha('PV ROI Tracker — eBOK',
+                       f'Tauron zablokował logowania do eBOK ({exc}). Wstrzymuję próby do jutra.',
+                       target='kacper')
+            return {'ok': False, 'blocked': True, 'error': str(exc)}
+        except _ec.EbokError as exc:
+            _record_job(job, False, str(exc))
+            _notify_ha('PV ROI Tracker — eBOK', f'{failed}: {exc}', target='kacper')
+            return {'ok': False, 'error': str(exc)}
+        except Exception as exc:
+            logger.exception('%s — nieoczekiwany błąd', what)
+            _record_job(job, False, str(exc))
+            _notify_ha('PV ROI Tracker — eBOK', f'{what} — nieoczekiwany błąd: {exc}',
+                       target='kacper')
+            return {'ok': False, 'error': str(exc)}
+
+    def ebok_sync() -> dict:
+        """One eBOK sync: list the full invoice history, download+ingest only the
+        documents not already present (dedup by invoice_number), push on problems.
+        Returns a JSON-able summary; never raises (errors are captured in the result)."""
+        from datetime import datetime as _dt
+
+        def body(client, docs, state, date_from, date_to) -> dict:
             existing = invoice_store.load(INVOICE_PATH)
             known_numbers = {rec.get('invoice_number') for rec in existing.values()
                              if rec.get('invoice_number')}
@@ -637,26 +665,8 @@ def main() -> None:
             return {'ok': True, 'imported': imported, 'needs_training': needs_training,
                     'errors': errors, 'not_found_in_archive': not_found}
 
-        except _ec.EbokLoginBlocked as exc:
-            blocked_until = (_dt.now() + _td(hours=24)).isoformat()
-            state['blocked_until'] = blocked_until
-            _save_ebok_state(state)
-            _record_job('ebok', False, 'zablokowane logowanie')
-            _notify_ha('PV ROI Tracker — eBOK',
-                       f'Tauron zablokował logowania do eBOK ({exc}). Wstrzymuję próby do jutra.',
-                       target='kacper')
-            return {'ok': False, 'blocked': True, 'error': str(exc)}
-        except _ec.EbokError as exc:
-            _record_job('ebok', False, str(exc))
-            _notify_ha('PV ROI Tracker — eBOK', f'Synchronizacja eBOK nie powiodła się: {exc}',
-                       target='kacper')
-            return {'ok': False, 'error': str(exc)}
-        except Exception as exc:
-            logger.exception('eBOK sync — nieoczekiwany błąd')
-            _record_job('ebok', False, str(exc))
-            _notify_ha('PV ROI Tracker — eBOK', f'Synchronizacja eBOK — nieoczekiwany błąd: {exc}',
-                       target='kacper')
-            return {'ok': False, 'error': str(exc)}
+        return _ebok_run('ebok', 'Synchronizacja eBOK',
+                         'Synchronizacja eBOK nie powiodła się', body)
 
     def ebok_job() -> None:
         ebok_sync()
@@ -666,36 +676,12 @@ def main() -> None:
         dla niezapłaconych faktur, przypomnienie dzień przed terminem i w dniu
         terminu (docs/ROADMAP_EBOK_PAYMENT_STATUS.md Etap 2). Nigdy nie rzuca —
         błędy trafiają do wyniku i health, tak jak ebok_sync()."""
-        from . import ebok_client as _ec
         from . import payment_reminders as _pr
-        from datetime import date as _date, datetime as _dt, timedelta as _td
+        from datetime import date as _date
 
-        if not EBOK_USERNAME or not EBOK_PASSWORD:
-            return {'ok': False, 'error': 'eBOK nie skonfigurowany (brak ebok_username/ebok_password)'}
-
-        state = _load_ebok_state()
-        blocked_until = state.get('blocked_until')
-        if blocked_until and _dt.now().isoformat() < blocked_until:
-            _record_job('ebok_payment', False, f'eBOK zablokowane do {blocked_until}')
-            return {'ok': False, 'blocked': True, 'blocked_until': blocked_until}
-
-        client = _ebok_get_client()
-        try:
-            client.login()
-            if EBOK_PAYER_ID:
-                client_id = client.find_client_id(EBOK_PAYER_ID)
-                if not client_id:
-                    raise _ec.EbokError(f'Płatnik {EBOK_PAYER_ID} nie znaleziony na /wyborKlienta')
-                client.select_client(client_id)
-
-            date_from = _date(2022, 1, 1)
-            date_to = _date.today() + _td(days=1)
-            docs = client.list_documents(date_from, date_to)
-
-            payment_state = _pr.load_payment_state(EBOK_PAYMENT_STATE_PATH)
-            notifications, new_state = _pr.build_reminder_notifications(docs, payment_state, _date.today())
-            for signature, snap in _pr.snapshot_documents(docs).items():
-                new_state.setdefault(signature, {'reminded_before': False, 'reminded_due': False}).update(snap)
+        def body(client, docs, state, date_from, date_to) -> dict:
+            notifications, new_state = _pr.refresh_payment_state(
+                docs, _pr.load_payment_state(EBOK_PAYMENT_STATE_PATH), _date.today())
             _pr.save_payment_state(EBOK_PAYMENT_STATE_PATH, new_state)
 
             for note in notifications:
@@ -704,26 +690,8 @@ def main() -> None:
             _record_job('ebok_payment', True, f'wysłano {len(notifications)} przypomnień')
             return {'ok': True, 'sent': len(notifications)}
 
-        except _ec.EbokLoginBlocked as exc:
-            blocked_until = (_dt.now() + _td(hours=24)).isoformat()
-            state['blocked_until'] = blocked_until
-            _save_ebok_state(state)
-            _record_job('ebok_payment', False, 'zablokowane logowanie')
-            _notify_ha('PV ROI Tracker — eBOK',
-                       f'Tauron zablokował logowania do eBOK ({exc}). Wstrzymuję próby do jutra.',
-                       target='kacper')
-            return {'ok': False, 'blocked': True, 'error': str(exc)}
-        except _ec.EbokError as exc:
-            _record_job('ebok_payment', False, str(exc))
-            _notify_ha('PV ROI Tracker — eBOK', f'Sprawdzenie terminu płatności nie powiodło się: {exc}',
-                       target='kacper')
-            return {'ok': False, 'error': str(exc)}
-        except Exception as exc:
-            logger.exception('eBOK payment check — nieoczekiwany błąd')
-            _record_job('ebok_payment', False, str(exc))
-            _notify_ha('PV ROI Tracker — eBOK', f'Sprawdzenie terminu płatności — nieoczekiwany błąd: {exc}',
-                       target='kacper')
-            return {'ok': False, 'error': str(exc)}
+        return _ebok_run('ebok_payment', 'Sprawdzenie terminu płatności',
+                         'Sprawdzenie terminu płatności nie powiodło się', body)
 
     def ebok_payment_check_job() -> None:
         ebok_payment_check()

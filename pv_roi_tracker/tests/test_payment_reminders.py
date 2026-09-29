@@ -11,6 +11,7 @@ from pv_roi_tracker.payment_reminders import (
     build_reminder_notifications,
     decide_reminders,
     load_payment_state,
+    refresh_payment_state,
     save_payment_state,
     select_active_payment,
     snapshot_documents,
@@ -171,6 +172,26 @@ def test_snapshot_documents_multiple_docs():
     snap = snapshot_documents(docs)
     assert set(snap.keys()) == {'SIG/1', 'SIG/2'}
     assert snap['SIG/2']['paid'] is True
+
+
+# ── refresh_payment_state() ─────────────────────────────────────────────────
+
+def test_refresh_payment_state_merges_flags_and_snapshot_and_keeps_old_entries():
+    state = {'OLD/SIG': {'reminded_before': True, 'reminded_due': True}}
+    docs = [
+        _Doc('SIG/1', date(2026, 10, 5), paid=False, amount_gross_pln=63.3),
+        _Doc('SIG/2', date(2026, 11, 1), paid=True, amount_gross_pln=80.0),
+        _Doc('NOTA/1', None, paid=False, amount_gross_pln=50.0),
+    ]
+    notifications, new_state = refresh_payment_state(docs, state, date(2026, 10, 4))
+    assert [(n['signature'], n['kind']) for n in notifications] == [('SIG/1', 'before')]
+    assert new_state == {
+        'OLD/SIG': {'reminded_before': True, 'reminded_due': True},
+        'SIG/1': {'reminded_before': True, 'reminded_due': False,
+                  'due_date': '2026-10-05', 'paid': False, 'amount_gross_pln': 63.3},
+        'SIG/2': {'reminded_before': False, 'reminded_due': False,
+                  'due_date': '2026-11-01', 'paid': True, 'amount_gross_pln': 80.0},
+    }
 
 
 # ── select_active_payment() ─────────────────────────────────────────────────

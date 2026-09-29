@@ -2329,7 +2329,7 @@ async function _refreshPaymentBar() {
     if (a.days_until_due < 0) when = 'termin minal ' + (-a.days_until_due) + ' dni temu';
     else if (a.days_until_due === 0) when = 'termin platnosci dzis';
     else if (a.days_until_due === 1) when = 'termin platnosci jutro';
-    else when = 'termin platnosci ' + dueFmt;
+    else when = 'termin platnosci za ' + a.days_until_due + ' dni';
     bar.className = 'payment-bar ' + a.urgency;
     bar.textContent = 'Faktura ' + a.signature + (amount ? ': ' + amount : '') + ' — ' + when + ' (' + dueFmt + '), nadal niezaplacona.';
     bar.style.display = '';

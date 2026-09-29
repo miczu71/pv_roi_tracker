@@ -27,7 +27,7 @@ import io
 import logging
 import re
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import Optional
 
 import requests
@@ -211,8 +211,8 @@ def _parse_ddmmyyyy(raw: str) -> Optional[date]:
     if not raw or raw == '---':
         return None
     try:
-        return date(*reversed([int(p) for p in raw.split('.')]))
-    except (ValueError, TypeError):
+        return datetime.strptime(raw, '%d.%m.%Y').date()
+    except ValueError:
         return None
 
 

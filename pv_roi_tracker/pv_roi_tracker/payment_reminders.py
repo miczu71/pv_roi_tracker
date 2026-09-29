@@ -46,11 +46,24 @@ def build_reminder_notifications(docs, state: dict, today: date) -> tuple:
     notifications = []
     for doc in docs:
         for kind in decide_reminders(doc.signature, doc.due_date, doc.paid, today, state):
-            entry = new_state.setdefault(doc.signature, {'reminded_before': False, 'reminded_due': False})
-            entry[f'reminded_{kind}'] = True
+            new_state.setdefault(doc.signature, _new_entry())[f'reminded_{kind}'] = True
             notifications.append({'signature': doc.signature, 'kind': kind,
                                    'message': _reminder_message(doc, kind)})
     return notifications, new_state
+
+
+def refresh_payment_state(docs, state: dict, today: date) -> tuple:
+    """One daily check: reminders to send plus the new state — reminder flags from
+    build_reminder_notifications() merged with the snapshot_documents() display fields.
+    Pure; the caller persists new_state via save_payment_state."""
+    notifications, new_state = build_reminder_notifications(docs, state, today)
+    for signature, snap in snapshot_documents(docs).items():
+        new_state.setdefault(signature, _new_entry()).update(snap)
+    return notifications, new_state
+
+
+def _new_entry() -> dict:
+    return {'reminded_before': False, 'reminded_due': False}
 
 
 def _reminder_message(doc, kind: str) -> str:
