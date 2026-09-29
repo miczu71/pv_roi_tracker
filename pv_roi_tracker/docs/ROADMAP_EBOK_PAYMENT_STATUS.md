@@ -96,3 +96,33 @@ Wywiad (28.09.2026):
   health `ok`.
 - Etap 3: Playwright (desktop + mobile, screenshot + konsola) na żywych danych, pasek zgodny z
   progami z Etapu 2.
+
+## Wynik końcowy (29.09.2026) — 0.45.0 zweryfikowane na żywym add-onie
+
+**Etap 3 (pasek) — zweryfikowany.** Playwright na direct-IP add-onu, desktop 1280 px i mobile 390 px:
+- stan żywy (`active: null`, brak niezapłaconej faktury z terminem) → pasek ukryty (`display:none`);
+- odpowiedź `/api/ebok/payment-status` podmieniona przez `page.route` na 3 warianty — termin za 5 dni
+  → neutralny (`#eef2f7`), jutro → żółty (`#fef3c7`), dziś/po terminie → czerwony (`#fee2e2`);
+  progi zgodne z `select_active_payment` i z regułami przypomnień;
+- zero błędów w konsoli (poza `favicon.ico` 404 — nieszkodliwe), brak poziomego scrolla na mobile,
+  badge wersji `v0.45.0`;
+- screenshoty: `/config/playwright/pv_roi_payment_bar_{desktop,mobile}_{live,neutral,warning,alarm}.png`
+  (lokalne, gitignored).
+
+**Etap 2 (job) — zweryfikowany częściowo.** Job `eBOK payment status check` uruchomił się 29.09 o 07:00
+i zakończył `executed successfully` (log Supervisora), status add-onu `ok`. Realny push na OP12 **nie**
+został jeszcze zaobserwowany — od uruchomienia nie było niezapłaconej faktury z terminem, więc
+`decide_reminders` nie miał czego przypominać. Idempotencję (brak duplikatu) potwierdzają tylko testy
+jednostkowe.
+
+**Otwarty punkt do obserwacji:** przy pierwszej prawdziwej niezapłaconej fakturze sprawdzić (a) push
+dzień przed terminem i w dniu terminu, (b) brak duplikatu przy kolejnym uruchomieniu, (c) że `paid`
+z CSV nie opóźnia się względem realnej płatności (ryzyko fałszywego alarmu opisane wyżej).
+
+**Uwaga kosmetyczna (bez zmiany kodu w tym kroku):** tekst paska nie ma polskich znaków
+(„zl”, „platnosci”, „niezaplacona”), a przy terminie za >1 dzień data pojawia się dwa razy
+(„termin platnosci 04.10.2026 (04.10.2026)”). Do ewentualnej poprawki przy następnym wydaniu.
+
+**Obserwacja wydajności:** render strony blokuje wątek ok. 3 s (headless Chromium z `--disable-gpu`),
+a `payment-status` jest pobierany dopiero po nim — na wolnym urządzeniu pasek pojawia się z opóźnieniem.
+Nieblokujące; do rozważenia, jeśli pasek ma być pierwszą rzeczą, którą widać.
