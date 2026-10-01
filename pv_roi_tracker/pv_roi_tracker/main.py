@@ -203,7 +203,7 @@ def _notify_ha(title: str, message: str, target: str = 'family') -> None:
             f'http://supervisor/core/api/services/notify/{target}',
             headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'},
             json={'title': title, 'message': message},
-            timeout=5,
+            timeout=15,
         )
         logger.info('HA notification sent (%s): %s', target, message)
     except Exception:
@@ -536,19 +536,10 @@ def main() -> None:
     _web.set_layouts_path(INVOICE_LAYOUTS_PATH)
 
     # ── eBOK TAURON auto-import (docs/ROADMAP_EBOK_IMPORT.md) ──────────────────
-    # Session kept in memory for the add-on's process lifetime — login() is a
-    # no-op once already logged in, so re-syncs are cheap; a restart just logs
-    # in again (rare, and login itself is cheap/safe per the Etap 1 spike).
-    _ebok_client_holder: dict = {}
-
-    def _ebok_get_client():
-        from . import ebok_client as _ec
-        client = _ebok_client_holder.get('client')
-        if client is None:
-            client = _ec.EbokClient(EBOK_USERNAME, EBOK_PASSWORD)
-            _ebok_client_holder['client'] = client
-        return client
-
+    # Świeży klient (= świeże logowanie) na każdy job: Tauron wygasza sesję po
+    # swojej stronie, a klient trzymany przez cały proces po dobie dostawał
+    # stronę logowania zamiast /wyborKlienta (incydent 2026-10-01). Joby lecą
+    # ≤2×/dobę, logowanie jest tanie (spike Etapu 1).
     def _ebok_run(job: str, what: str, failed: str, body) -> dict:
         """Wspólny szkielet jobów eBOK: konfiguracja, blokada 24h, logowanie + wybór
         płatnika, lista dokumentów (CSV), potem body(client, docs, state, date_from,
@@ -566,7 +557,7 @@ def main() -> None:
             _record_job(job, False, f'eBOK zablokowane do {blocked_until}')
             return {'ok': False, 'blocked': True, 'blocked_until': blocked_until}
 
-        client = _ebok_get_client()
+        client = _ec.EbokClient(EBOK_USERNAME, EBOK_PASSWORD)
         try:
             client.login()
             if EBOK_PAYER_ID:

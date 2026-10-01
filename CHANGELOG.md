@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.45.2] — 2026-10-01
+
+Poprawka eBOK: fałszywy błąd „Płatnik … nie znaleziony na /wyborKlienta".
+
+- **Przyczyna:** klient eBOK był trzymany w pamięci przez cały proces, a
+  `login()` po pierwszym sukcesie był no-opem. Tauron wygasza sesję po swojej
+  stronie, więc drugi job w tym samym procesie (dobę później) dostawał stronę
+  logowania (status 200) zamiast listy płatników → parser nic nie znalazł.
+  Pierwszy job po każdym restarcie działał, kolejne nie (01.10 07:00 i 07:30).
+- `main.py` `_ebok_run`: świeży `EbokClient` (świeże logowanie) na każdy job.
+- `ebok_client.py`: wszystkie zapytania po zalogowaniu idą przez `_get()` —
+  na stronie logowania (`kc-form-login`) loguje się ponownie i powtarza raz;
+  jeśli dalej strona logowania → czytelny `EbokError` „Sesja eBOK nie
+  utrzymała się…" zamiast mylącego „płatnik nie znaleziony".
+- `_notify_ha`: timeout 5 → 15 s (push o 07:00 padł na ReadTimeout).
+- +2 testy (wygasła sesja → re-login; trwała strona logowania → błąd) — 657 zielonych.
+
 ## [0.45.1] — 2026-09-29
 
 Porządki po 0.45.0 (`/simplify`), bez zmiany zachowania backendu.

@@ -132,6 +132,56 @@ def test_login_missing_form_raises_layout_changed():
         client.login()
 
 
+# ── wygasła sesja (incydent 2026-10-01) ─────────────────────────────────────
+
+class _SequenceSession(FakeSession):
+    """Jak FakeSession, ale dla danego podciągu URL zwraca kolejne odpowiedzi z listy."""
+
+    def __init__(self):
+        super().__init__()
+        self._sequences: dict = {}
+
+    def when_seq(self, url_substring: str, responses: list):
+        self._sequences[url_substring] = list(responses)
+        return self
+
+    def _respond(self, method, url, **kwargs):
+        for substring, seq in self._sequences.items():
+            if substring in url and seq:
+                self.calls.append((method, url, kwargs))
+                return seq.pop(0) if len(seq) > 1 else seq[0]
+        return super()._respond(method, url, **kwargs)
+
+
+_LANDING_HTML = ('<tr><td><label>Jan Kowalski<br/> 60567872</label></td>'
+                 '<td><a href="/wyborKlienta/id/111111">Zobacz</a></td></tr>')
+
+
+def _seq_client() -> tuple[EbokClient, _SequenceSession]:
+    session = _SequenceSession()
+    session.when('logowanie.tauron.pl/realms/ext/protocol/cas/login',
+                 _FakeResponse(text=_LOGIN_FORM_HTML))
+    session.when('logowanie.tauron.pl/action', _FakeResponse(text=_LOGGED_IN_HTML))
+    return EbokClient('user@example.com', 'secret', session=session), session
+
+
+def test_expired_session_relogs_and_retries_once():
+    client, session = _seq_client()
+    session.when_seq('/wyborKlienta', [_FakeResponse(text=_LOGIN_FORM_HTML),
+                                       _FakeResponse(text=_LANDING_HTML)])
+    client.login()
+    assert client.find_client_id('60567872') == '111111'
+    posts = [c for c in session.calls if c[0] == 'POST']
+    assert len(posts) == 2  # logowanie startowe + ponowne po wygaśnięciu sesji
+
+
+def test_session_still_expired_after_relogin_raises_clear_error():
+    client, session = _seq_client()
+    session.when_seq('/wyborKlienta', [_FakeResponse(text=_LOGIN_FORM_HTML)])
+    with pytest.raises(EbokError, match='Sesja eBOK'):
+        client.find_client_id('60567872')
+
+
 # ── list_documents() / download_pdf() wiring ────────────────────────────────
 
 def test_list_documents_returns_parsed_rows():

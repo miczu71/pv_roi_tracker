@@ -110,19 +110,34 @@ class EbokClient:
         self._logged_in = True
         logger.info('eBOK: zalogowano')
 
-    def select_client(self, client_id: str) -> None:
+    def _get(self, url: str, timeout: int):
+        """GET within the logged-in session. Tauron expires the Keycloak session
+        server-side while `_logged_in` stays True, and an expired session answers
+        with the login page at status 200 (incident 2026-10-01: /wyborKlienta
+        without client rows → misleading "Płatnik nie znaleziony"). On a login
+        page: log in again and retry once; still a login page → EbokError."""
         self.login()
-        r = self._session.get(f'{SERVICE}/wyborKlienta/id/{client_id}',
-                               headers={'User-Agent': USER_AGENT}, timeout=REQUEST_TIMEOUT)
+        r = self._session.get(url, headers={'User-Agent': USER_AGENT}, timeout=timeout)
+        if not _is_login_page(r):
+            return r
+        logger.info('eBOK: sesja wygasła — logowanie ponownie')
+        self._logged_in = False
+        self.login()
+        r = self._session.get(url, headers={'User-Agent': USER_AGENT}, timeout=timeout)
+        if _is_login_page(r):
+            raise EbokError('Sesja eBOK nie utrzymała się po ponownym logowaniu '
+                            '(serwer nadal zwraca stronę logowania)')
+        return r
+
+    def select_client(self, client_id: str) -> None:
+        r = self._get(f'{SERVICE}/wyborKlienta/id/{client_id}', REQUEST_TIMEOUT)
         if r.status_code != 200:
             raise EbokError(f'Wybór klienta {client_id} nie powiódł się (status {r.status_code})')
 
     def find_client_id(self, payer_id: str) -> Optional[str]:
         """Look up the internal client id for a given payer number (SYGNATURA-style
         'Nr płatnika', e.g. '60567872') from the /wyborKlienta landing page."""
-        self.login()
-        r = self._session.get(f'{SERVICE}/wyborKlienta',
-                               headers={'User-Agent': USER_AGENT}, timeout=REQUEST_TIMEOUT)
+        r = self._get(f'{SERVICE}/wyborKlienta', REQUEST_TIMEOUT)
         if r.status_code != 200:
             raise EbokError(f'Pobranie /wyborKlienta nie powiodło się (status {r.status_code})')
         return parse_client_id_for_payer(r.text, payer_id)
@@ -132,10 +147,9 @@ class EbokClient:
     def list_documents(self, date_from: date, date_to: date) -> list[EbokDocument]:
         """Full invoice history for the currently-selected client via the CSV
         export — one request, no pagination needed."""
-        self.login()
         url = (f'{SERVICE}/content/platnosci/csv/dataOd/{date_from.isoformat()}'
                f'/dataDo/{date_to.isoformat()}/type/archiwumFaktur')
-        r = self._session.get(url, headers={'User-Agent': USER_AGENT}, timeout=ARCHIVE_TIMEOUT)
+        r = self._get(url, ARCHIVE_TIMEOUT)
         if r.status_code != 200:
             raise EbokError(f'Pobranie CSV faktur nie powiodło się (status {r.status_code})')
         docs = parse_documents_csv(r.content)
@@ -146,14 +160,13 @@ class EbokClient:
     def locate_ids(self, signatures: set, date_from: date, date_to: date) -> dict:
         """Map SYGNATURA → numeric podgladFaktury id by paginating the HTML
         archive page. Stops early once every requested signature is found."""
-        self.login()
         found: dict = {}
         remaining = set(signatures)
         page = 1
         while remaining and page <= MAX_ARCHIVE_PAGES:
             url = (f'{SERVICE}/content/platnosci/archiwumFaktur/page/{page}/display/50'
                    f'/dataOd/{date_from.isoformat()}/dataDo/{date_to.isoformat()}')
-            r = self._session.get(url, headers={'User-Agent': USER_AGENT}, timeout=ARCHIVE_TIMEOUT)
+            r = self._get(url, ARCHIVE_TIMEOUT)
             if r.status_code != 200:
                 raise EbokError(f'Pobranie archiwum (strona {page}) nie powiodło się '
                                  f'(status {r.status_code})')
@@ -168,13 +181,15 @@ class EbokClient:
         return found
 
     def download_pdf(self, numeric_id: str) -> bytes:
-        self.login()
-        r = self._session.get(f'{SERVICE}/podgladFaktury/id/{numeric_id}',
-                               headers={'User-Agent': USER_AGENT}, timeout=REQUEST_TIMEOUT)
+        r = self._get(f'{SERVICE}/podgladFaktury/id/{numeric_id}', REQUEST_TIMEOUT)
         if r.status_code != 200 or not r.content.startswith(b'%PDF'):
             raise EbokError(f'Pobranie PDF id={numeric_id} nie powiodło się '
                              f'(status {r.status_code})')
         return r.content
+
+
+def _is_login_page(r) -> bool:
+    return b'id="kc-form-login"' in (r.content or b'')
 
 
 # ── pure parsing helpers (no I/O — unit-testable on captured fixtures) ─────────
