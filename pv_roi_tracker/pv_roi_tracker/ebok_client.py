@@ -34,6 +34,7 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+MAX_ARCHIVE_ONLY = 5   # bezpiecznik: tyle dokumentów naraz importujemy tylko z archiwum HTML
 LOGIN_URL = 'https://logowanie.tauron.pl/realms/ext/protocol/cas/login'
 SERVICE = 'https://ebok.tauron.pl'
 USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64) pv_roi_tracker/ebok-sync'
@@ -157,6 +158,18 @@ class EbokClient:
             raise EbokLayoutChanged('CSV faktur nie zawiera rozpoznawalnych wierszy — sprawdź format')
         return docs
 
+    def archive_page_ids(self, date_from: date, date_to: date) -> dict:
+        """SYGNATURA → numeric id for the first (newest) archive HTML page. Second
+        source next to the CSV: on 2026-10-18 the CSV export returned 8 rows
+        (77 in the spike) and omitted a freshly issued invoice that the archive
+        page listed."""
+        url = (f'{SERVICE}/content/platnosci/archiwumFaktur/page/1/display/50'
+               f'/dataOd/{date_from.isoformat()}/dataDo/{date_to.isoformat()}')
+        r = self._get(url, ARCHIVE_TIMEOUT)
+        if r.status_code != 200:
+            raise EbokError(f'Pobranie archiwum (strona 1) nie powiodło się (status {r.status_code})')
+        return parse_archive_html(r.text)
+
     def locate_ids(self, signatures: set, date_from: date, date_to: date) -> dict:
         """Map SYGNATURA → numeric podgladFaktury id by paginating the HTML
         archive page. Stops early once every requested signature is found."""
@@ -229,6 +242,20 @@ def _parse_ddmmyyyy(raw: str) -> Optional[date]:
         return datetime.strptime(raw, '%d.%m.%Y').date()
     except ValueError:
         return None
+
+
+def find_missing_signatures(csv_signatures: set, archive_ids: dict, known: set) -> tuple:
+    """(missing, extra): signatures to import — from the CSV or the archive page —
+    and the subset seen only on the archive page (CSV gap)."""
+    extra = {sig.strip() for sig in archive_ids if sig not in csv_signatures and sig not in known}
+    extra -= known
+    if len(extra) > MAX_ARCHIVE_ONLY:
+        # zbyt wiele naraz = raczej niezgodność formatu sygnatur niż nowe faktury
+        logger.warning('eBOK: %d dokumentów tylko w archiwum (limit %d) — pomijam',
+                       len(extra), MAX_ARCHIVE_ONLY)
+        extra = set()
+    missing = {sig for sig in csv_signatures if sig not in known} | extra
+    return missing, extra
 
 
 _ARCHIVE_ROW_RE = re.compile(

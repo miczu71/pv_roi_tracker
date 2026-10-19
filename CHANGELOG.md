@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.45.3] — 2026-10-19
+
+Poprawka eBOK: faktura wystawiona 07.10 (wrzesień, `0018/26`) nie została pobrana.
+
+- **Przyczyna:** eksport CSV „archiwum faktur” zwrócił 8 wierszy (w spike'u Etapu 1 — 77)
+  i nie zawierał nowej faktury, którą archiwum HTML (to samo, z którego add-on bierze
+  numeryczne id do pobrania PDF) już pokazywało. `ebok_sync` ufał wyłącznie CSV, więc
+  kończył się „brak nowych dokumentów” (health `ok`, bez pusha).
+- `ebok_client.py`: `archive_page_ids()` (strona 1 archiwum HTML — najnowsze 50) oraz
+  czysta funkcja `find_missing_signatures()` — dokumenty widoczne tylko w archiwum
+  trafiają do importu razem z brakującymi z CSV.
+- `main.py` `ebok_sync`: log `eBOK: CSV N dok., archiwum (str. 1) M, brakujących K`,
+  ostrzeżenie z sygnaturami, których brakuje w CSV; wynik synchronizacji
+  (`POST /api/ebok/sync`) zawiera `csv_rows`, `archive_page_rows`, `csv_latest`.
+- Bezpieczniki: awaria archiwum HTML nie przerywa synchronizacji (degradacja do samego CSV);
+  więcej niż 5 dokumentów tylko w archiwum naraz jest pomijane (podejrzenie niezgodności formatu).
+- Testy: `archive_page_ids` (OK / zły status), `find_missing_signatures` (3 przypadki).
+
 ## [0.45.2] — 2026-10-01
 
 Poprawka eBOK: fałszywy błąd „Płatnik … nie znaleziony na /wyborKlienta".

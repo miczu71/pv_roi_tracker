@@ -25,6 +25,7 @@ from pv_roi_tracker.ebok_client import (
     EbokError,
     EbokLoginBlocked,
     EbokLoginFailed,
+    find_missing_signatures,
     parse_archive_html,
     parse_client_id_for_payer,
     parse_documents_csv,
@@ -238,6 +239,47 @@ def test_locate_ids_gives_up_after_empty_page():
     session.when('/archiwumFaktur/page/', _FakeResponse(text='<html>brak wierszy</html>'))
     found = client.locate_ids({'NIEISTNIEJACY/0000/00'}, date(2022, 1, 1), date(2027, 1, 1))
     assert found == {}
+
+
+def test_archive_page_ids_returns_first_page_mapping():
+    client, session = _client_with_successful_login()
+    page1_html = (
+        '<a href="/podgladFaktury/id/111"  class="invoicePreviewHelper typ_106 helperLink" >'
+        '<i class="icon"></i>T/K1/TEST/0018/26</a>'
+    )
+    session.when('/archiwumFaktur/page/1/', _FakeResponse(text=page1_html))
+    assert client.archive_page_ids(date(2022, 1, 1), date(2027, 1, 1)) == {'T/K1/TEST/0018/26': '111'}
+
+
+def test_archive_page_ids_bad_status_raises():
+    client, session = _client_with_successful_login()
+    session.when('/archiwumFaktur/page/1/', _FakeResponse(status_code=500))
+    with pytest.raises(EbokError):
+        client.archive_page_ids(date(2022, 1, 1), date(2027, 1, 1))
+
+
+# ── find_missing_signatures ──────────────────────────────────────────────────
+
+def test_find_missing_signatures_csv_only():
+    missing, extra = find_missing_signatures({'A/1', 'A/2'}, {}, {'A/1'})
+    assert missing == {'A/2'} and extra == set()
+
+
+def test_find_missing_signatures_archive_only_document_is_extra():
+    # CSV skurczone (jak 18.10.2026): faktura widoczna tylko w HTML archiwum
+    missing, extra = find_missing_signatures({'A/1'}, {'A/1': '1', 'A/18': '18'}, {'A/1'})
+    assert missing == {'A/18'} and extra == {'A/18'}
+
+
+def test_find_missing_signatures_too_many_archive_only_is_ignored():
+    archive = {f'A/{i}': str(i) for i in range(10)}
+    missing, extra = find_missing_signatures(set(), archive, set())
+    assert missing == set() and extra == set()
+
+
+def test_find_missing_signatures_known_archive_entries_ignored():
+    missing, extra = find_missing_signatures({'A/1'}, {'A/1': '1', 'A/2': '2'}, {'A/1', 'A/2'})
+    assert missing == set() and extra == set()
 
 
 # ── pure parsing helpers ─────────────────────────────────────────────────────

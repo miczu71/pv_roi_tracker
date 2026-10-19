@@ -598,32 +598,50 @@ def main() -> None:
         from datetime import datetime as _dt
 
         def body(client, docs, state, date_from, date_to) -> dict:
+            from . import ebok_client as _ec
             existing = invoice_store.load(INVOICE_PATH)
             known_numbers = {rec.get('invoice_number') for rec in existing.values()
                              if rec.get('invoice_number')}
-            missing = [d for d in docs if d.signature not in known_numbers]
+            try:
+                archive_ids = client.archive_page_ids(date_from, date_to)
+            except _ec.EbokError as exc:
+                logger.warning('eBOK: archiwum HTML niedostępne (%s) — tylko CSV', exc)
+                archive_ids = {}
+            csv_signatures = {d.signature for d in docs}
+            missing, extra = _ec.find_missing_signatures(csv_signatures, archive_ids, known_numbers)
+            diag = {'csv_rows': len(docs), 'archive_page_rows': len(archive_ids),
+                    'csv_latest': [d.signature for d in sorted(
+                        docs, key=lambda d: d.issued_on.split('.')[::-1])[-3:]]}
+            logger.info('eBOK: CSV %d dok., archiwum (str. 1) %d, brakujących %d', len(docs),
+                        len(archive_ids), len(missing))
+            if extra:
+                logger.warning('eBOK: CSV nie zawiera dokumentów widocznych w archiwum: %s',
+                               ', '.join(sorted(extra)))
 
             if not missing:
                 state['last_sync'] = _dt.now().isoformat()
                 state.pop('blocked_until', None)
                 _save_ebok_state(state)
                 _record_job('ebok', True, 'brak nowych dokumentów')
-                return {'ok': True, 'imported': [], 'skipped_existing': len(docs), 'errors': []}
+                return {'ok': True, 'imported': [], 'skipped_existing': len(docs), 'errors': [], **diag}
 
-            id_map = client.locate_ids({d.signature for d in missing}, date_from, date_to)
+            id_map = {sig: archive_ids[sig] for sig in missing if sig in archive_ids}
+            rest = missing - set(id_map)
+            if rest:
+                id_map.update(client.locate_ids(rest, date_from, date_to))
             files = []
             not_found = []
-            for d in missing:
-                doc_id = id_map.get(d.signature)
+            for signature in sorted(missing):
+                doc_id = id_map.get(signature)
                 if not doc_id:
-                    not_found.append(d.signature)
+                    not_found.append(signature)
                     continue
                 try:
                     pdf_bytes = client.download_pdf(doc_id)
-                    files.append((f'ebok_{d.signature.replace("/", "-")}.pdf', pdf_bytes))
+                    files.append((f'ebok_{signature.replace("/", "-")}.pdf', pdf_bytes))
                 except Exception:
-                    logger.exception('eBOK: pobranie PDF %s nie powiodło się', d.signature)
-                    not_found.append(d.signature)
+                    logger.exception('eBOK: pobranie PDF %s nie powiodło się', signature)
+                    not_found.append(signature)
 
             from .invoice_ingest import ingest_pdfs
             ingested = ingest_pdfs(files, INVOICE_PATH)
@@ -654,7 +672,7 @@ def main() -> None:
                 _notify_ha('PV ROI Tracker — eBOK', ' '.join(lines), target='kacper')
 
             return {'ok': True, 'imported': imported, 'needs_training': needs_training,
-                    'errors': errors, 'not_found_in_archive': not_found}
+                    'errors': errors, 'not_found_in_archive': not_found, **diag}
 
         return _ebok_run('ebok', 'Synchronizacja eBOK',
                          'Synchronizacja eBOK nie powiodła się', body)
