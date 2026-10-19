@@ -26,6 +26,7 @@ from pv_roi_tracker.ebok_client import (
     EbokLoginBlocked,
     EbokLoginFailed,
     find_missing_signatures,
+    known_signatures,
     parse_archive_html,
     parse_client_id_for_payer,
     parse_documents_csv,
@@ -274,6 +275,17 @@ def test_diagnose_reports_needle_per_source_without_raising_on_errors():
     assert out['csv'][0]['rows'] == 1 and out['csv'][0]['newest'] == ['08.09.2026 T/K1/TEST/0017/26']
     assert all(a['has_needle'] for a in out['archive_html'])
     assert len(out['pages']) == 6
+
+
+def test_known_signatures_uses_invoice_number_and_ebok_filename():
+    known = known_signatures([
+        {'invoice_number': 'T/K1/X/0017/26', 'filename': 'upload.pdf'},
+        {'invoice_number': '', 'filename': 'ebok_T-K1-0262015-25.pdf'},
+        {'filename': 'recznie.pdf'},
+    ])
+    assert 'T/K1/X/0017/26' in known and 'T-K1-0262015-25' in known
+    assert find_missing_signatures({'T/K1/X/0017/26', 'T/K1-0262015-25'.replace('K1-', 'K1/'), 'T/K1/X/0018/26'},
+                                   {}, known)[0] == {'T/K1/X/0018/26'}
 
 
 # ── find_missing_signatures ──────────────────────────────────────────────────

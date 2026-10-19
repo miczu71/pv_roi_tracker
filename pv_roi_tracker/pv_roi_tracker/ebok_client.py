@@ -280,17 +280,36 @@ def _parse_ddmmyyyy(raw: str) -> Optional[date]:
         return None
 
 
+def known_signatures(records) -> set:
+    """Sygnatury już zaimportowane: z `invoice_number` rekordu ORAZ z nazwy pliku
+    `ebok_<sygnatura z '/' → '-'>.pdf` — starsze układy PDF nie dają numeru, więc same
+    numery nie wystarczały do dedupu (19.10.2026: 32 dokumenty z lat 2023–25 wracały
+    do importu przy każdym pełnym CSV)."""
+    known = set()
+    for rec in records:
+        if rec.get('invoice_number'):
+            known.add(rec['invoice_number'])
+        name = rec.get('filename') or ''
+        if name.startswith('ebok_') and name.endswith('.pdf'):
+            known.add(name[len('ebok_'):-len('.pdf')])      # forma z '-' zamiast '/'
+    return known
+
+
+def is_known(signature: str, known: set) -> bool:
+    return signature in known or signature.replace('/', '-') in known
+
+
 def find_missing_signatures(csv_signatures: set, archive_ids: dict, known: set) -> tuple:
     """(missing, extra): signatures to import — from the CSV or the archive page —
     and the subset seen only on the archive page (CSV gap)."""
-    extra = {sig.strip() for sig in archive_ids if sig not in csv_signatures and sig not in known}
-    extra -= known
+    extra = {sig.strip() for sig in archive_ids
+             if sig not in csv_signatures and not is_known(sig.strip(), known)}
     if len(extra) > MAX_ARCHIVE_ONLY:
         # zbyt wiele naraz = raczej niezgodność formatu sygnatur niż nowe faktury
         logger.warning('eBOK: %d dokumentów tylko w archiwum (limit %d) — pomijam',
                        len(extra), MAX_ARCHIVE_ONLY)
         extra = set()
-    missing = {sig for sig in csv_signatures if sig not in known} | extra
+    missing = {sig for sig in csv_signatures if not is_known(sig, known)} | extra
     return missing, extra
 
 

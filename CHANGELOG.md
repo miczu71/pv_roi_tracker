@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.45.6] — 2026-10-19
+
+Poprawka eBOK: faktura `0018/26` (wystawiona 07.10, termin 21.10) była niewidoczna.
+
+- **Przyczyna (potwierdzona `/api/ebok/diag`):** Tauron filtruje CSV i archiwum po zakresie dat
+  tak, że z `dataDo` = jutro pomija faktury z późniejszym terminem płatności; z `dataDo` = dziś+30
+  CSV zawiera `0018/26`. Portal sam używa `dataDo` rok do przodu. Nowa faktura była więc
+  niewidoczna do dnia terminu.
+- `main.py` `_ebok_run`: `date_to = dziś + 365 dni`.
+- Dedup: `known_signatures()` uznaje dokument za znany także po nazwie pliku
+  `ebok_<sygnatura>.pdf` (starsze układy PDF nie dają `invoice_number`, przez co 32 dokumenty
+  z lat 2023–25 wracały do importu przy każdym pełnym CSV).
+- Test `known_signatures`.
+
 ## [0.45.5] — 2026-10-19
 
 Diagnostyka eBOK (tylko odczyt).

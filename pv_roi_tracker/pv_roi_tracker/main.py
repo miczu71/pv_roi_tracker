@@ -567,7 +567,10 @@ def main() -> None:
                 client.select_client(client_id)
 
             date_from = _date(2022, 1, 1)  # przed 2023-08 (start konta wg spike'a Etapu 1)
-            date_to = _date.today() + _td(days=1)
+            # Tauron filtruje po terminie płatności, nie po dacie wystawienia: z dataDo=jutro
+            # faktura z terminem za 14 dni jest niewidoczna (0018/26, 19.10.2026). Portal sam
+            # używa dataDo rok do przodu.
+            date_to = _date.today() + _td(days=365)
             docs = client.list_documents(date_from, date_to)
             return body(client, docs, state, date_from, date_to)
 
@@ -600,8 +603,7 @@ def main() -> None:
         def body(client, docs, state, date_from, date_to) -> dict:
             from . import ebok_client as _ec
             existing = invoice_store.load(INVOICE_PATH)
-            known_numbers = {rec.get('invoice_number') for rec in existing.values()
-                             if rec.get('invoice_number')}
+            known_numbers = _ec.known_signatures(existing.values())
             try:
                 # wąski zakres: archiwum od 2022 potrafi przekroczyć timeout (19.10.2026)
                 archive_ids = client.archive_page_ids(date_to - _td(days=120), date_to)
