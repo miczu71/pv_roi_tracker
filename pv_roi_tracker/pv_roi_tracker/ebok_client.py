@@ -26,9 +26,10 @@ import csv
 import io
 import logging
 import re
+import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Optional
+from typing import Callable, Optional
 
 import requests
 
@@ -40,6 +41,7 @@ SERVICE = 'https://ebok.tauron.pl'
 USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64) pv_roi_tracker/ebok-sync'
 REQUEST_TIMEOUT = 45
 ARCHIVE_TIMEOUT = 60
+RETRY_DELAYS = (10, 30, 90)  # s przed kolejnymi ponowieniami GET po timeoucie / błędzie połączenia
 MAX_ARCHIVE_PAGES = 20  # safety cap — well above what 100s of invoices would need at 50/page
 
 
@@ -82,11 +84,27 @@ class EbokClient:
     """
 
     def __init__(self, username: str, password: str,
-                 session: Optional[requests.Session] = None):
+                 session: Optional[requests.Session] = None,
+                 sleep: Callable[[float], None] = time.sleep):
         self._username = username
         self._password = password
         self._session = session or requests.Session()
+        self._sleep = sleep
         self._logged_in = False
+
+    def _get_retrying(self, *args, **kwargs):
+        """session.get z ponowieniami po timeoucie / błędzie połączenia (kolejne
+        próby po RETRY_DELAYS; incydent 2026-10-19: jednorazowy ReadTimeout na
+        /wyborKlienta zostawił health `degraded` do następnego joba). Tylko GET —
+        POST logowania nigdy nie jest ponawiany, bo powtórki zbliżają konto do
+        blokady Taurona."""
+        for delay in RETRY_DELAYS:
+            try:
+                return self._session.get(*args, **kwargs)
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+                logger.warning('eBOK: %s — ponawiam za %d s', exc, delay)
+                self._sleep(delay)
+        return self._session.get(*args, **kwargs)
 
     # ── login ────────────────────────────────────────────────────────────────
 
@@ -94,7 +112,7 @@ class EbokClient:
         """Log in once; safe to call again (no-op) once already logged in."""
         if self._logged_in:
             return
-        r = self._session.get(LOGIN_URL, params={'service': SERVICE},
+        r = self._get_retrying(LOGIN_URL, params={'service': SERVICE},
                                headers={'User-Agent': USER_AGENT}, timeout=REQUEST_TIMEOUT)
         m = re.search(r'<form[^>]+id="kc-form-login"[^>]+action="([^"]+)"', r.text)
         if not m:
@@ -118,13 +136,13 @@ class EbokClient:
         without client rows → misleading "Płatnik nie znaleziony"). On a login
         page: log in again and retry once; still a login page → EbokError."""
         self.login()
-        r = self._session.get(url, headers={'User-Agent': USER_AGENT}, timeout=timeout)
+        r = self._get_retrying(url, headers={'User-Agent': USER_AGENT}, timeout=timeout)
         if not _is_login_page(r):
             return r
         logger.info('eBOK: sesja wygasła — logowanie ponownie')
         self._logged_in = False
         self.login()
-        r = self._session.get(url, headers={'User-Agent': USER_AGENT}, timeout=timeout)
+        r = self._get_retrying(url, headers={'User-Agent': USER_AGENT}, timeout=timeout)
         if _is_login_page(r):
             raise EbokError('Sesja eBOK nie utrzymała się po ponownym logowaniu '
                             '(serwer nadal zwraca stronę logowania)')

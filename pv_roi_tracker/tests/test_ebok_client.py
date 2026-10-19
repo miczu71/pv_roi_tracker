@@ -19,6 +19,7 @@ from datetime import date
 from pathlib import Path
 
 import pytest
+import requests
 
 from pv_roi_tracker.ebok_client import (
     EbokClient,
@@ -183,6 +184,76 @@ def test_session_still_expired_after_relogin_raises_clear_error():
     session.when_seq('/wyborKlienta', [_FakeResponse(text=_LOGIN_FORM_HTML)])
     with pytest.raises(EbokError, match='Sesja eBOK'):
         client.find_client_id('60567872')
+
+
+# ── ponawianie przy timeoucie / błędzie połączenia ──────────────────────────
+
+class _FlakyGetSession(_SequenceSession):
+    """Rzuca `exc` przy pierwszych `fail_times` GET-ach pasujących do `substring`."""
+
+    def __init__(self, substring: str, exc: Exception, fail_times: int):
+        super().__init__()
+        self._flaky = [substring, exc, fail_times]
+
+    def get(self, url, **kwargs):
+        substring, exc, left = self._flaky
+        if substring in url and left > 0:
+            self._flaky[2] -= 1
+            self.calls.append(('GET', url, kwargs))
+            raise exc
+        return super().get(url, **kwargs)
+
+
+def _flaky_client(fail_times: int, exc=None):
+    session = _FlakyGetSession('/wyborKlienta', exc or requests.exceptions.ReadTimeout('timed out'),
+                               fail_times)
+    session.when('logowanie.tauron.pl/realms/ext/protocol/cas/login',
+                 _FakeResponse(text=_LOGIN_FORM_HTML))
+    session.when('logowanie.tauron.pl/action', _FakeResponse(text=_LOGGED_IN_HTML))
+    session.when('/wyborKlienta', _FakeResponse(text=_LANDING_HTML))
+    sleeps: list = []
+    client = EbokClient('user@example.com', 'secret', session=session, sleep=sleeps.append)
+    return client, session, sleeps
+
+
+def test_get_retries_after_timeout_with_growing_delays():
+    client, session, sleeps = _flaky_client(fail_times=2)
+    assert client.find_client_id('60567872') == '111111'
+    assert sleeps == [10, 30]
+
+
+def test_get_retries_after_connection_error():
+    client, _, sleeps = _flaky_client(
+        fail_times=1, exc=requests.exceptions.ConnectionError('reset'))
+    assert client.find_client_id('60567872') == '111111'
+    assert sleeps == [10]
+
+
+def test_get_gives_up_after_three_retries():
+    client, session, sleeps = _flaky_client(fail_times=99)
+    with pytest.raises(requests.exceptions.ReadTimeout):
+        client.find_client_id('60567872')
+    assert sleeps == [10, 30, 90]
+    attempts = [c for c in session.calls if c[0] == 'GET' and '/wyborKlienta' in c[1]]
+    assert len(attempts) == 4  # próba + 3 ponowienia
+
+
+def test_login_post_is_never_retried():
+    """Ponowny POST logowania po timeoucie zbliża do blokady konta przez Tauron."""
+    class _TimeoutOnPost(FakeSession):
+        def post(self, url, **kwargs):
+            self.calls.append(('POST', url, kwargs))
+            raise requests.exceptions.ReadTimeout('timed out')
+
+    session = _TimeoutOnPost()
+    session.when('logowanie.tauron.pl/realms/ext/protocol/cas/login',
+                 _FakeResponse(text=_LOGIN_FORM_HTML))
+    sleeps: list = []
+    client = EbokClient('user@example.com', 'secret', session=session, sleep=sleeps.append)
+    with pytest.raises(requests.exceptions.ReadTimeout):
+        client.login()
+    assert [c[0] for c in session.calls].count('POST') == 1
+    assert sleeps == []
 
 
 # ── list_documents() / download_pdf() wiring ────────────────────────────────

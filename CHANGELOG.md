@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.45.10] — 2026-10-19
+
+eBOK: ponawianie zapytań po timeoucie.
+
+- **Ponawianie GET:** jednorazowy `ReadTimeout` na `/wyborKlienta` (19.10.2026) kończył synchronizację
+  błędem, powiadomieniem i health `degraded` do następnego zadania (do tygodnia). Zapytania GET
+  klienta eBOK (strona logowania, wybór płatnika, CSV, archiwum) są teraz ponawiane po timeoucie
+  i błędzie połączenia: 3 ponowienia po 10, 30 i 90 s (każde zapisane ostrzeżeniem w logu);
+  dopiero po czwartej nieudanej próbie działa dotychczasowa obsługa błędu.
+- **POST logowania bez ponowień:** powtórki zbliżałyby konto do blokady logowań po stronie Taurona.
+- Najgorszy przypadek jednego zapytania to ok. 5 min (4 × 45 s + 130 s oczekiwania); ręczna
+  synchronizacja z UI może wtedy trwać dłużej.
+
 ## [0.45.9] — 2026-10-19
 
 Pasek płatności po imporcie + ostatni duplikat korekty.
