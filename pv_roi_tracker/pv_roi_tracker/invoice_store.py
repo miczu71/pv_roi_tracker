@@ -154,7 +154,19 @@ def _to_record(
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def _make_key(data: InvoiceData) -> str:
+def _doc_signature(filename: str) -> str:
+    """Znormalizowana sygnatura dokumentu z nazwy pliku: 'ebok_T-K1-0123456-24.pdf' i
+    'T_K1_0123456_24.pdf' dają to samo. Pusta, gdy nazwa nie wygląda na sygnaturę
+    dokumentu (np. 'scan.pdf') — wtedy nie wolno jej używać do klucza ani do scalania."""
+    from .ebok_client import normalize_signature
+    stem = re.sub(r'\.pdf$', '', filename or '', flags=re.I)
+    if stem.startswith('ebok_'):
+        stem = stem[len('ebok_'):]
+    sig = normalize_signature(stem)
+    return sig if re.search(r'\d{4,}', sig) else ''
+
+
+def _make_key(data: InvoiceData, filename: str = '') -> str:
     """Build the storage key for an InvoiceData record.
 
     Billing invoices:  'YYYY-MM'              (unchanged, backward-compatible)
@@ -162,7 +174,10 @@ def _make_key(data: InvoiceData) -> str:
     Noty:              'YYYY-MM~nota~<suffix>'
 
     The suffix is derived from the invoice_number so that re-uploading the
-    same document overwrites the same key (idempotent upsert / dedup).
+    same document overwrites the same key (idempotent upsert / dedup). Gdy parser
+    nie odczytał numeru (starsze układy PDF), sufiksem jest sygnatura z nazwy pliku;
+    timestamp tylko ostatecznie — inaczej każdy ponowny import dokładał kopię
+    (19.10.2026) i klucz timestampowy mógł wygrać wybór „ostatniej” korekty.
     """
     base = f'{data.year}-{data.month:02d}'
     doc_type = getattr(data, 'doc_type', 'rozliczeniowa')
@@ -170,7 +185,9 @@ def _make_key(data: InvoiceData) -> str:
         tag = 'kor' if doc_type == 'korekta' else 'nota'
         inv_num = data.invoice_number or ''
         # Keep only alphanumeric and slash; replace the rest; take last 30 chars
-        safe = re.sub(r'[^a-zA-Z0-9/]', '_', inv_num)[-30:] or str(int(time.time()))
+        safe = (re.sub(r'[^a-zA-Z0-9/]', '_', inv_num)[-30:]
+                or _doc_signature(filename)[-30:]
+                or str(int(time.time())))
         return f'{base}~{tag}~{safe}'
     return base
 
@@ -191,7 +208,7 @@ def upsert(
       - 'korekta'                 → 'YYYY-MM~kor~<inv_num_suffix>'
       - 'nota'                    → 'YYYY-MM~nota~<inv_num_suffix>'
     """
-    key = _make_key(data)
+    key = _make_key(data, filename)
     pdf_path = save_pdf(key, pdf_bytes, path) if pdf_bytes else None
     doc = _load_document(path)
     invoices: dict = doc.setdefault('invoices', {})
@@ -326,6 +343,28 @@ def corrections_for(stored: dict, month_key: str) -> list:
     return result
 
 
+def _latest_correction_key(stored: dict, kor_keys: list) -> str:
+    """Klucz korekty obowiązującej: ta, której nie zastąpiła żadna późniejsza w łańcuchu
+    (`corrects_number` → `invoice_number`, albo `prev_deposit_previous_pln` późniejszej =
+    `deposit_previous_pln` wcześniejszej). Jednoznaczny wynik wygrywa; przy braku łańcucha
+    lub wielu „głowach” zostaje dawna reguła — ostatni klucz (sortowanie po kluczu nie
+    jest chronologią: klucze timestampowe sortują się przed numerami z literą)."""
+    recs = {k: stored[k] for k in kor_keys}
+
+    def superseded(a: dict, b: dict) -> bool:
+        """b zastępuje a."""
+        if a.get('invoice_number') and b.get('corrects_number') == a['invoice_number']:
+            return True
+        pb, da, db = (b.get('prev_deposit_previous_pln'), a.get('deposit_previous_pln'),
+                      b.get('deposit_previous_pln'))
+        return (pb is not None and da is not None and db is not None
+                and abs(pb - da) < 0.005 and abs(db - da) >= 0.005)
+
+    heads = [k for k, a in recs.items()
+             if not any(superseded(a, b) for k2, b in recs.items() if k2 != k)]
+    return heads[0] if len(heads) == 1 else kor_keys[-1]
+
+
 def effective_by_month(stored: dict) -> dict:
     """Return {YYYY-MM: record} with each billing month's deposit values overlaid
     from the latest korekta for that month (if any).
@@ -344,7 +383,7 @@ def effective_by_month(stored: dict) -> dict:
         # Find all korrektas for this month; take the latest by key sort (suffix = invoice_num)
         kor_keys = sorted(k for k in stored if k.startswith(f'{month_key}~kor~'))
         if kor_keys:
-            latest_kor = stored[kor_keys[-1]]
+            latest_kor = stored[_latest_correction_key(stored, kor_keys)]
             for field_name in ('deposit_current_pln', 'deposit_previous_pln', 'deposit_used_pln',
                                'energy_sale_gross_pln', 'deposit_capped'):
                 val = latest_kor.get(field_name)
@@ -355,3 +394,92 @@ def effective_by_month(stored: dict) -> dict:
                 merged['amount_due_pln'] = latest_kor['amount_due_pln']
         result[month_key] = merged
     return result
+
+
+_DEDUPE_FIELDS = ('invoice_number', 'doc_type', 'corrects_number', 'amount_due_pln',
+                  'deposit_current_pln', 'deposit_previous_pln', 'deposit_used_pln',
+                  'prev_deposit_previous_pln', 'energy_sale_gross_pln')
+
+
+def _same_document(a: dict, b: dict) -> bool:
+    """Kopie tego samego dokumentu: pola kluczowe równe (brak numeru w jednej kopii
+    nie przeszkadza, jeśli druga go ma)."""
+    for f in _DEDUPE_FIELDS:
+        x, y = a.get(f), b.get(f)
+        if f == 'invoice_number' and (not x or not y):
+            continue
+        if x != y:
+            return False
+    return True
+
+
+def dedupe_corrections(path: Path = DEFAULT_PATH) -> dict:
+    """Jednorazowa migracja (znacznik `migrations` w dokumencie): scala kopie tej samej
+    korekty/noty, które powstały, bo klucze bez numeru faktury były timestampowe.
+    Kopie = ten sam miesiąc i rodzaj, ta sama sygnatura z nazwy pliku (musi wyglądać
+    jak sygnatura dokumentu) ORAZ zgodne pola liczbowe. Zostaje rekord o największym
+    stanie (numer faktury, reconciled, PDF, najnowszy `parsed_at`), przenoszony pod klucz
+    kanoniczny, żeby kolejny import tego dokumentu go nadpisał. Przed zmianą kopia
+    `<plik>.pre-dedupe`; PDF-y usuwane dopiero po udanym zapisie.
+    Zwraca {'removed': [klucze], 'skipped': bool}."""
+    doc = _load_document(path)
+    migrations = doc.setdefault('migrations', [])
+    if 'dedupe_corrections_v1' in migrations:
+        return {'removed': [], 'skipped': True}
+    invoices: dict = doc.setdefault('invoices', {})
+
+    groups: dict = {}
+    for key, rec in invoices.items():
+        if '~kor~' not in key and '~nota~' not in key:
+            continue
+        sig = _doc_signature(rec.get('filename', ''))
+        if sig:
+            groups.setdefault((key.split('~', 1)[0], '~kor~' in key, sig), []).append(key)
+
+    def rank(k):
+        r = invoices[k]
+        return (bool(r.get('invoice_number')), bool(r.get('reconciled')),
+                bool(r.get('pdf_path')), r.get('parsed_at') or '', k)
+
+    removed, rekeys = [], {}
+    for (month, is_kor, sig), keys in groups.items():
+        keep = max(keys, key=rank)
+        dupes = [k for k in keys if k != keep and _same_document(invoices[keep], invoices[k])]
+        if not dupes:
+            continue
+        removed.extend(dupes)
+        if not invoices[keep].get('invoice_number'):
+            canonical = f"{month}~{'kor' if is_kor else 'nota'}~{sig[-30:]}"
+            if canonical != keep and (canonical not in invoices or canonical in dupes):
+                rekeys[keep] = canonical
+
+    if not removed:
+        migrations.append('dedupe_corrections_v1')
+        _save_document(doc, path)
+        return {'removed': [], 'skipped': False}
+
+    if path.exists():
+        shutil.copy2(path, path.with_suffix('.json.pre-dedupe'))
+    for key in removed:
+        invoices.pop(key, None)
+    pdf_moves = []
+    for old_key, new_key in rekeys.items():
+        rec = invoices.pop(old_key)
+        old_pdf, new_pdf = pdf_path_for(old_key, path), pdf_path_for(new_key, path)
+        if rec.get('pdf_path') and old_pdf.exists():
+            rec['pdf_path'] = str(new_pdf)
+            pdf_moves.append((old_pdf, new_pdf))
+        invoices[new_key] = rec
+    migrations.append('dedupe_corrections_v1')
+    _save_document(doc, path)          # PDF-y ruszamy dopiero po udanym zapisie
+    for old_pdf, new_pdf in pdf_moves:
+        try:
+            new_pdf.parent.mkdir(parents=True, exist_ok=True)
+            old_pdf.replace(new_pdf)
+        except OSError:
+            logger.warning('dedupe_corrections: nie przeniesiono PDF %s', old_pdf)
+    for key in removed:
+        delete_pdf(key, path)
+    logger.info('dedupe_corrections: usunięto %d duplikatów: %s; przeniesiono pod klucz kanoniczny: %s',
+                len(removed), ', '.join(sorted(removed)), ', '.join(f'{a}→{b}' for a, b in rekeys.items()))
+    return {'removed': sorted(removed), 'skipped': False}

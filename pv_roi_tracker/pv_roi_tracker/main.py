@@ -290,6 +290,11 @@ def main() -> None:
     from .publisher import MQTTPublisher
     from . import __version__
 
+    try:  # jednorazowo, PRZED startem serwera (store bez blokad); kopia .pre-dedupe przed zmianą
+        invoice_store.dedupe_corrections(INVOICE_PATH)
+    except Exception:
+        logger.exception('Migracja dedupe_corrections nie powiodła się — dane bez zmian')
+
     from . import web as _web
     _web.start_server(port=8099)
 

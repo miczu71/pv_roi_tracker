@@ -288,3 +288,159 @@ def test_upsert_no_warnings_needs_training_false(store_path):
     key = invoice_store.upsert(_data(), path=store_path)
     rec = invoice_store.get(key, store_path)
     assert rec['needs_training'] is False
+
+
+# ── korekty bez numeru: deterministyczny klucz, wybór łańcuchowy, migracja ───
+
+def _kor(month=11, year=2023, *, number=None, prev_dep=None, dep_prev=None, amount=None):
+    d = _data(year=year, month=month)
+    d.doc_type = 'korekta'
+    d.invoice_number = number
+    d.prev_deposit_previous_pln = prev_dep
+    d.deposit_previous_pln = dep_prev
+    d.deposit_used_pln = dep_prev
+    d.amount_due_pln = amount
+    return d
+
+
+def test_numberless_korekta_same_document_overwrites_same_key(store_path):
+    k1 = invoice_store.upsert(_kor(), filename='T_K1_1000002_24.pdf', path=store_path)
+    k2 = invoice_store.upsert(_kor(), filename='ebok_T-K1-1000002-24.pdf', path=store_path)
+    assert k1 == k2
+    assert len([k for k in invoice_store.load(store_path) if '~kor~' in k]) == 1
+
+
+def test_numberless_korekty_of_different_documents_get_different_keys(store_path):
+    k1 = invoice_store.upsert(_kor(), filename='ebok_T-K1-1000001-24.pdf', path=store_path)
+    k2 = invoice_store.upsert(_kor(), filename='ebok_T-K1-1000002-24.pdf', path=store_path)
+    assert k1 != k2
+
+
+def _store_chain(store_path):
+    """2023-11: faktura + starsza korekta (50 → 48) i późniejsza (48 → 52).
+    Klucze timestampowe, starsza sortuje się NA KOŃCU (jak po imporcie 19.10.2026)."""
+    base = _data(year=2023, month=11)
+    base.deposit_previous_pln = 50.00
+    base.deposit_used_pln = 50.00
+    base.amount_due_pln = 1000.00
+    invoice_store.upsert(base, filename='fv.pdf', path=store_path)
+    doc = invoice_store._load_document(store_path)
+    older = invoice_store._to_record(_kor(prev_dep=50.00, dep_prev=48.00, amount=1010.00), 'ebok_T-K1-1000001-24.pdf', False)
+    later = invoice_store._to_record(_kor(prev_dep=48.00, dep_prev=52.00, amount=1005.00), 'T_K1_1000002_24.pdf', False)
+    doc['invoices']['2023-11~kor~1790601115'] = later
+    doc['invoices']['2023-11~kor~1792388893'] = older
+    invoice_store._save_document(doc, store_path)
+
+
+def test_effective_by_month_picks_latest_correction_in_chain_not_last_key(store_path):
+    _store_chain(store_path)
+    eff = invoice_store.effective_by_month(invoice_store.load(store_path))
+    assert eff['2023-11']['deposit_previous_pln'] == pytest.approx(52.00)
+    assert eff['2023-11']['amount_due_pln'] == pytest.approx(1005.00)
+
+
+def test_effective_by_month_falls_back_to_last_key_without_chain(store_path):
+    base = _data(year=2024, month=3)
+    invoice_store.upsert(base, filename='fv.pdf', path=store_path)
+    invoice_store.upsert(_kor(3, 2024, number='T/K1/A/1/24', dep_prev=1.0, amount=10.0), path=store_path)
+    invoice_store.upsert(_kor(3, 2024, number='T/K1/B/2/24', dep_prev=2.0, amount=20.0), path=store_path)
+    eff = invoice_store.effective_by_month(invoice_store.load(store_path))
+    assert eff['2024-03']['amount_due_pln'] == pytest.approx(20.0)
+
+
+def test_dedupe_corrections_merges_copies_keeps_one_and_is_idempotent(store_path):
+    invoice_store.upsert(_data(year=2024, month=12), filename='fv.pdf', path=store_path)
+    doc = invoice_store._load_document(store_path)
+    for i, name in enumerate(['T_K1_1000003_25.pdf', 'T_K1_1000003_25.pdf', 'ebok_T-K1-1000003-25.pdf']):
+        rec = invoice_store._to_record(_kor(12, 2024, prev_dep=1.0, dep_prev=2.0, amount=3.0), name, False,
+                                       pdf_path=None)
+        rec['parsed_at'] = f'2026-10-19T07:0{i}:00+00:00'
+        doc['invoices'][f'2024-12~kor~17900000{i}'] = rec
+    invoice_store._save_document(doc, store_path)
+
+    result = invoice_store.dedupe_corrections(store_path)
+    kors = [k for k in invoice_store.load(store_path) if '~kor~' in k]
+    assert kors == ['2024-12~kor~T_K1_1000003_25']   # najnowszy parsed_at, klucz kanoniczny
+    assert len(result['removed']) == 2
+    assert store_path.with_suffix('.json.pre-dedupe').exists()
+    assert '2024-12' in invoice_store.load(store_path)             # faktura nietknięta
+
+    again = invoice_store.dedupe_corrections(store_path)
+    assert again['removed'] == [] and again['skipped'] is True
+
+
+def test_dedupe_corrections_keeps_numbered_record_over_numberless_copy(store_path):
+    invoice_store.upsert(_data(year=2024, month=12), filename='fv.pdf', path=store_path)
+    invoice_store.upsert(_kor(12, 2024, number='T/K1/1000004/25', dep_prev=2.0), filename='T_K1_1000004_25.pdf',
+                         path=store_path)
+    doc = invoice_store._load_document(store_path)
+    doc['invoices']['2024-12~kor~179000009'] = invoice_store._to_record(
+        _kor(12, 2024, dep_prev=2.0), 'ebok_T-K1-1000004-25.pdf', False)
+    invoice_store._save_document(doc, store_path)
+    invoice_store.dedupe_corrections(store_path)
+    assert [k for k in invoice_store.load(store_path) if '~kor~' in k] == ['2024-12~kor~T/K1/1000004/25']
+
+
+def test_dedupe_corrections_does_not_merge_generic_filenames(store_path):
+    invoice_store.upsert(_data(year=2024, month=5), filename='fv.pdf', path=store_path)
+    doc = invoice_store._load_document(store_path)
+    doc['invoices']['2024-05~kor~1790000001'] = invoice_store._to_record(
+        _kor(5, 2024, prev_dep=1.0, dep_prev=2.0, amount=3.0), 'scan.pdf', False)
+    doc['invoices']['2024-05~kor~1790000002'] = invoice_store._to_record(
+        _kor(5, 2024, prev_dep=5.0, dep_prev=6.0, amount=7.0), 'scan.pdf', False)
+    invoice_store._save_document(doc, store_path)
+    assert invoice_store.dedupe_corrections(store_path)['removed'] == []
+    assert len([k for k in invoice_store.load(store_path) if '~kor~' in k]) == 2
+
+
+def test_dedupe_corrections_does_not_merge_when_values_differ(store_path):
+    invoice_store.upsert(_data(year=2024, month=5), filename='fv.pdf', path=store_path)
+    doc = invoice_store._load_document(store_path)
+    doc['invoices']['2024-05~kor~1790000001'] = invoice_store._to_record(
+        _kor(5, 2024, prev_dep=1.0, dep_prev=2.0, amount=3.0), 'T_K1_1000009_24.pdf', False)
+    doc['invoices']['2024-05~kor~1790000002'] = invoice_store._to_record(
+        _kor(5, 2024, prev_dep=1.0, dep_prev=2.5, amount=3.5), 'ebok_T-K1-1000009-24.pdf', False)
+    invoice_store._save_document(doc, store_path)
+    assert invoice_store.dedupe_corrections(store_path)['removed'] == []
+
+
+def test_dedupe_corrections_moves_pdf_with_rekeyed_record_and_removes_dupe_pdf(store_path):
+    invoice_store.upsert(_data(year=2024, month=5), filename='fv.pdf', path=store_path)
+    doc = invoice_store._load_document(store_path)
+    for key, name, parsed in (('2024-05~kor~1790000001', 'T_K1_1000009_24.pdf', '2026-06-01T00:00:00+00:00'),
+                              ('2024-05~kor~1790000002', 'ebok_T-K1-1000009-24.pdf', '2026-10-19T07:00:00+00:00')):
+        pdf = invoice_store.save_pdf(key, f'pdf-{key}'.encode(), store_path)
+        rec = invoice_store._to_record(_kor(5, 2024, prev_dep=1.0, dep_prev=2.0, amount=3.0), name, False,
+                                       pdf_path=pdf)
+        rec['parsed_at'] = parsed
+        doc['invoices'][key] = rec
+    invoice_store._save_document(doc, store_path)
+
+    invoice_store.dedupe_corrections(store_path)
+    kors = {k: v for k, v in invoice_store.load(store_path).items() if '~kor~' in k}
+    assert list(kors) == ['2024-05~kor~T_K1_1000009_24']
+    new_pdf = Path(kors['2024-05~kor~T_K1_1000009_24']['pdf_path'])
+    assert new_pdf.read_bytes() == b'pdf-2024-05~kor~1790000002'
+    assert not invoice_store.pdf_path_for('2024-05~kor~1790000001', store_path).exists()
+    # ponowny import tego samego dokumentu nadpisuje kanoniczny klucz zamiast dokładać kopię
+    invoice_store.upsert(_kor(5, 2024, prev_dep=1.0, dep_prev=2.0, amount=3.0),
+                         filename='ebok_T-K1-1000009-24.pdf', path=store_path)
+    assert len([k for k in invoice_store.load(store_path) if '~kor~' in k]) == 1
+
+
+def test_numberless_korekta_with_generic_filename_keeps_timestamp_key(store_path):
+    k = invoice_store.upsert(_kor(), filename='scan.pdf', path=store_path)
+    assert k.split('~kor~')[1].isdigit()
+
+
+def test_effective_by_month_ignores_chain_when_deposit_missing(store_path):
+    base = _data(year=2024, month=7)
+    invoice_store.upsert(base, filename='fv.pdf', path=store_path)
+    doc = invoice_store._load_document(store_path)
+    a = invoice_store._to_record(_kor(7, 2024, prev_dep=1.0, dep_prev=2.0, amount=10.0), 'T_K1_1000011_24.pdf', False)
+    b = invoice_store._to_record(_kor(7, 2024, prev_dep=2.0, dep_prev=None, amount=20.0), 'T_K1_1000012_24.pdf', False)
+    doc['invoices']['2024-07~kor~1790000001'] = a
+    doc['invoices']['2024-07~kor~1790000002'] = b
+    invoice_store._save_document(doc, store_path)
+    eff = invoice_store.effective_by_month(invoice_store.load(store_path))
+    assert eff['2024-07']['amount_due_pln'] == pytest.approx(20.0)   # dawna reguła: ostatni klucz

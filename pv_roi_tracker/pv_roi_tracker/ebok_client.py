@@ -280,30 +280,36 @@ def _parse_ddmmyyyy(raw: str) -> Optional[date]:
         return None
 
 
+def normalize_signature(text: str) -> str:
+    """'T/K1/0158318/24', 'T-K1-0158318-24' i 'T_K1_0158318_24' → ta sama forma."""
+    return re.sub(r'[^A-Za-z0-9]+', '_', text or '').strip('_')
+
+
 def known_signatures(records) -> set:
-    """Sygnatury już zaimportowane: z `invoice_number` rekordu ORAZ z nazwy pliku
-    `ebok_<sygnatura z '/' → '-'>.pdf` — starsze układy PDF nie dają numeru, więc same
-    numery nie wystarczały do dedupu (19.10.2026: 32 dokumenty z lat 2023–25 wracały
-    do importu przy każdym pełnym CSV)."""
+    """Znormalizowane sygnatury już zaimportowanych dokumentów: z `invoice_number` ORAZ z
+    nazwy pliku (`ebok_<sygnatura>.pdf` albo ręcznie wgrane `T_K1_..._24.pdf`). Starsze
+    układy PDF nie dają numeru, więc same numery nie wystarczały do dedupu (19.10.2026:
+    dokumenty z lat 2023–25 wracały do importu przy każdym pełnym CSV)."""
     known = set()
     for rec in records:
         if rec.get('invoice_number'):
-            known.add(rec['invoice_number'])
+            known.add(normalize_signature(rec['invoice_number']))
         name = rec.get('filename') or ''
-        if name.startswith('ebok_') and name.endswith('.pdf'):
-            known.add(name[len('ebok_'):-len('.pdf')])      # forma z '-' zamiast '/'
+        if name.lower().endswith('.pdf'):
+            stem = name[:-len('.pdf')]
+            known.add(normalize_signature(stem[len('ebok_'):] if stem.startswith('ebok_') else stem))
     return known
 
 
 def is_known(signature: str, known: set) -> bool:
-    return signature in known or signature.replace('/', '-') in known
+    return normalize_signature(signature) in known
 
 
 def find_missing_signatures(csv_signatures: set, archive_ids: dict, known: set) -> tuple:
     """(missing, extra): signatures to import — from the CSV or the archive page —
     and the subset seen only on the archive page (CSV gap)."""
     extra = {sig.strip() for sig in archive_ids
-             if sig not in csv_signatures and not is_known(sig.strip(), known)}
+             if sig not in csv_signatures and not is_known(sig, known)}
     if len(extra) > MAX_ARCHIVE_ONLY:
         # zbyt wiele naraz = raczej niezgodność formatu sygnatur niż nowe faktury
         logger.warning('eBOK: %d dokumentów tylko w archiwum (limit %d) — pomijam',

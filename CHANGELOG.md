@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.45.8] — 2026-10-19
+
+Naprawa skutków ponownego importu starych dokumentów (0.45.3–0.45.6).
+
+- **Przyczyna:** korekty/noty ze starszych układów PDF nie mają numeru faktury w rekordzie,
+  więc `_make_key` nadawał im klucz z timestampem. Każdy import dokładał kopię, a klucz
+  timestampowy mógł wygrać wybór „ostatniej” korekty miesiąca (sortowanie po kluczu):
+  w jednym z miesięcy 2023 depozyt wrócił do wartości starszej z dwóch kolejnych korekt.
+- `invoice_store._make_key`: bez numeru sufiksem jest znormalizowana sygnatura z nazwy pliku
+  (`ebok_T-K1-…-24.pdf` = `T_K1_…_24.pdf`) — ten sam dokument nadpisuje ten sam klucz.
+- `effective_by_month`: obowiązująca korekta wybierana łańcuchowo (`corrects_number`,
+  `prev_deposit_previous_pln` ↔ `deposit_previous_pln`); przy braku łańcucha lub kilku
+  „głowach” zostaje dawna reguła (ostatni klucz).
+- `invoice_store.dedupe_corrections`: jednorazowa migracja przy starcie, przed uruchomieniem
+  serwera (znacznik `migrations` w `invoices.json`). Scala kopie tej samej korekty/noty (ta sama
+  sygnatura w nazwie pliku, która wygląda jak sygnatura dokumentu, i zgodne pola liczbowe);
+  zostaje rekord o największym stanie, przeniesiony pod klucz kanoniczny razem z PDF.
+  Kopia `invoices.json.pre-dedupe` przed zmianą, PDF-y usuwane dopiero po udanym zapisie.
+  Nazwy ogólne (`scan.pdf`) i dokumenty o różnych wartościach nie są ruszane.
+- Dedup eBOK porównuje znormalizowane sygnatury (`/`, `-`, `_` równoważne), także po
+  nazwach plików wgranych ręcznie.
+- Testy: klucze, wybór łańcuchowy (łańcuch dwóch korekt), migracja i jej idempotencja.
+
 ## [0.45.7] — 2026-10-19
 
 - `/api/ebok/diag`: dodatkowo `csv_total` i `csv_unknown` — dokumenty z CSV, których dedup
