@@ -399,32 +399,41 @@ def effective_by_month(stored: dict) -> dict:
 _DEDUPE_FIELDS = ('invoice_number', 'doc_type', 'corrects_number', 'amount_due_pln',
                   'deposit_current_pln', 'deposit_previous_pln', 'deposit_used_pln',
                   'prev_deposit_previous_pln', 'energy_sale_gross_pln')
+_DEDUPE_MIN_COMPARED = 3        # tyle pól musi być niepustych po obu stronach, żeby uznać zgodność
+_DEDUPE_MAX_REMOVALS = 20       # bezpiecznik: więcej usunięć naraz = podejrzany warunek scalania
 
 
 def _same_document(a: dict, b: dict) -> bool:
-    """Kopie tego samego dokumentu: pola kluczowe równe (brak numeru w jednej kopii
-    nie przeszkadza, jeśli druga go ma)."""
+    """Kopie tego samego dokumentu: żadne z pól kluczowych nie jest sprzeczne (obie wartości
+    niepuste i różne) i co najmniej `_DEDUPE_MIN_COMPARED` pól da się porównać. Brak wartości
+    po jednej stronie to nie konflikt — kopia z wcześniejszej wersji parsera mogła jeszcze
+    nie wypełniać części pól — ale rekord z samymi pustymi polami nie scala się z niczym."""
+    compared = 0
     for f in _DEDUPE_FIELDS:
         x, y = a.get(f), b.get(f)
-        if f == 'invoice_number' and (not x or not y):
+        if x in (None, '') or y in (None, ''):
             continue
         if x != y:
             return False
-    return True
+        compared += 1
+    return compared >= _DEDUPE_MIN_COMPARED
 
 
 def dedupe_corrections(path: Path = DEFAULT_PATH) -> dict:
-    """Jednorazowa migracja (znacznik `migrations` w dokumencie): scala kopie tej samej
+    """Jednorazowa migracja (znacznik `migrations`: `dedupe_corrections_v2`): scala kopie tej samej
     korekty/noty, które powstały, bo klucze bez numeru faktury były timestampowe.
-    Kopie = ten sam miesiąc i rodzaj, ta sama sygnatura z nazwy pliku (musi wyglądać
-    jak sygnatura dokumentu) ORAZ zgodne pola liczbowe. Zostaje rekord o największym
-    stanie (numer faktury, reconciled, PDF, najnowszy `parsed_at`), przenoszony pod klucz
-    kanoniczny, żeby kolejny import tego dokumentu go nadpisał. Przed zmianą kopia
-    `<plik>.pre-dedupe`; PDF-y usuwane dopiero po udanym zapisie.
+    Kopie = ten sam miesiąc i rodzaj, ta sama sygnatura z nazwy pliku (musi wyglądać jak
+    sygnatura dokumentu) ORAZ wzajemnie zgodne pola liczbowe (każda z każdą, nie tylko z
+    zachowywanym). Zostaje rekord o największym stanie (numer faktury, reconciled, PDF,
+    najnowszy `parsed_at`), przenoszony pod klucz kanoniczny, żeby kolejny import tego
+    dokumentu go nadpisał; luki w polach kluczowych uzupełniane z usuwanych kopii, a PDF
+    usuwanej kopii przenoszony, gdy zachowywany go nie ma. Przed zmianą kopia
+    `<plik>.pre-dedupe-v2` (nie nadpisuje kopii z v1); PDF-y ruszane dopiero po udanym
+    zapisie. Więcej niż `_DEDUPE_MAX_REMOVALS` usunięć naraz przerywa migrację bez zmian.
     Zwraca {'removed': [klucze], 'skipped': bool}."""
     doc = _load_document(path)
     migrations = doc.setdefault('migrations', [])
-    if 'dedupe_corrections_v1' in migrations:
+    if 'dedupe_corrections_v2' in migrations:
         return {'removed': [], 'skipped': True}
     invoices: dict = doc.setdefault('invoices', {})
 
@@ -441,45 +450,73 @@ def dedupe_corrections(path: Path = DEFAULT_PATH) -> dict:
         return (bool(r.get('invoice_number')), bool(r.get('reconciled')),
                 bool(r.get('pdf_path')), r.get('parsed_at') or '', k)
 
-    removed, rekeys = [], {}
+    plan = []        # (keep, [dupes], final_key)
     for (month, is_kor, sig), keys in groups.items():
-        keep = max(keys, key=rank)
-        dupes = [k for k in keys if k != keep and _same_document(invoices[keep], invoices[k])]
+        ordered = sorted(keys, key=rank, reverse=True)
+        keep, dupes = ordered[0], []
+        for k in ordered[1:]:
+            if (_same_document(invoices[keep], invoices[k])
+                    and all(_same_document(invoices[d], invoices[k]) for d in dupes)):
+                dupes.append(k)
         if not dupes:
             continue
-        removed.extend(dupes)
+        final = keep
         if not invoices[keep].get('invoice_number'):
             canonical = f"{month}~{'kor' if is_kor else 'nota'}~{sig[-30:]}"
             if canonical != keep and (canonical not in invoices or canonical in dupes):
-                rekeys[keep] = canonical
+                final = canonical
+        plan.append((keep, dupes, final))
+
+    removed = sorted(k for _, dupes, _ in plan for k in dupes)
+    if len(removed) > _DEDUPE_MAX_REMOVALS:
+        logger.error('dedupe_corrections: %d usunięć przekracza limit %d — migracja przerwana, '
+                     'dane bez zmian: %s', len(removed), _DEDUPE_MAX_REMOVALS, ', '.join(removed))
+        return {'removed': [], 'skipped': False, 'aborted': True}
 
     if not removed:
-        migrations.append('dedupe_corrections_v1')
+        migrations.append('dedupe_corrections_v2')
         _save_document(doc, path)
         return {'removed': [], 'skipped': False}
 
+    logger.info('dedupe_corrections: plan — usunąć %d: %s; przenieść: %s', len(removed),
+                ', '.join(removed), ', '.join(f'{k}→{f}' for k, _, f in plan if k != f))
     if path.exists():
-        shutil.copy2(path, path.with_suffix('.json.pre-dedupe'))
+        shutil.copy2(path, path.with_suffix('.json.pre-dedupe-v2'))
+
+    pdf_moves = []                       # (źródło, cel) — wykonywane po zapisie JSON
+    for keep, dupes, final in plan:
+        rec = invoices[keep]
+        for dupe in dupes:               # nie gub danych, które ma tylko usuwana kopia
+            for field_name in _DEDUPE_FIELDS:
+                value = invoices[dupe].get(field_name)
+                if value not in (None, '') and rec.get(field_name) in (None, ''):
+                    rec[field_name] = value
+        target_pdf = pdf_path_for(final, path)
+        source_pdf = pdf_path_for(keep, path) if rec.get('pdf_path') and pdf_path_for(keep, path).exists() else None
+        if source_pdf is None:           # zachowywany bez PDF → weź PDF z najlepszej kopii
+            source_pdf = next((pdf_path_for(d, path) for d in dupes
+                               if invoices[d].get('pdf_path') and pdf_path_for(d, path).exists()), None)
+        if source_pdf is not None:
+            rec['pdf_path'] = str(target_pdf)
+            if source_pdf != target_pdf:
+                pdf_moves.append((source_pdf, target_pdf))
+        if final != keep:
+            invoices[final] = invoices.pop(keep)
     for key in removed:
-        invoices.pop(key, None)
-    pdf_moves = []
-    for old_key, new_key in rekeys.items():
-        rec = invoices.pop(old_key)
-        old_pdf, new_pdf = pdf_path_for(old_key, path), pdf_path_for(new_key, path)
-        if rec.get('pdf_path') and old_pdf.exists():
-            rec['pdf_path'] = str(new_pdf)
-            pdf_moves.append((old_pdf, new_pdf))
-        invoices[new_key] = rec
-    migrations.append('dedupe_corrections_v1')
+        if key in invoices and not any(key == f for _, _, f in plan):
+            del invoices[key]
+    migrations.append('dedupe_corrections_v2')
     _save_document(doc, path)          # PDF-y ruszamy dopiero po udanym zapisie
-    for old_pdf, new_pdf in pdf_moves:
+
+    targets = {dst for _, dst in pdf_moves} | {pdf_path_for(f, path) for _, _, f in plan}
+    for src, dst in pdf_moves:
         try:
-            new_pdf.parent.mkdir(parents=True, exist_ok=True)
-            old_pdf.replace(new_pdf)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            src.replace(dst)
         except OSError:
-            logger.warning('dedupe_corrections: nie przeniesiono PDF %s', old_pdf)
+            logger.warning('dedupe_corrections: nie przeniesiono PDF %s', src)
     for key in removed:
-        delete_pdf(key, path)
-    logger.info('dedupe_corrections: usunięto %d duplikatów: %s; przeniesiono pod klucz kanoniczny: %s',
-                len(removed), ', '.join(sorted(removed)), ', '.join(f'{a}→{b}' for a, b in rekeys.items()))
-    return {'removed': sorted(removed), 'skipped': False}
+        if pdf_path_for(key, path) not in targets:
+            delete_pdf(key, path)
+    logger.info('dedupe_corrections: usunięto %d duplikatów: %s', len(removed), ', '.join(removed))
+    return {'removed': removed, 'skipped': False}

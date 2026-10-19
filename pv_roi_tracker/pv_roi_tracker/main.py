@@ -599,11 +599,25 @@ def main() -> None:
                        target='kacper')
             return {'ok': False, 'error': str(exc)}
 
+    def _send_payment_notes(notifications) -> None:
+        for note in notifications:
+            _notify_ha('PV ROI Tracker — termin płatności', note['message'], target='kacper')
+
     def ebok_sync() -> dict:
         """One eBOK sync: list the full invoice history, download+ingest only the
         documents not already present (dedup by invoice_number), push on problems.
         Returns a JSON-able summary; never raises (errors are captured in the result)."""
         from datetime import datetime as _dt, timedelta as _td
+
+        def refresh_payment_bar(docs) -> None:
+            """Stan płatności/pasek ze świeżego CSV — bez dodatkowego logowania do eBOK."""
+            from . import payment_reminders as _pr
+            from datetime import date as _date
+            try:
+                _send_payment_notes(_pr.apply_refresh(docs, EBOK_PAYMENT_STATE_PATH, _date.today()))
+            except Exception:
+                logger.exception('eBOK: odświeżenie stanu płatności po synchronizacji nie powiodło się')
+                _record_job('ebok_payment', False, 'odświeżenie po synchronizacji nie powiodło się')
 
         def body(client, docs, state, date_from, date_to) -> dict:
             from . import ebok_client as _ec
@@ -626,6 +640,7 @@ def main() -> None:
                 logger.warning('eBOK: CSV nie zawiera dokumentów widocznych w archiwum: %s',
                                ', '.join(sorted(extra)))
 
+            refresh_payment_bar(docs)
             if not missing:
                 state['last_sync'] = _dt.now().isoformat()
                 state.pop('blocked_until', None)
@@ -697,12 +712,8 @@ def main() -> None:
         from datetime import date as _date
 
         def body(client, docs, state, date_from, date_to) -> dict:
-            notifications, new_state = _pr.refresh_payment_state(
-                docs, _pr.load_payment_state(EBOK_PAYMENT_STATE_PATH), _date.today())
-            _pr.save_payment_state(EBOK_PAYMENT_STATE_PATH, new_state)
-
-            for note in notifications:
-                _notify_ha('PV ROI Tracker — termin płatności', note['message'], target='kacper')
+            notifications = _pr.apply_refresh(docs, EBOK_PAYMENT_STATE_PATH, _date.today())
+            _send_payment_notes(notifications)
 
             _record_job('ebok_payment', True, f'wysłano {len(notifications)} przypomnień')
             return {'ok': True, 'sent': len(notifications)}

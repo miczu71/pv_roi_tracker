@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.45.9] — 2026-10-19
+
+Pasek płatności po imporcie + ostatni duplikat korekty.
+
+- **Pasek płatności:** stan (`ebok_payment_state.json`) odświeżał się tylko w zadaniu 07:00, więc
+  świeżo zaimportowana faktura nie pojawiała się na pasku do następnego dnia. `ebok_sync`
+  odświeża go teraz ze świeżego CSV (bez dodatkowego logowania do eBOK); przypomnienia idą
+  raz (flagi `reminded_before/due`). Wspólna funkcja `payment_reminders.apply_refresh`.
+- **Migracja `dedupe_corrections_v2`:** w `_same_document` brak wartości po jednej stronie
+  (kopia z wcześniejszej wersji parsera) nie jest już konfliktem; luki w rekordzie docelowym
+  uzupełniane z usuwanej kopii. Kopie z różnymi niepustymi wartościami nadal nie są scalane.
+- Zabezpieczenia migracji (z code-review): kopia `invoices.json.pre-dedupe-v2` (nie nadpisuje kopii
+  z v1); kopie scalane tylko gdy zgodne wzajemnie i przy ≥3 porównywalnych polach; PDF usuwanej kopii
+  przenoszony, gdy zachowywany go nie ma; PDF-y ruszane po udanym zapisie, bez kasowania celu przeniesienia;
+  więcej niż 20 usunięć naraz przerywa migrację bez zmian; plan w logu przed zapisem.
+- Stan płatności: zapis atomowy (plik tymczasowy + `os.replace`), blokada między zadaniem 07:00
+  a synchronizacją; błąd odświeżenia po synchronizacji trafia do health (`ebok_payment`).
+- Testy: `apply_refresh`, zapis atomowy, migracja v2 (luki, konflikt, PDF, backup v1, próg, nietranzytywność).
+
 ## [0.45.8] — 2026-10-19
 
 Naprawa skutków ponownego importu starych dokumentów (0.45.3–0.45.6).

@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import threading
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional
@@ -60,6 +62,19 @@ def refresh_payment_state(docs, state: dict, today: date) -> tuple:
     for signature, snap in snapshot_documents(docs).items():
         new_state.setdefault(signature, _new_entry()).update(snap)
     return notifications, new_state
+
+
+_refresh_lock = threading.Lock()
+
+
+def apply_refresh(docs, state_path: Path, today: date) -> list:
+    """Load the persisted state, run refresh_payment_state() and save it back; returns the
+    reminder notifications to send. Shared by the daily payment check and by ebok_sync, so
+    the status bar reflects a fresh import without waiting for the next 07:00 run."""
+    with _refresh_lock:            # zadanie 07:00 i synchronizacja nie mogą się nakładać
+        notifications, new_state = refresh_payment_state(docs, load_payment_state(state_path), today)
+        save_payment_state(state_path, new_state)
+    return notifications
 
 
 def _new_entry() -> dict:
@@ -118,4 +133,6 @@ def load_payment_state(path: Path) -> dict:
 
 
 def save_payment_state(path: Path, state: dict) -> None:
-    path.write_text(json.dumps(state, indent=2, ensure_ascii=False))
+    tmp = path.with_name(path.name + '.tmp')
+    tmp.write_text(json.dumps(state, indent=2, ensure_ascii=False))
+    os.replace(tmp, path)          # atomowo: przerwany zapis nie zostawia uciętego JSON-a

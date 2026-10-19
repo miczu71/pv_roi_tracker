@@ -241,3 +241,35 @@ def test_select_active_payment_urgency_alarm_when_overdue():
 def test_select_active_payment_ignores_entries_without_due_date():
     state = {'SIG/1': {'reminded_before': True, 'reminded_due': False}}
     assert select_active_payment(state, date(2026, 10, 4)) is None
+
+
+# ── apply_refresh: load → refresh → save w jednym kroku ─────────────────────
+
+def test_apply_refresh_persists_state_and_feeds_status_bar(tmp_path):
+    from pv_roi_tracker.payment_reminders import apply_refresh
+    path = tmp_path / 'payment_state.json'
+    docs = [_Doc('SIG/18', date(2026, 10, 21), paid=False, amount_gross_pln=100.0)]
+
+    notes = apply_refresh(docs, path, date(2026, 10, 19))
+
+    assert notes == []                                    # termin za 2 dni: jeszcze bez przypomnienia
+    active = select_active_payment(load_payment_state(path), date(2026, 10, 19))
+    assert active['signature'] == 'SIG/18' and active['days_until_due'] == 2
+
+
+def test_apply_refresh_sends_reminder_once(tmp_path):
+    from pv_roi_tracker.payment_reminders import apply_refresh
+    path = tmp_path / 'payment_state.json'
+    docs = [_Doc('SIG/18', date(2026, 10, 21), paid=False, amount_gross_pln=100.0)]
+
+    first = apply_refresh(docs, path, date(2026, 10, 20))
+    second = apply_refresh(docs, path, date(2026, 10, 20))
+
+    assert len(first) == 1 and second == []
+
+
+def test_save_payment_state_leaves_no_temp_file(tmp_path):
+    path = tmp_path / 'payment_state.json'
+    save_payment_state(path, {'SIG/1': {'paid': False}})
+    assert load_payment_state(path) == {'SIG/1': {'paid': False}}
+    assert [p.name for p in tmp_path.iterdir()] == ['payment_state.json']

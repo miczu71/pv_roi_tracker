@@ -362,7 +362,7 @@ def test_dedupe_corrections_merges_copies_keeps_one_and_is_idempotent(store_path
     kors = [k for k in invoice_store.load(store_path) if '~kor~' in k]
     assert kors == ['2024-12~kor~T_K1_1000003_25']   # najnowszy parsed_at, klucz kanoniczny
     assert len(result['removed']) == 2
-    assert store_path.with_suffix('.json.pre-dedupe').exists()
+    assert store_path.with_suffix('.json.pre-dedupe-v2').exists()
     assert '2024-12' in invoice_store.load(store_path)             # faktura nietknięta
 
     again = invoice_store.dedupe_corrections(store_path)
@@ -444,3 +444,139 @@ def test_effective_by_month_ignores_chain_when_deposit_missing(store_path):
     invoice_store._save_document(doc, store_path)
     eff = invoice_store.effective_by_month(invoice_store.load(store_path))
     assert eff['2024-07']['amount_due_pln'] == pytest.approx(20.0)   # dawna reguła: ostatni klucz
+
+
+# ── migracja v2: None w jednej kopii nie blokuje scalenia ───────────────────
+
+def _put_copies(store_path, *records):
+    invoice_store.upsert(_data(year=2023, month=11), filename='fv.pdf', path=store_path)
+    doc = invoice_store._load_document(store_path)
+    for key, name, parsed, extra in records:
+        d = _kor(11, 2023, prev_dep=48.0, dep_prev=52.0, amount=1005.0)
+        rec = invoice_store._to_record(d, name, False)
+        rec['parsed_at'] = parsed
+        rec.update(extra)
+        doc['invoices'][key] = rec
+    doc['migrations'] = ['dedupe_corrections_v1']
+    invoice_store._save_document(doc, store_path)
+
+
+def test_dedupe_v2_merges_copy_with_missing_fields_and_fills_gaps(store_path):
+    _put_copies(store_path,
+                ('2023-11~kor~1781680428', 'T_K1_1000002_24.pdf', '2026-06-01T00:00:00+00:00',
+                 {'energy_sale_gross_pln': 7.0, 'correction_delta_pln': None}),
+                ('2023-11~kor~T_K1_1000002_24', 'ebok_T-K1-1000002-24.pdf', '2026-10-19T07:00:00+00:00',
+                 {'energy_sale_gross_pln': None, 'correction_delta_pln': -1.95}))
+
+    result = invoice_store.dedupe_corrections(store_path)
+
+    kors = {k: v for k, v in invoice_store.load(store_path).items() if '~kor~' in k}
+    assert result['removed'] == ['2023-11~kor~1781680428']
+    assert list(kors) == ['2023-11~kor~T_K1_1000002_24']
+    rec = kors['2023-11~kor~T_K1_1000002_24']
+    assert rec['energy_sale_gross_pln'] == pytest.approx(7.0)      # luka uzupełniona z usuwanej kopii
+    assert rec['correction_delta_pln'] == pytest.approx(-1.95)     # wartość docelowa nie nadpisana
+
+
+def test_dedupe_v2_does_not_merge_when_both_values_present_and_different(store_path):
+    _put_copies(store_path,
+                ('2023-11~kor~1781680428', 'T_K1_1000002_24.pdf', '2026-06-01T00:00:00+00:00',
+                 {'energy_sale_gross_pln': 7.0}),
+                ('2023-11~kor~T_K1_1000002_24', 'ebok_T-K1-1000002-24.pdf', '2026-10-19T07:00:00+00:00',
+                 {'energy_sale_gross_pln': 8.0}))
+    assert invoice_store.dedupe_corrections(store_path)['removed'] == []
+
+
+def test_dedupe_runs_again_after_v1_marker_only_and_sets_v2(store_path):
+    _put_copies(store_path)
+    assert invoice_store.dedupe_corrections(store_path)['skipped'] is False
+    assert 'dedupe_corrections_v2' in invoice_store._load_document(store_path)['migrations']
+    assert invoice_store.dedupe_corrections(store_path)['skipped'] is True
+
+
+# ── migracja v2: scenariusze z code-review (utrata danych) ──────────────────
+
+def _rec(name, parsed, *, number=None, pdf=None, store_path=None, key=None, **vals):
+    d = _kor(11, 2023, number=number, prev_dep=vals.get('prev', 48.0), dep_prev=vals.get('dep', 52.0),
+             amount=vals.get('amount', 1005.0))
+    pdf_path = invoice_store.save_pdf(key, pdf, store_path) if pdf else None
+    r = invoice_store._to_record(d, name, False, pdf_path=pdf_path)
+    r['parsed_at'] = parsed
+    return r
+
+
+def _put(store_path, items):
+    invoice_store.upsert(_data(year=2023, month=11), filename='fv.pdf', path=store_path)
+    doc = invoice_store._load_document(store_path)
+    for key, rec in items:
+        doc['invoices'][key] = rec
+    invoice_store._save_document(doc, store_path)
+
+
+def test_dedupe_v2_does_not_overwrite_v1_backup(store_path):
+    store_path.with_suffix('.json.pre-dedupe').write_text('BACKUP-V1')
+    _put(store_path, [
+        ('2023-11~kor~1790000001', _rec('T_K1_1000002_24.pdf', '2026-06-01T00:00:00+00:00')),
+        ('2023-11~kor~1790000002', _rec('ebok_T-K1-1000002-24.pdf', '2026-10-19T00:00:00+00:00'))])
+    invoice_store.dedupe_corrections(store_path)
+    assert store_path.with_suffix('.json.pre-dedupe').read_text() == 'BACKUP-V1'
+    assert store_path.with_suffix('.json.pre-dedupe-v2').exists()
+
+
+def test_dedupe_v2_keeps_pdf_of_removed_copy_when_kept_record_has_none(store_path):
+    k_num, k_old = '2023-11~kor~T/K1/1000002/24', '2023-11~kor~1790000001'
+    kept = _rec('ebok_T-K1-1000002-24.pdf', '2026-10-19T00:00:00+00:00', number='T/K1/1000002/24')
+    old = _rec('T_K1_1000002_24.pdf', '2026-06-01T00:00:00+00:00', pdf=b'ORIGINAL', store_path=store_path, key=k_old)
+    _put(store_path, [(k_num, kept), (k_old, old)])
+
+    invoice_store.dedupe_corrections(store_path)
+
+    rec = invoice_store.load(store_path)[k_num]
+    assert Path(rec['pdf_path']).read_bytes() == b'ORIGINAL'
+    assert k_old not in invoice_store.load(store_path)
+
+
+def test_dedupe_v2_pdf_survives_when_canonical_key_is_one_of_the_copies(store_path):
+    canonical = '2023-11~kor~T_K1_1000002_24'
+    # zachowywany (nowszy, z PDF) ma klucz timestampowy; kopia o kluczu kanonicznym jest usuwana
+    kept = _rec('ebok_T-K1-1000002-24.pdf', '2026-10-19T00:00:00+00:00', pdf=b'NEW', store_path=store_path,
+                key='2023-11~kor~1790000009')
+    dupe = _rec('T_K1_1000002_24.pdf', '2026-06-01T00:00:00+00:00', pdf=b'OLD', store_path=store_path, key=canonical)
+    _put(store_path, [('2023-11~kor~1790000009', kept), (canonical, dupe)])
+
+    invoice_store.dedupe_corrections(store_path)
+
+    kors = {k: v for k, v in invoice_store.load(store_path).items() if '~kor~' in k}
+    assert list(kors) == [canonical]
+    assert Path(kors[canonical]['pdf_path']).read_bytes() == b'NEW'
+
+
+def test_dedupe_v2_requires_mutual_consistency_and_enough_compared_fields(store_path):
+    # „keep” ma tylko doc_type (za mało pól do porównania) → nie scala się z niczym
+    sparse = invoice_store._to_record(_kor(11, 2023), 'ebok_T-K1-1000002-24.pdf', False)
+    for f in ('amount_due_pln', 'deposit_previous_pln', 'deposit_used_pln', 'prev_deposit_previous_pln'):
+        sparse[f] = None
+    sparse['parsed_at'] = '2026-10-19T00:00:00+00:00'
+    a = _rec('T_K1_1000002_24.pdf', '2026-06-01T00:00:00+00:00', amount=5.0)
+    b = _rec('T_K1_1000002_24.pdf', '2026-06-02T00:00:00+00:00', amount=7.0)
+    _put(store_path, [('2023-11~kor~1790000001', sparse), ('2023-11~kor~1790000002', a),
+                      ('2023-11~kor~1790000003', b)])
+
+    assert invoice_store.dedupe_corrections(store_path)['removed'] == []
+    assert len([k for k in invoice_store.load(store_path) if '~kor~' in k]) == 3
+
+
+def test_dedupe_v2_aborts_when_too_many_removals(store_path):
+    items = []
+    for i in range(25):                      # 25 grup po 2 kopie = 25 usunięć > limit
+        for j in (1, 2):
+            rec = _rec(f'T_K1_20000{i:02d}_24.pdf', f'2026-06-0{j}T00:00:00+00:00')
+            items.append((f'2023-11~kor~17{i:02d}00000{j}', rec))
+    _put(store_path, items)
+    before = len(invoice_store.load(store_path))
+
+    result = invoice_store.dedupe_corrections(store_path)
+
+    assert result.get('aborted') is True and result['removed'] == []
+    assert len(invoice_store.load(store_path)) == before
+    assert 'dedupe_corrections_v2' not in invoice_store._load_document(store_path).get('migrations', [])
