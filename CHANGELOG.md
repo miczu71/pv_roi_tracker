@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.45.4] — 2026-10-19
+
+Poprawka 0.45.3: nowe żądanie o archiwum HTML przekraczało timeout (60 s) przy zakresie
+dat od 2022 i — jako błąd `requests`, nie `EbokError` — przerywało całą synchronizację
+(push „nieoczekiwany błąd”).
+
+- `main.py` `ebok_sync`: archiwum HTML pytane tylko o ostatnie 120 dni; każdy błąd tego
+  źródła tylko loguje ostrzeżenie i synchronizacja idzie dalej na samym CSV.
+
 ## [0.45.3] — 2026-10-19
 
 Poprawka eBOK: faktura wystawiona 07.10 (wrzesień, `0018/26`) nie została pobrana.

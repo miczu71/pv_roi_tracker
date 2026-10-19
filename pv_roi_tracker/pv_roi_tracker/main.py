@@ -595,7 +595,7 @@ def main() -> None:
         """One eBOK sync: list the full invoice history, download+ingest only the
         documents not already present (dedup by invoice_number), push on problems.
         Returns a JSON-able summary; never raises (errors are captured in the result)."""
-        from datetime import datetime as _dt
+        from datetime import datetime as _dt, timedelta as _td
 
         def body(client, docs, state, date_from, date_to) -> dict:
             from . import ebok_client as _ec
@@ -603,8 +603,9 @@ def main() -> None:
             known_numbers = {rec.get('invoice_number') for rec in existing.values()
                              if rec.get('invoice_number')}
             try:
-                archive_ids = client.archive_page_ids(date_from, date_to)
-            except _ec.EbokError as exc:
+                # wąski zakres: archiwum od 2022 potrafi przekroczyć timeout (19.10.2026)
+                archive_ids = client.archive_page_ids(date_to - _td(days=120), date_to)
+            except Exception as exc:  # źródło dodatkowe — nie psuje synchronizacji z CSV
                 logger.warning('eBOK: archiwum HTML niedostępne (%s) — tylko CSV', exc)
                 archive_ids = {}
             csv_signatures = {d.signature for d in docs}
