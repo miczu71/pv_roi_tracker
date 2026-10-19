@@ -721,7 +721,15 @@ def main() -> None:
                 if not client_id:
                     return {'ok': False, 'error': 'płatnik nie znaleziony'}
                 client.select_client(client_id)
-            return {'ok': True, **client.diagnose(needle, _date.today())}
+            result = client.diagnose(needle, _date.today())
+            # które dokumenty z CSV dedup uznaje za nieznane (czyli wróciłyby do importu)
+            from datetime import timedelta as _td
+            docs = client.list_documents(_date(2022, 1, 1), _date.today() + _td(days=365))
+            known = _ec.known_signatures(invoice_store.load(INVOICE_PATH).values())
+            result['csv_total'] = len(docs)
+            result['csv_unknown'] = [f'{d.issued_on} {d.signature} | {d.doc_name}'
+                                     for d in docs if not _ec.is_known(d.signature, known)]
+            return {'ok': True, **result}
         except Exception as exc:
             return {'ok': False, 'error': str(exc)}
 

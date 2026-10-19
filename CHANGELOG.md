@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.45.7] — 2026-10-19
+
+- `/api/ebok/diag`: dodatkowo `csv_total` i `csv_unknown` — dokumenty z CSV, których dedup
+  nie rozpoznaje (wróciłyby do importu). Tylko odczyt.
+
 ## [0.45.6] — 2026-10-19
 
 Poprawka eBOK: faktura `0018/26` (wystawiona 07.10, termin 21.10) była niewidoczna.
