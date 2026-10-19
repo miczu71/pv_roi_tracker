@@ -706,6 +706,23 @@ def main() -> None:
     def ebok_payment_check_job() -> None:
         ebok_payment_check()
 
+    def ebok_diag(needle: str) -> dict:
+        """Tylko odczyt: gdzie w eBOK widać dokument `needle` (zob. EbokClient.diagnose).
+        Nie importuje niczego, nie wysyła pushy, nie dotyka health."""
+        from . import ebok_client as _ec
+        from datetime import date as _date
+        client = _ec.EbokClient(EBOK_USERNAME, EBOK_PASSWORD)
+        try:
+            client.login()
+            if EBOK_PAYER_ID:
+                client_id = client.find_client_id(EBOK_PAYER_ID)
+                if not client_id:
+                    return {'ok': False, 'error': 'płatnik nie znaleziony'}
+                client.select_client(client_id)
+            return {'ok': True, **client.diagnose(needle, _date.today())}
+        except Exception as exc:
+            return {'ok': False, 'error': str(exc)}
+
     def _ebok_status() -> dict:
         state = _load_ebok_state()
         return {'configured': bool(EBOK_USERNAME and EBOK_PASSWORD),
@@ -723,6 +740,7 @@ def main() -> None:
 
     if EBOK_USERNAME and EBOK_PASSWORD:
         _web.set_ebok_sync_callback(ebok_sync)
+        _web.set_ebok_diag_callback(ebok_diag)
     _web.set_ebok_status_callback(_ebok_status)
     _web.set_ebok_payment_status_callback(_ebok_payment_status)
 

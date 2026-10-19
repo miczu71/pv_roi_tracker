@@ -27,7 +27,7 @@ import io
 import logging
 import re
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 import requests
@@ -169,6 +169,42 @@ class EbokClient:
         if r.status_code != 200:
             raise EbokError(f'Pobranie archiwum (strona 1) nie powiodło się (status {r.status_code})')
         return parse_archive_html(r.text)
+
+    def diagnose(self, needle: str, today: date) -> dict:
+        """Read-only probe: czy dokument `needle` (np. "0018/26") jest widoczny w CSV,
+        w archiwum HTML (różne zakresy dat) i na innych stronach płatności. Zwraca
+        tylko liczby, sygnatury i adresy linków — bez kwot i danych osobowych."""
+        def fetch(path: str):
+            try:
+                r = self._get(f'{SERVICE}{path}', ARCHIVE_TIMEOUT)
+                return r.status_code, r
+            except Exception as exc:  # timeout itp. — raportujemy, nie przerywamy
+                return f'ERR {type(exc).__name__}', None
+
+        tomorrow = today + timedelta(days=1)
+        out: dict = {'needle': needle, 'csv': [], 'archive_html': [], 'pages': []}
+        for label, d_to in (('dziś+1', tomorrow), ('dziś+30', today + timedelta(days=30))):
+            st, r = fetch(f'/content/platnosci/csv/dataOd/2022-01-01/dataDo/{d_to.isoformat()}/type/archiwumFaktur')
+            docs = parse_documents_csv(r.content) if r is not None and st == 200 else []
+            newest = sorted(docs, key=lambda d: d.issued_on.split('.')[::-1])[-3:]
+            out['csv'].append({'dataDo': label, 'status': st, 'rows': len(docs),
+                               'has_needle': any(needle in d.signature for d in docs),
+                               'newest': [f'{d.issued_on} {d.signature}' for d in newest]})
+        for label, d_from in (('365 dni', today - timedelta(days=365)), ('120 dni', today - timedelta(days=120)),
+                              ('od 2022', date(2022, 1, 1))):
+            st, r = fetch(f'/content/platnosci/archiwumFaktur/page/1/display/50'
+                          f'/dataOd/{d_from.isoformat()}/dataDo/{tomorrow.isoformat()}')
+            html = r.text if r is not None and st == 200 else ''
+            sigs = sorted(parse_archive_html(html))
+            out['archive_html'].append({'zakres': label, 'status': st, 'rows': len(sigs),
+                                        'has_needle': needle in html, 'newest': sigs[:3]})
+        for path in ('/platnosci', '/content/platnosci', '/faktury', '/content/platnosci/faktury',
+                     '/content/platnosci/biezace', '/content/platnosci/fakturyDoZaplaty'):
+            st, r = fetch(path)
+            html = r.text if r is not None and st == 200 else ''
+            links = sorted(set(re.findall(r'href="(/[^"#?]*(?:faktur|platnosc|rozlicz)[^"#?]*)"', html, re.I)))[:12]
+            out['pages'].append({'path': path, 'status': st, 'has_needle': needle in html, 'links': links})
+        return out
 
     def locate_ids(self, signatures: set, date_from: date, date_to: date) -> dict:
         """Map SYGNATURA → numeric podgladFaktury id by paginating the HTML

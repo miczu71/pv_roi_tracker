@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.45.5] — 2026-10-19
+
+Diagnostyka eBOK (tylko odczyt).
+
+- Nowy `GET /api/ebok/diag?needle=0018/26`: loguje się do eBOK i sprawdza, czy dokument jest
+  w CSV (dla dwóch wartości `dataDo`), w archiwum HTML (365 dni / 120 dni / od 2022) i na
+  innych stronach płatności (statusy, liczba pozycji, linki). Nic nie importuje, nie wysyła
+  pushy, nie zmienia health. Zwraca tylko liczby, sygnatury i adresy — bez kwot.
+- `EbokClient.diagnose()` + test.
+
 ## [0.45.4] — 2026-10-19
 
 Poprawka 0.45.3: nowe żądanie o archiwum HTML przekraczało timeout (60 s) przy zakresie

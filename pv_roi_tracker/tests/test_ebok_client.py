@@ -258,6 +258,24 @@ def test_archive_page_ids_bad_status_raises():
         client.archive_page_ids(date(2022, 1, 1), date(2027, 1, 1))
 
 
+def test_diagnose_reports_needle_per_source_without_raising_on_errors():
+    client, session = _client_with_successful_login()
+    csv_text = (
+        'SYGNATURA;NAZWA DOKUMENTU;DATA WYSTAWIENIA;DODATKOWE INFORMACJE;'
+        'KWOTA BRUTTO;TERMIN PŁATNOŚCI;KWOTA DO ZAPŁATY;ZAPŁACONA\r\n'
+        'T/K1/TEST/0017/26;Faktura rzeczywista;08.09.2026;---;100,50;22.09.2026;---;zapłacona\r\n'
+    ).encode('windows-1250')
+    session.when('/content/platnosci/csv/', _FakeResponse(content=csv_text))
+    session.when('/archiwumFaktur/page/1/', _FakeResponse(
+        text='<a href="/podgladFaktury/id/7"  class="invoicePreviewHelper helperLink" >'
+             '<i class="icon"></i>T/K1/TEST/0018/26</a>'))
+    out = client.diagnose('0018/26', date(2026, 10, 19))
+    assert [c['has_needle'] for c in out['csv']] == [False, False]
+    assert out['csv'][0]['rows'] == 1 and out['csv'][0]['newest'] == ['08.09.2026 T/K1/TEST/0017/26']
+    assert all(a['has_needle'] for a in out['archive_html'])
+    assert len(out['pages']) == 6
+
+
 # ── find_missing_signatures ──────────────────────────────────────────────────
 
 def test_find_missing_signatures_csv_only():
