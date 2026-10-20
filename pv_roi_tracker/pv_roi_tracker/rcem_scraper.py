@@ -107,10 +107,13 @@ _PL_MONTHS = {
 
 
 def _match_month(text: str) -> Optional[int]:
-    """Return month number if text contains a Polish month name, else None."""
+    """Return month number if text starts with a Polish month name, else None.
+
+    Prefix, not substring: 'wrzesień' contains 'sie' (abbreviation of sierpień).
+    """
     t = unicodedata.normalize('NFC', text.strip().lower())
     for name, num in _PL_MONTHS.items():
-        if name in t:
+        if t.startswith(name):
             return num
     return None
 

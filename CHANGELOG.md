@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.45.11] — 2026-10-20
+
+Scraper RCEm: wrzesień nie był rozpoznawany.
+
+- **Przyczyna:** `_match_month()` szukała nazwy miesiąca jako fragmentu tekstu, a skrót `sie`
+  (sierpień) mieści się w słowie „wrzesień". Wiersz września był czytany jako sierpień: wrzesień
+  nigdy nie trafiał do historii, a cena sierpnia mogła zostać nadpisana ceną września
+  (2026-08: 0,4252 zamiast 0,3623 zł/kWh brutto).
+- **Poprawka:** dopasowanie po początku nazwy (`startswith`). Strona PSE parsuje się do 52 miesięcy
+  (było 47), wrzesień każdego roku trafia pod właściwy klucz.
+- **Skutek po wdrożeniu:** najbliższy przebieg scrapera (co 2 h w dniach 11–20) zapisze brakujące
+  ceny września i przywróci sierpień 2026, jeśli został nadpisany (zapisze się to jako korekta w
+  `rcem_corrections.json`).
+- Testy: `tests/test_rcem_scraper.py` (nazwy wszystkich miesięcy, sierpień i wrzesień osobno).
+
 ## [0.45.10] — 2026-10-19
 
 eBOK: ponawianie zapytań po timeoucie.
