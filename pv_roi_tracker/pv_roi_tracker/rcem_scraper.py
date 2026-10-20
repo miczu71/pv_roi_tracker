@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import shutil
 import unicodedata
 from datetime import date
 from pathlib import Path
@@ -73,6 +74,31 @@ def _save_corrections(corrections: dict, path: Path = DEFAULT_CORRECTIONS_PATH) 
 def get_price_history(month_key: str, path: Path = DEFAULT_CORRECTIONS_PATH) -> list:
     """Return [{price, recorded_at}, ...] for month_key, oldest first. Empty if never corrected."""
     return _load_corrections(path).get(month_key, [])
+
+
+def drop_bounce_corrections(month_key: str, bad_price: float,
+                            path: Path = DEFAULT_CORRECTIONS_PATH) -> bool:
+    """One-off cleanup (0.45.12): drop the correction history of month_key when it only
+    records the 0.45.10 parser bug — a price bounce that includes bad_price and ends
+    where it began. A genuine PSE correction (last price != first) is left alone.
+    Backs up to `<file>.pre-0.45.12` first; that file also marks the migration as done,
+    so it runs at most once. Returns True if changed.
+    """
+    backup = path.with_name(path.name + '.pre-0.45.12')
+    if backup.exists():  # the backup doubles as a done marker — runs at most once
+        return False
+    corrections = _load_corrections(path)
+    entries = corrections.get(month_key) or []
+    if len(entries) < 3:
+        return False
+    prices = [e['price'] for e in entries]
+    if abs(prices[-1] - prices[0]) > 1e-6 or not any(abs(p - bad_price) <= 1e-6 for p in prices):
+        return False
+    shutil.copy2(path, backup)
+    del corrections[month_key]
+    _save_corrections(corrections, path)
+    logger.info('Removed bug-induced correction history for %s', month_key)
+    return True
 
 
 # ── Number parsing ────────────────────────────────────────────────────────────

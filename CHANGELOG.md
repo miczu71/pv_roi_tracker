@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.45.12] — 2026-10-20
+
+Sprzątanie po błędzie parsera RCEm z 0.45.10.
+
+- **Historia cen RCEm sierpnia 2026:** błąd września-jako-sierpnia zostawił w
+  `rcem_corrections.json` fałszywą „korektę" (362,27 → 425,19 → 362,27 zł/MWh) i status
+  „updated". Jednorazowa migracja przy starcie usuwa historię korekt tego miesiąca, ale tylko
+  gdy zawiera cenę z błędu, a ostatni wpis wraca do pierwszego (prawdziwa korekta PSE
+  zostaje nietknięta).
+- **Bezpieczeństwo:** kopia pliku jako `rcem_corrections.json.pre-0.45.12` (służy też za znacznik wykonania — migracja uruchamia się najwyżej raz);
+  jej błąd nie blokuje startu. Ceny w `rcem_history.json` i
+  `historic.json` bez zmian.
+- Testy: `tests/test_rcem_scraper.py` (usunięcie, idempotencja, prawdziwa korekta, brak pliku).
+
 ## [0.45.11] — 2026-10-20
 
 Scraper RCEm: wrzesień nie był rozpoznawany.

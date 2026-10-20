@@ -295,6 +295,11 @@ def main() -> None:
     except Exception:
         logger.exception('Migracja dedupe_corrections nie powiodła się — dane bez zmian')
 
+    try:  # jednorazowo (0.45.12): wpisy korekt sierpnia 2026 wywołane błędem parsera 0.45.10
+        rcem_scraper.drop_bounce_corrections('2026-08', 0.425186, RCEM_CORRECTIONS_PATH)
+    except Exception:
+        logger.exception('Czyszczenie korekt RCEm nie powiodło się — dane bez zmian')
+
     from . import web as _web
     _web.start_server(port=8099)
 
