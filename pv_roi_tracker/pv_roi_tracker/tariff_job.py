@@ -114,6 +114,7 @@ def _reconcile(months: dict, invoices: dict) -> dict:
             'sim_net': sim['net'], 'invoice_net': inv_net,
             'diff_pct': diff, 'ok': abs(diff) <= RECONCILE_TOLERANCE_PCT,
             'kwh_sim': sim.get('kwh'), 'kwh_invoice': inv.get('imported_kwh'),
+            'confirmed': bool(sim.get('confirmed', True)),
         }
     return out
 
@@ -167,7 +168,8 @@ def compute_payload(import_by_hour: dict, catalog: dict, settings: Optional[Tari
                          else None) for t in TARIFFS}
 
     recon = _reconcile(months, invoices or {})
-    diffs = [abs(r['diff_pct']) for r in recon.values()]
+    confirmed = [r for r in recon.values() if r['confirmed']]
+    diffs = [abs(r['diff_pct']) for r in confirmed]
     payload = {
         'generated_at': datetime.now().isoformat(timespec='seconds'),
         'from': from_ym, 'to': to_ym, 'catalog_ends': catalog_ends,
@@ -178,8 +180,9 @@ def compute_payload(import_by_hour: dict, catalog: dict, settings: Optional[Tari
                    'cheapest': cheapest, 'saving_vs_g12w': saving, **l12_extra},
         'reconciliation': recon,
         'reconciliation_summary': {
-            'months': len(recon),
-            'ok_months': sum(1 for r in recon.values() if r['ok']),
+            'months': len(confirmed),
+            'ok_months': sum(1 for r in confirmed if r['ok']),
+            'unconfirmed_months': len(recon) - len(confirmed),
             'max_abs_diff_pct': max(diffs) if diffs else None,
         },
         'settings': {'phases': settings.phases, 'capacity_bracket': settings.capacity_bracket,

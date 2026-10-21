@@ -160,6 +160,19 @@ def test_rozjazd_ok_i_nie_ok(monkeypatch, cat):
     assert s["max_abs_diff_pct"] == pytest.approx(abs(100 * (100 - 110) / 110))
 
 
+def test_miesiac_niepotwierdzony_poza_podsumowaniem(monkeypatch, cat):
+    per = {t: (lambda ym, t=t: _entry(123.0, confirmed=not ym.startswith("2025")))
+           for t in ("G11", "G12", "G12w", "G13")}
+    _patch_range(monkeypatch, per)
+    inv = {"2025-06": _inv(10.0), "2026-02": _inv(102.0)}
+    p = run(cat, invoices=inv)
+    r = p["reconciliation"]
+    assert r["2025-06"]["confirmed"] is False and r["2026-02"]["confirmed"] is True
+    s = p["reconciliation_summary"]
+    assert s["months"] == 1 and s["ok_months"] == 1 and s["unconfirmed_months"] == 1
+    assert s["max_abs_diff_pct"] == pytest.approx(abs(100 * (100 - 102) / 102))
+
+
 def test_faktura_z_polem_none_pomijana(monkeypatch, cat):
     _patch_range(monkeypatch, _base())
     p = run(cat, invoices={"2026-02": _inv(100.0, dist_oze_amount_net=None)})
@@ -169,7 +182,7 @@ def test_faktura_z_polem_none_pomijana(monkeypatch, cat):
 def test_brak_faktur(cat):
     p = run(cat)
     assert p["reconciliation"] == {}
-    assert p["reconciliation_summary"] == {"months": 0, "ok_months": 0, "max_abs_diff_pct": None}
+    assert p["reconciliation_summary"] == {"months": 0, "ok_months": 0, "unconfirmed_months": 0, "max_abs_diff_pct": None}
 
 
 def test_settings_w_payloadzie(cat):

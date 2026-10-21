@@ -182,8 +182,29 @@ def test_fixed_domyslne(cat):
     assert f["sales_fee"] == 0.0
 
 
-def test_fixed_1faza_i_przejsciowa_2025(cat):
+def test_fixed_2025_wg_faktur(cat):
+    # faktury I–VI 2025: 14,90 (sieciowa + abonament, bez mocowej); VII–XII: 30,91 (z mocową, bez przejściowej)
+    s = TariffSettings(phases=3, capacity_bracket="gt2800")
+    h1 = fixed_monthly(period_for(cat, date(2025, 3, 15)), s)
+    h2 = fixed_monthly(period_for(cat, date(2025, 8, 15)), s)
+    assert sum(h1.values()) - h1["sales_fee"] == pytest.approx(14.90)
+    assert h1["capacity"] == 0 and h1["transitional"] == 0
+    assert sum(h2.values()) - h2["sales_fee"] == pytest.approx(30.91)
+    assert h2["transitional"] == 0
+
+
+def test_okres_2025_dzieli_sie_na_dwa_pol_roczne(cat):
+    h1 = period_for(cat, date(2025, 6, 30))
+    h2 = period_for(cat, date(2025, 7, 1))
+    assert h1["valid_to"] == "2025-06-30" and h2["valid_from"] == "2025-07-01"
+    assert h1["confirmed"] is False and h2["confirmed"] is False
+    assert h1["energy_net"] == h2["energy_net"]
+
+
+def test_fixed_1faza_i_przejsciowa(cat):
     p = period_for(cat, date(2025, 6, 1))
+    p["fixed_net"]["capacity_by_annual_kwh"] = {"lt500": 2.86, "500_1200": 6.86, "1200_2800": 11.44, "gt2800": 16.01}
+    p["fixed_net"]["transitional_by_annual_kwh"] = {"lt500": 0.02, "500_1200": 0.1, "gt1200": 0.33}
     f = fixed_monthly(p, TariffSettings(phases=1, capacity_bracket="1200_2800", sales_fee_net=5.0))
     assert f["network"] == 7.02
     assert f["capacity"] == 11.44

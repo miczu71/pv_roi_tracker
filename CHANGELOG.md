@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.46.1] — 2026-10-22
+
+Poprawka zgodności symulacji G12w z fakturami 2025.
+
+- **Opłaty stałe 2025 wg faktur:** I–VI 14,90 zł (sieciowa + abonament, bez opłaty mocowej), VII–XII 30,91 zł (z mocową, bez przejściowej). Wcześniej katalog liczył 31,24 zł w każdym miesiącu. Opłaty są wspólne dla wszystkich taryf, więc rekomendacja się nie zmienia.
+- **Zgodność z fakturami:** miesiące z niepotwierdzonym cennikiem (energia 2025 to szacunek 0,50 zł/kWh) oznaczone „cennik niepotwierdzony” i wyłączone z podsumowania „w ±3%” oraz maksymalnego rozjazdu.
+
 ## [0.46.0] — 2026-10-21
 
 Nowa zakładka **Symulacja taryf**: ile kosztowałby ten sam pobór w G11, G12, G12w, G13 oraz w dwóch ofertach dynamicznych (A, B).

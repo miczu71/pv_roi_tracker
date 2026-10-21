@@ -131,3 +131,15 @@ Oficjalne cenniki pobrane ze strony oferty po wskazaniu lokalizacji (Miasto A); 
   - NIEBLOKUJĄCE (do raportu wydania): `loadTsimTab` nadpisuje niezapisane edycje ustawień przy wejściu w zakładkę; wiring `main.py` (ustawienia → job) bez testu; kolor `#f0fdf4` zaszyty w CSS (jak w istniejących regułach).
   - NIEZWERYFIKOWANE na żywo: zakładka na prawdziwych danych — po wydaniu.
 - **Następny krok: wydanie** (`simplify` → `code-review` + równoległe review → `release`), potem E5 (~2026-11-25).
+
+## Zgodność 2025 (0.46.1, 2026-10-22)
+
+Po 0.46.0 zgodność G12w z fakturami: 12/21 mies. w ±3%, maks. 63% (2025-06); cały rozjazd w 2025-01…09, od 2025-10 ≤1,4%.
+
+| Przyczyna | Dowód | Stan |
+|---|---|---|
+| Opłaty stałe 2025 w katalogu za wysokie (~16 zł/mies.) | faktury I–VI: 14,90; VII–XII: 30,91; symulacja 31,24 | poprawione w 0.46.1 (okres 2025 podzielony na I–VI i VII–XII) |
+| kWh z HA > kWh z faktury IV–IX 2025 (+5…8 kWh/mies., ~3,5 zł) | od X 2025 zgodne ±1% | do diagnozy w E5, bez zmiany kodu (hipotezy: rekonstrukcja dropoutów Modbus, inny sensor w 2025) |
+| Energia G12w 2025 strefowa (0,76/0,42), nie płaska 0,50 (~1 zł) | faktury I–VI, X | świadomie bez zmiany (decyzja usera: bez założeń przy cennikach) |
+
+Miesiące z cennikiem `confirmed: false` są oznaczone w zgodności „cennik niepotwierdzony” i nie wchodzą do podsumowania.

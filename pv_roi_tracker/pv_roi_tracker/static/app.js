@@ -4133,16 +4133,19 @@ function _renderTsimRecon() {
   const s = d.reconciliation_summary || {};
   document.getElementById('tsimReconSummary').textContent = s.months
     ? 'G12w vs faktury: ' + s.ok_months + ' z ' + s.months + ' mies. w ±3%, maks. rozjazd ' +
-      (s.max_abs_diff_pct != null ? s.max_abs_diff_pct.toFixed(1).replace('.', ',') + '%' : '—') + '.'
-    : 'Brak faktur do porównania.';
+      (s.max_abs_diff_pct != null ? s.max_abs_diff_pct.toFixed(1).replace('.', ',') + '%' : '—') + '.' +
+      (s.unconfirmed_months ? ' Poza podsumowaniem ' + s.unconfirmed_months + ' mies. z niepotwierdzonym cennikiem.' : '')
+    : (s.unconfirmed_months ? 'Wszystkie ' + s.unconfirmed_months + ' mies. z fakturami mają niepotwierdzony cennik.' : 'Brak faktur do porównania.');
   const rec = d.reconciliation || {};
   const fmt = v => v == null ? '—' : v.toFixed(2).replace('.', ',');
   document.getElementById('tsimReconTbl').innerHTML =
     '<thead><tr><th>Miesiąc</th><th>Symulacja netto</th><th>Faktura netto</th><th>Różnica</th><th>kWh sym.</th><th>kWh fakt.</th></tr></thead><tbody>' +
     Object.keys(rec).sort().map(ym => {
       const r = rec[ym];
+      const unconf = r.confirmed === false;
       return '<tr><td>' + _esc(ym) + '</td><td>' + fmt(r.sim_net) + '</td><td>' + fmt(r.invoice_net) + '</td><td class="' +
-        (r.ok ? '' : 'tsim-worse') + '">' + (r.diff_pct >= 0 ? '+' : '−') + Math.abs(r.diff_pct).toFixed(1).replace('.', ',') + '%</td><td>' +
+        (r.ok || unconf ? '' : 'tsim-worse') + '">' + (r.diff_pct >= 0 ? '+' : '−') + Math.abs(r.diff_pct).toFixed(1).replace('.', ',') + '%' +
+        (unconf ? ' <small>cennik niepotwierdzony</small>' : '') + '</td><td>' +
         fmt(r.kwh_sim) + '</td><td>' + fmt(r.kwh_invoice) + '</td></tr>';
     }).join('') + '</tbody>';
 }

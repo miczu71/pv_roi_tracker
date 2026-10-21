@@ -45,9 +45,19 @@
   "periods": [
     {
       "valid_from": "2025-01-01",
+      "valid_to": "2025-06-30",
+      "confirmed": false,
+      "note": "Jak okres od 2025-07-01, ale opłaty stałe wg faktur I–VI 2025 (fixed_total_net 14,90 zł = sieciowa 3f + abonament, bez opłaty mocowej i przejściowej). Energia wciąż szacunek 0,50.",
+      "inherits": "2025-07-01",
+      "override": {
+        "fixed_net": {"capacity_by_annual_kwh": {"lt500": 0, "500_1200": 0, "1200_2800": 0, "gt2800": 0}}
+      }
+    },
+    {
+      "valid_from": "2025-07-01",
       "valid_to": "2025-12-31",
       "confirmed": false,
-      "note": "Dystrybucja z wyciągu C (stan po zmianie 1.07.2025; stawek z 1.01.2025 nie rozdzielono). Sprzedaż 2025: brak dokumentu urzędowego, w 2025 obowiązywała zamrożona cena ok. 500 zł/MWh netto (F: 2026 jest ok. 1% niższa), strefy do ustalenia z faktur.",
+      "note": "Dystrybucja z wyciągu C (stan po zmianie 1.07.2025; stawek z 1.01.2025 nie rozdzielono). Opłaty stałe VII–XII 2025 wg faktur: 30,91 zł (z mocową, bez przejściowej). Sprzedaż 2025: brak dokumentu urzędowego, w 2025 obowiązywała zamrożona cena ok. 500 zł/MWh netto (F: 2026 jest ok. 1% niższa), strefy do ustalenia z faktur.",
       "energy_net": {
         "G11": {"all": 0.50},
         "G12": {"day": 0.50, "night": 0.50},
@@ -80,8 +90,7 @@
         "network_1ph": 7.02,
         "network_3ph": 10.34,
         "subscription_dist": 4.56,
-        "capacity_by_annual_kwh": {"lt500": 2.86, "500_1200": 6.86, "1200_2800": 11.44, "gt2800": 16.01},
-        "transitional_by_annual_kwh": {"lt500": 0.02, "500_1200": 0.10, "gt1200": 0.33}
+        "capacity_by_annual_kwh": {"lt500": 2.86, "500_1200": 6.86, "1200_2800": 11.44, "gt2800": 16.01}
       }
     },
     {

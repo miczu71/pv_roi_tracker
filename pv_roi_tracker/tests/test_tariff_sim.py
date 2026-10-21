@@ -86,7 +86,9 @@ def test_2025_niepotwierdzony_i_przejsciowa(cat):
     r = simulate_month("2025-06", {"2025-06-10T10": 1.0}, cat)["G11"]
     assert r["confirmed"] is False
     assert r["energy"] == pytest.approx(0.50)
-    assert r["fixed"] == pytest.approx(10.34 + 4.56 + 16.01 + 0.33)
+    assert r["fixed"] == pytest.approx(10.34 + 4.56)   # faktury I–VI 2025: bez mocowej i przejściowej
+    h2 = simulate_month("2025-08", {"2025-08-12T10": 1.0}, cat)["G11"]
+    assert h2["fixed"] == pytest.approx(10.34 + 4.56 + 16.01)   # VII–XII: z mocową, bez przejściowej
 
 
 # ── dyn_a ────────────────────────────────────────────────────────────────────
