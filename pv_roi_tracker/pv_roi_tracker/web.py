@@ -139,6 +139,21 @@ def set_battery_config_callback(fn) -> None:
     _battery_config_callback = fn
 
 
+_tariff_settings_path = None
+_tariff_settings_callback = None
+
+
+def set_tariff_settings_path(path) -> None:
+    global _tariff_settings_path
+    _tariff_settings_path = path
+
+
+def set_tariff_settings_callback(fn) -> None:
+    """fn(settings: dict) — zapisuje ustawienia i przelicza symulację taryf."""
+    global _tariff_settings_callback
+    _tariff_settings_callback = fn
+
+
 def _load_tariff_cfg() -> dict:
     from . import tariff_config as _tc
     try:
@@ -168,6 +183,7 @@ _state: dict = {
     'rce_comparison': None,
     'deposit': None,
     'battery_sim': None,
+    'tariff_sim': None,
     'lifetime_forecast': None,
     'yoy': None,
     'heatpump': None,
@@ -208,6 +224,12 @@ def update_battery_sim(payload: Optional[dict]) -> None:
     """Store the battery expansion simulation payload (called from main.py)."""
     with _lock:
         _state['battery_sim'] = payload
+
+
+def update_tariff_sim(payload: Optional[dict]) -> None:
+    """Store the tariff simulation payload (called from main.py tariff_sim_job)."""
+    with _lock:
+        _state['tariff_sim'] = payload
 
 
 def update_lifetime_forecast(payload: Optional[dict]) -> None:
@@ -1023,6 +1045,47 @@ def _build_rate_trend(real: dict) -> Optional[dict]:
         'latest_effective_gross_per_kwh': latest_eff,
         'yoy_effective_gross_pct':        yoy_eff_pct,
     }
+
+
+@app.route('/api/tariff_sim')
+def api_tariff_sim():
+    with _lock:
+        payload = _state.get('tariff_sim')
+    if payload is None:
+        return jsonify({'ok': True, 'data': None})
+    from . import tariff_job as _tj, tariff_settings_store as _tss
+    settings = _tss.load(_tariff_settings_path) if _tariff_settings_path else dict(_tss.DEFAULTS)
+    return jsonify({'ok': True, 'data': payload,
+                    'recommendation': _tj.recommend(payload, settings['recommend_threshold_pln']),
+                    'settings': settings})
+
+
+@app.route('/api/tariff_settings')
+def api_tariff_settings_get():
+    from . import tariff_settings_store as _tss
+    if not _tariff_settings_path:
+        return jsonify({'ok': False, 'error': 'tariff_settings_path not configured'}), 500
+    return jsonify({'ok': True, 'settings': _tss.load(_tariff_settings_path)})
+
+
+@app.route('/api/tariff_settings', methods=['POST'])
+def api_tariff_settings_post():
+    """Zapisz ustawienia symulacji taryf i przelicz w tle (callback z main.py)."""
+    from . import tariff_settings_store as _tss
+    if not _tariff_settings_path or _tariff_settings_callback is None:
+        return jsonify({'ok': False, 'error': 'tariff settings not wired'}), 500
+    try:
+        raw = request.get_json(force=True, silent=True)
+        if not isinstance(raw, dict):
+            raise ValueError('oczekiwano obiektu JSON z ustawieniami')
+        settings = _tss.validate({**_tss.load(_tariff_settings_path), **raw})
+        _tariff_settings_callback(settings)
+        return jsonify({'ok': True, 'settings': settings, 'recomputing': True})
+    except ValueError as exc:
+        return jsonify({'ok': False, 'error': str(exc)}), 400
+    except Exception as exc:
+        log.exception('tariff_settings POST failed')
+        return jsonify({'ok': False, 'error': str(exc)}), 500
 
 
 @app.route('/api/invoice/upload', methods=['POST'])

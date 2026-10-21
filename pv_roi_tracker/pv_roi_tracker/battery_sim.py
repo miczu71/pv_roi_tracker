@@ -158,6 +158,7 @@ def simulate_s1(
     zone_prices: dict[str, tuple],
     rcem_by_ym: dict[str, float],
     keys: Optional[list[str]] = None,
+    price_fn=None,
 ) -> list[dict]:
     """
     Scenariusz S1 (G12w + net-billing): wirtualny moduł ładowany nadwyżką PV
@@ -167,6 +168,8 @@ def simulate_s1(
     zone_prices: {'YYYY-MM': (peak_gross, offpeak_gross)} PLN/kWh
     rcem_by_ym:  {'YYYY-MM': PLN/kWh} — efektywna cena sprzedaży RCEm
     keys:        posortowane klucze hours (opcjonalnie, oszczędza powtórny sort)
+    price_fn:    opcjonalnie key -> (cena_brutto_kwh, is_peak) | None; zastępuje
+                 zone_prices i strefy G12w, None = godzina pominięta
 
     Zwraca listę miesięcznych wierszy (posortowaną po ym).
     """
@@ -188,14 +191,21 @@ def simulate_s1(
         except ValueError:
             continue
         ym = key[:7]
+        if price_fn is not None:
+            priced = price_fn(key)
+            if priced is None:
+                continue
+            peak_px = offpeak_px = priced[0]
+            peak = priced[1]
         row = months.get(ym)
         if row is None:
             row = months[ym] = _new_s1_row(ym)
             row['rcem_estimated'] = ym not in rcem_by_ym
-        peak_px, offpeak_px = zone_prices.get(
-            ym, (_DEFAULT_PEAK_GROSS, _DEFAULT_OFFPEAK_GROSS))
+        if price_fn is None:
+            peak_px, offpeak_px = zone_prices.get(
+                ym, (_DEFAULT_PEAK_GROSS, _DEFAULT_OFFPEAK_GROSS))
+            peak = _is_peak_hour(day, hour)
         rcem = rcem_by_ym.get(ym, rcem_fallback)
-        peak = _is_peak_hour(day, hour)
         row['hours'] += 1
         budget = cap_h  # wspólny limit mocy godziny (ładowanie + rozładowanie)
 

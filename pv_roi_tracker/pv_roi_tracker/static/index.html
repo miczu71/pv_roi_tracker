@@ -50,6 +50,7 @@
       <button class="tab-btn"        onclick="showTab('invoices')">&#128196; Faktury</button>
       <button class="tab-btn"        onclick="showTab('tariff')">&#128200; Analiza taryf</button>
       <button class="tab-btn"        onclick="showTab('taryfa')">&#128209; Taryfa</button>
+      <button class="tab-btn"        onclick="showTab('tsim')" id="tab-btn-tsim"><svg class="tsim-ico" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M2 13V3m0 10h12M5 10l3-3 2 2 4-5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg> Symulacja taryf</button>
       <button class="tab-btn"        onclick="showTab('rce')">&#9889; RCE vs RCEm</button>
       <button class="tab-btn"        onclick="showTab('battery')">&#128267; Magazyn +5 kWh</button>
       <button class="tab-btn"        onclick="showTab('heatpump')">&#128293; Pompa ciepła</button>
@@ -354,6 +355,56 @@
           <button type="button" class="btn" onclick="clearTaryfaForm()" style="background:#6c757d">Wyczyść formularz</button>
         </form>
         <div id="taryfaMsg" style="margin-top:10px;font-size:13px"></div>
+      </div>
+      <!-- Symulacja taryf tab -->
+      <div id="tab-tsim" style="display:none;padding:12px">
+        <div id="tsimWaiting" class="tsim-note">Ładowanie symulacji taryf…</div>
+        <div id="tsimContent" style="display:none">
+          <div id="tsimReco" class="tsim-reco" aria-live="polite"></div>
+          <div class="tsim-variant">
+            <div id="tsimVariantSwitch" class="tsim-seg" role="group" aria-label="Wariant symulacji">
+              <button type="button" id="tsimBtnA" aria-pressed="true" onclick="tsimSetVariant('A')">Wariant A</button>
+              <button type="button" id="tsimBtnB" aria-pressed="false" onclick="tsimSetVariant('B')">Wariant B</button>
+            </div>
+            <p id="tsimVariantNote" class="tsim-variant-note"></p>
+          </div>
+          <div class="tbl-wrap tsim-tbl-wrap"><table id="tsimTbl" class="tsim-tbl"></table></div>
+          <div class="tbl-foot" id="tsimTblFoot"></div>
+          <div class="chart-wrap" style="height:300px;margin:14px 0">
+            <h3>Miesięczny koszt brutto wg taryfy (zł)</h3>
+            <canvas id="tsimChart"></canvas>
+          </div>
+          <details class="tsim-details">
+            <summary>Rozbicie kosztów wybranego miesiąca</summary>
+            <div class="tsim-detail-body">
+              <label class="tsim-lbl">Miesiąc: <select id="tsimBreakMonth" onchange="renderTsimBreakdown()"></select></label>
+              <div class="tbl-wrap"><table id="tsimBreakTbl" class="tsim-tbl"></table></div>
+              <p id="tsimBreakMsg" class="tsim-variant-note"></p>
+            </div>
+          </details>
+          <details class="tsim-details">
+            <summary>Zgodność z fakturami</summary>
+            <div class="tsim-detail-body">
+              <p id="tsimReconSummary" class="tsim-variant-note"></p>
+              <div class="tbl-wrap"><table id="tsimReconTbl" class="tsim-tbl"></table></div>
+            </div>
+          </details>
+          <div class="override-wrap" style="margin-top:14px">
+            <h3>Ustawienia symulacji (zapis przelicza od nowa)</h3>
+            <div class="override-form" style="row-gap:8px">
+              <label>Fazy: <select id="tsimPhases"><option value="1">1</option><option value="3">3</option></select></label>
+              <label>Moc umowna: <select id="tsimBracket">
+                <option value="lt500">do 500 kWh/rok</option>
+                <option value="500_1200">500–1200 kWh/rok</option>
+                <option value="1200_2800">1200–2800 kWh/rok</option>
+                <option value="gt2800">powyżej 2800 kWh/rok</option></select></label>
+              <label>Opłata handlowa netto (zł/mies.): <input type="number" id="tsimFee" step="0.01" min="0" max="200" style="width:80px"></label>
+              <label>Próg rekomendacji (zł/rok): <input type="number" id="tsimThreshold" step="10" min="0" max="5000" style="width:80px"></label>
+              <button type="button" onclick="saveTsimSettings()">Zapisz i przelicz</button>
+              <span id="tsimMsg" role="status"></span>
+            </div>
+          </div>
+        </div>
       </div>
       <!-- RCE vs RCEm tab -->
       <div id="tab-rce" style="display:none;padding:12px">

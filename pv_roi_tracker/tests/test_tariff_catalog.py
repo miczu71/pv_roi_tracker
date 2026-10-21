@@ -1,0 +1,197 @@
+"""Testy tariff_catalog.py — katalog stawek Tauron, strefy, okresy, stałe opłaty."""
+from datetime import date, datetime
+
+import pytest
+
+from pv_roi_tracker.tariff_catalog import (
+    TariffSettings,
+    fixed_monthly,
+    load_catalog,
+    period_for,
+    rates_per_kwh,
+    zone_for,
+)
+
+
+@pytest.fixture(scope="module")
+def cat():
+    return load_catalog()
+
+
+def z(cat, tariff, y, m, d, h):
+    return zone_for(tariff, datetime(y, m, d, h), cat)
+
+
+# ── strefy ───────────────────────────────────────────────────────────────────
+
+def test_g11_zawsze_all(cat):
+    assert z(cat, "G11", 2026, 3, 10, 3) == "all"
+
+
+def test_g12w_granice_dzien_roboczy(cat):
+    # wtorek 2026-03-10
+    assert z(cat, "G12w", 2026, 3, 10, 5) == "offpeak"
+    assert z(cat, "G12w", 2026, 3, 10, 6) == "peak"
+    assert z(cat, "G12w", 2026, 3, 10, 12) == "peak"
+    assert z(cat, "G12w", 2026, 3, 10, 13) == "offpeak"
+    assert z(cat, "G12w", 2026, 3, 10, 14) == "offpeak"
+    assert z(cat, "G12w", 2026, 3, 10, 15) == "peak"
+    assert z(cat, "G12w", 2026, 3, 10, 21) == "peak"
+    assert z(cat, "G12w", 2026, 3, 10, 22) == "offpeak"
+
+
+def test_g12_przejscie_przez_polnoc(cat):
+    assert z(cat, "G12", 2026, 3, 10, 23) == "night"
+    assert z(cat, "G12", 2026, 3, 10, 0) == "night"
+    assert z(cat, "G12", 2026, 3, 10, 5) == "night"
+    assert z(cat, "G12", 2026, 3, 10, 6) == "day"
+    assert z(cat, "G12", 2026, 3, 10, 13) == "night"
+    assert z(cat, "G12", 2026, 3, 10, 15) == "day"
+    assert z(cat, "G12", 2026, 3, 10, 22) == "night"
+
+
+def test_g12_weekend_bez_zmian(cat):
+    # sobota 2026-03-14 godz. 10 nadal "day"
+    assert z(cat, "G12", 2026, 3, 14, 10) == "day"
+
+
+def test_g12w_weekend_cala_doba_offpeak(cat):
+    assert z(cat, "G12w", 2026, 3, 14, 10) == "offpeak"
+    assert z(cat, "G12w", 2026, 3, 15, 18) == "offpeak"
+
+
+def test_g13_lato_i_zima(cat):
+    # lato (lipiec): poranny 7-13, wieczorny 19-22
+    assert z(cat, "G13", 2026, 7, 8, 6) == "other"
+    assert z(cat, "G13", 2026, 7, 8, 7) == "morning_peak"
+    assert z(cat, "G13", 2026, 7, 8, 13) == "other"
+    assert z(cat, "G13", 2026, 7, 8, 18) == "other"
+    assert z(cat, "G13", 2026, 7, 8, 19) == "evening_peak"
+    assert z(cat, "G13", 2026, 7, 8, 22) == "other"
+    # zima (styczeń): wieczorny 16-21
+    assert z(cat, "G13", 2026, 1, 14, 16) == "evening_peak"
+    assert z(cat, "G13", 2026, 1, 14, 19) == "evening_peak"
+    assert z(cat, "G13", 2026, 1, 14, 21) == "other"
+    # granica sezonu: marzec zima, kwiecień lato
+    assert z(cat, "G13", 2026, 3, 17, 16) == "evening_peak"
+    assert z(cat, "G13", 2026, 4, 14, 16) == "other"
+
+
+def test_g13_weekend_i_swieto_other(cat):
+    assert z(cat, "G13", 2026, 3, 14, 8) == "other"   # sobota
+    assert z(cat, "G13", 2026, 1, 1, 8) == "other"    # Nowy Rok (czwartek)
+
+
+def test_swieta_1_listopada_zalezne_od_roku(cat):
+    # 1 listopada w dzień roboczy w różnych latach: 2024 piątek, 2027 poniedziałek (święto w obu)
+    assert z(cat, "G12w", 2024, 11, 1, 10) == "offpeak"
+    assert z(cat, "G12w", 2027, 11, 1, 10) == "offpeak"
+    assert z(cat, "G12w", 2025, 11, 1, 10) == "offpeak"   # sobota
+    # to samo święto w roku, w którym wypada w środę (2023) — dzień roboczy bez święta byłby peak
+    assert z(cat, "G12w", 2023, 11, 1, 10) == "offpeak"
+    # dzień wcześniej (czwartek 2024-10-31) normalny dzień roboczy
+    assert z(cat, "G12w", 2024, 10, 31, 10) == "peak"
+
+
+def test_wielkanoc_poniedzialek(cat):
+    # Wielkanoc 2026: 5 kwietnia, Poniedziałek Wielkanocny 6.04
+    assert z(cat, "G12w", 2026, 4, 6, 10) == "offpeak"
+    assert z(cat, "G13", 2026, 4, 6, 8) == "other"
+    assert z(cat, "G12w", 2026, 4, 7, 10) == "peak"
+
+
+def test_nieznana_taryfa(cat):
+    with pytest.raises(ValueError):
+        zone_for("G99", datetime(2026, 3, 10, 10), cat)
+
+
+# ── okresy ───────────────────────────────────────────────────────────────────
+
+def test_okres_2025(cat):
+    p = period_for(cat, date(2025, 6, 1))
+    assert p["confirmed"] is False
+    assert p["energy_net"]["G12w"]["peak"] == 0.50
+
+
+def test_okres_2026_01_dziedziczy_z_override(cat):
+    jan = period_for(cat, date(2026, 1, 15))
+    feb = period_for(cat, date(2026, 2, 15))
+    assert jan["quality_net"] == 0.0331
+    assert feb["quality_net"] == 0.0332
+    assert jan["confirmed"] is True
+    assert jan["energy_net"] == feb["energy_net"]
+    assert jan["valid_to"] == "2026-01-31"
+
+
+def test_okres_granice_dat(cat):
+    assert period_for(cat, date(2026, 1, 31))["quality_net"] == 0.0331
+    assert period_for(cat, date(2026, 2, 1))["quality_net"] == 0.0332
+    assert period_for(cat, date(2025, 12, 31))["confirmed"] is False
+
+
+def test_okres_brak(cat):
+    with pytest.raises(LookupError):
+        period_for(cat, date(2024, 12, 31))
+    with pytest.raises(LookupError):
+        period_for(cat, date(2027, 1, 1))
+
+
+def test_okres_zwraca_kopie_i_overrides_gleboko(cat):
+    p = period_for(cat, date(2026, 3, 1), overrides={"energy_net": {"G11": {"all": 0.9}}})
+    assert p["energy_net"]["G11"]["all"] == 0.9
+    assert p["energy_net"]["G12"]["day"] == 0.5430  # reszta nietknięta
+    # oryginał bez zmian
+    assert period_for(cat, date(2026, 3, 1))["energy_net"]["G11"]["all"] == 0.4970
+    p["energy_net"]["G11"]["all"] = 123
+    assert period_for(cat, date(2026, 3, 1))["energy_net"]["G11"]["all"] == 0.4970
+
+
+# ── stawki ───────────────────────────────────────────────────────────────────
+
+def test_rates_g12w_2026_03(cat):
+    p = period_for(cat, date(2026, 3, 10))
+    r = rates_per_kwh("G12w", p, "peak")
+    assert r["energy"] == pytest.approx(0.6220)
+    assert r["dist"] == pytest.approx(0.3298)
+    assert r["fees"] == pytest.approx(0.0332 + 0.0073 + 0.0030)
+    r2 = rates_per_kwh("G12w", p, "offpeak")
+    assert r2["energy"] + r2["dist"] + r2["fees"] == pytest.approx(0.5077)
+
+
+def test_rates_null_to_valueerror(cat):
+    p = period_for(cat, date(2026, 3, 10), overrides={"energy_net": {"G12w": {"peak": None}}})
+    with pytest.raises(ValueError):
+        rates_per_kwh("G12w", p, "peak")
+
+
+def test_rates_nieznana_strefa(cat):
+    p = period_for(cat, date(2026, 3, 10))
+    with pytest.raises(ValueError):
+        rates_per_kwh("G12w", p, "nonsens")
+
+
+# ── stałe ────────────────────────────────────────────────────────────────────
+
+def test_fixed_domyslne(cat):
+    p = period_for(cat, date(2026, 3, 10))
+    f = fixed_monthly(p, TariffSettings())
+    assert f["network"] == 10.86
+    assert f["subscription_dist"] == 4.56
+    assert f["capacity"] == 24.05
+    assert f["transitional"] == 0.0
+    assert f["sales_fee"] == 0.0
+
+
+def test_fixed_1faza_i_przejsciowa_2025(cat):
+    p = period_for(cat, date(2025, 6, 1))
+    f = fixed_monthly(p, TariffSettings(phases=1, capacity_bracket="1200_2800", sales_fee_net=5.0))
+    assert f["network"] == 7.02
+    assert f["capacity"] == 11.44
+    assert f["transitional"] == 0.33   # 1200_2800 -> gt1200
+    assert f["sales_fee"] == 5.0
+    f2 = fixed_monthly(p, TariffSettings(capacity_bracket="lt500"))
+    assert f2["transitional"] == 0.02
+    f3 = fixed_monthly(p, TariffSettings(capacity_bracket="500_1200"))
+    assert f3["transitional"] == 0.10
+    f4 = fixed_monthly(p, TariffSettings(capacity_bracket="gt2800"))
+    assert f4["transitional"] == 0.33

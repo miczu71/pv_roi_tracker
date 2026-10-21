@@ -1,0 +1,149 @@
+{
+  "_meta": {
+    "operator": "Tauron Dystrybucja + Tauron Sprzedaż (grupy G, taryfa kompleksowa)",
+    "currency": "PLN",
+    "units": "energy/dist_var/*_var: zł/kWh netto; fixed_*: zł/mies. netto; VAT osobno",
+    "vat": 1.23,
+    "collected": "2026-10-21",
+    "confirmed_legend": "confirmed=false oznacza wartość niepotwierdzoną w dokumencie urzędowym; silnik ma ją nadpisać stawkami z faktur lub wpisem ręcznym z zakładki Taryfa",
+    "sources": {
+      "A": "https://www.tauron-dystrybucja.pl/-/media/offer-documents/dystrybucja/aktualna-taryfa/wyciag-z-taryfy-td-sa-na-rok-2026-dla-odbiorcow-grup-g.ashx",
+      "B": "https://www.tauron-dystrybucja.pl/-/media/offer-documents/dystrybucja/aktualna-taryfa/stawki-brutto-w-grupach-g-na-rok-2026.ashx",
+      "C": "https://www.tauron-dystrybucja.pl/-/media/offer-documents/dystrybucja/archiwum-taryf/2025/wyci%C4%85g-typu-g-z-taryfy-td_sa-na-rok-2025.ashx",
+      "E": "https://bip.ure.gov.pl/download/3/20340/TauronSprzedaz.pdf",
+      "F": "https://www.ure.gov.pl/pl/urzad/informacje-ogolne/aktualnosci/13002,Prezes-Urzedu-Regulacji-Energetyki-zatwierdzil-taryfy-na-sprzedaz-i-dystrybucje-.html",
+      "G": "https://www.tauron-dystrybucja.pl/o-spolce/komunikaty/2026/01/21-1"
+    }
+  },
+  "zones": {
+    "G11": {"G11": "all"},
+    "G12": {
+      "day": {"hours": [[6, 13], [15, 22]], "days": "all"},
+      "night": {"hours": [[22, 6], [13, 15]], "days": "all"}
+    },
+    "G12w": {
+      "peak": {"hours": [[6, 13], [15, 22]], "days": "workdays"},
+      "offpeak": {"hours": [[13, 15], [22, 6]], "days": "workdays", "weekends_holidays": "all_day"}
+    },
+    "G13": {
+      "summer": {
+        "months": [4, 5, 6, 7, 8, 9],
+        "morning_peak": [7, 13],
+        "evening_peak": [19, 22],
+        "other": "reszta; soboty, niedziele i święta cała doba = other"
+      },
+      "winter": {
+        "months": [10, 11, 12, 1, 2, 3],
+        "morning_peak": [7, 13],
+        "evening_peak": [16, 21],
+        "other": "reszta; soboty, niedziele i święta cała doba = other"
+      },
+      "source": "A pkt 2.2.2, C"
+    },
+    "dynamic_distribution_zones": "strefy S1–S4 wg Energetycznego Kompasu PSE (bez stałych godzin), A pkt 2.2.10"
+  },
+  "periods": [
+    {
+      "valid_from": "2025-01-01",
+      "valid_to": "2025-12-31",
+      "confirmed": false,
+      "note": "Dystrybucja z wyciągu C (stan po zmianie 1.07.2025; stawek z 1.01.2025 nie rozdzielono). Sprzedaż 2025: brak dokumentu urzędowego, w 2025 obowiązywała zamrożona cena ok. 500 zł/MWh netto (F: 2026 jest ok. 1% niższa), strefy do ustalenia z faktur.",
+      "energy_net": {
+        "G11": {"all": 0.50},
+        "G12": {"day": 0.50, "night": 0.50},
+        "G12w": {"peak": 0.50, "offpeak": 0.50},
+        "G13": {"morning_peak": 0.50, "evening_peak": 0.50, "other": 0.50}
+      },
+      "energy_net_decision": "2026-10-21 (user): w całym 2025 obowiązywała zamrożona cena 500 zł/MWh netto, więc 0,50 zł/kWh netto we wszystkich strefach i taryfach. Zgodność sprawdza test G12w vs faktury (±3%).",
+      "energy_net_note": "Gospodarstwa domowe płaciły w 2025 zamrożone 500 zł/MWh netto (URE, ustawa z 23.04.2025). Ceny stref 1.01–30.09.2025: NIE USTALONO (pkt 5.1a taryfy z decyzji DRE.WRE.4211.29.11.2024.AKr3, PDF https://bip.ure.gov.pl/download/3/18556/TAURONSprzedazSpzoo.pdf). Nie wiadomo, czy zamrożenie dotyczyło każdej strefy, czy średniej ważonej. Do symulacji 2025 użyć faktur (G12w) albo oznaczyć jako szacunek.",
+      "energy_net_reference_q4": {
+        "valid_from": "2025-10-01",
+        "valid_to": "2025-12-31",
+        "confirmed": "ceny odniesienia z decyzji URE DRE.WRE.4211.39.13.2025.ASa1 z 30.09.2025 (pkt 5.1b), netto niepotwierdzone dla tego dokumentu; NIE są cenami płaconymi przez gospodarstwa (tam obowiązywało 500 zł/MWh)",
+        "source": "https://bip.ure.gov.pl/download/3/20036/TAURONSprzedaz.pdf",
+        "G11": {"all": 0.5767},
+        "G12": {"day": 0.6510, "night": 0.4300},
+        "G12w": {"peak": 0.7560, "offpeak": 0.4300},
+        "G13": {"morning_peak": 0.5470, "evening_peak": 0.8934, "other": 0.4820}
+      },
+      "dist_var_net": {
+        "G11": {"all": 0.2541},
+        "G12": {"day": 0.2899, "night": 0.0609},
+        "G12w": {"peak": 0.3271, "offpeak": 0.0518},
+        "G13": {"morning_peak": 0.1883, "evening_peak": 0.3332, "other": 0.0349}
+      },
+      "dynamic_dist_var_net": {"S1": 0.0118, "S2": 0.0470, "S3": 0.3528, "S4": 2.3521},
+      "quality_net": 0.0321,
+      "oze_net": 0.0035,
+      "cogeneration_net": 0.0030,
+      "fixed_net": {
+        "network_1ph": 7.02,
+        "network_3ph": 10.34,
+        "subscription_dist": 4.56,
+        "capacity_by_annual_kwh": {"lt500": 2.86, "500_1200": 6.86, "1200_2800": 11.44, "gt2800": 16.01},
+        "transitional_by_annual_kwh": {"lt500": 0.02, "500_1200": 0.10, "gt1200": 0.33}
+      }
+    },
+    {
+      "valid_from": "2026-01-01",
+      "valid_to": "2026-01-31",
+      "confirmed": true,
+      "note": "Jak okres od 2026-02-01, z jakościową 0,0331 (A). Wpis osobny, bo opłata jakościowa zmieniła się od 1.02.2026 (G).",
+      "inherits": "2026-02-01",
+      "override": {"quality_net": 0.0331}
+    },
+    {
+      "valid_from": "2026-02-01",
+      "valid_to": "2026-12-31",
+      "confirmed": true,
+      "sources": ["A", "B", "E", "G"],
+      "energy_net": {
+        "G11": {"all": 0.4970},
+        "G12": {"day": 0.5430, "night": 0.4130},
+        "G12w": {"peak": 0.6220, "offpeak": 0.4130},
+        "G13": {"morning_peak": 0.4668, "evening_peak": 0.7780, "other": 0.4210}
+      },
+      "dist_var_net": {
+        "G11": {"all": 0.2464},
+        "G12": {"day": 0.2841, "night": 0.0558},
+        "G12w": {"peak": 0.3298, "offpeak": 0.0512},
+        "G13": {"morning_peak": 0.2203, "evening_peak": 0.3898, "other": 0.0392}
+      },
+      "dynamic_dist_var_net": {"S1": 0.0224, "S2": 0.0893, "S3": 0.3881, "S4": 2.3756},
+      "quality_net": 0.0332,
+      "oze_net": 0.0073,
+      "cogeneration_net": 0.0030,
+      "fixed_net": {
+        "network_1ph": 7.38,
+        "network_3ph": 10.86,
+        "subscription_dist": 4.56,
+        "capacity_by_annual_kwh": {"lt500": 4.29, "500_1200": 10.31, "1200_2800": 17.18, "gt2800": 24.05}
+      }
+    }
+  ],
+  "dynamic_sales": {
+    "confirmed": true,
+    "offer": "Tauron „Ceny Dynamiczne” (tauron.pl/dla-domu/prad/prad-z-usluga/ceny-dynamiczne), 2026-10-21",
+    "base_price": "TGE RDN Fixing I (nie RCE PSE), potwierdzone na stronie oferty",
+    "margin_gross_per_kwh": 0.1097,
+    "margin_net_per_kwh": 0.0892,
+    "monthly_fee": 0,
+    "monthly_fee_note": "wariant standardowy bez opłaty; wariant MAX: 23,49 zł/mies. (netto/brutto niepotwierdzone), cena maks. 0,68 zł/kWh",
+    "min_avg_price_net_per_kwh": 0.0050,
+    "valid_from": "2026-04-01",
+    "source": "https://www.tauron.pl/-/media/offer-documents/produkty/2024/08-2024/dynamiczne/ts/EE-GD-CDzcb-Bezpieczny-TS-0.ashx",
+    "note": "rozliczenie nadwyżek prosumenta wg Aneksu do Umowy (niepotwierdzone)",
+    "distribution": "oferta RDN rozlicza dystrybucję wg taryfy OSD klienta; G14dynamic (S1–S4) idzie z osobną ofertą „Prąd ze zmienną dystrybucją” o stałej cenie sprzedaży. Połączenie RDN + G14dynamic niepotwierdzone.",
+    "requirements": "licznik zdalnego odczytu, rozliczenie miesięczne; prosumenci: rozliczenie nadwyżek w tej ofercie niepotwierdzone"
+  },
+  "dynamic_sales_b": {
+    "fixed_price_net_per_kwh": 0.5020,
+    "fixed_price_gross_per_kwh": 0.6175,
+    "valid_from": "2026-01-01",
+    "valid_to": null,
+    "confirmed": true,
+    "monthly_fee": 0,
+    "source": "https://www.tauron.pl/-/media/offer-documents/produkty/g14dynamic/ts/cennik/ee-gd-bsc-b-dynd-ts-0.ashx",
+    "note": "cena jednakowa w S1–S4; rozliczenie nadwyżek prosumenta wg Aneksu do Umowy (niepotwierdzone)"
+  }
+}

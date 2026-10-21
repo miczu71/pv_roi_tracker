@@ -46,7 +46,7 @@ document.addEventListener('click', function(e) {
 
 /* -- Tab switching -- */
 function showTab(name) {
-  const TABS = ['hist','pred','years','charts','invoices','tariff','taryfa','rce','battery','heatpump','forecast'];
+  const TABS = ['hist','pred','years','charts','invoices','tariff','taryfa','tsim','rce','battery','heatpump','forecast'];
   TABS.forEach(t => {
     document.getElementById('tab-' + t).style.display = (t === name) ? '' : 'none';
   });
@@ -72,6 +72,7 @@ function showTab(name) {
     if (!_rangeData) fetchTariffRange();
   }
   if (name === 'taryfa') loadTaryfaTab();
+  if (name === 'tsim') { loadTsimTab(); if (_tsimChart) _tsimChart.resize(); }
 }
 
 /* -- Summary cards -- */
@@ -3906,3 +3907,285 @@ async function deleteTaryfaEntry(ef) {
 loadData();
 setInterval(loadData, 60000);
 
+
+
+/* ===================================================================== */
+/* -- Symulacja taryf (tsim) -------------------------------------------- */
+
+let _tsim = null;              // ostatnia odpowiedź /api/tariff_sim
+let _tsimVariant = 'A';
+let _tsimChart = null;
+const _TSIM_COLORS = { G11: '#718096', G12: '#a0aec0', G12w: '#2563eb', G13: '#7c3aed',
+                       dyn_a: '#16a34a', dyn_b: '#b45309' };
+const _TSIM_BRACKETS = { lt500: 'do 500 kWh/rok', '500_1200': '500–1200 kWh/rok',
+                         '1200_2800': '1200–2800 kWh/rok', gt2800: 'powyżej 2800 kWh/rok' };
+
+function _tsimZl(v) {
+  return Math.round(v).toLocaleString('pl-PL') + ' zł';
+}
+
+function _tsimSigned(v) {
+  const r = Math.round(v);
+  return (r > 0 ? '+' : r < 0 ? '−' : '') + Math.abs(r).toLocaleString('pl-PL') + ' zł';
+}
+
+async function loadTsimTab() {
+  const waiting = document.getElementById('tsimWaiting');
+  try {
+    const r = await fetch('api/tariff_sim');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error || 'błąd API');
+    _tsim = d;
+    if (!d.data) {
+      waiting.style.display = '';
+      waiting.textContent = 'Symulacja taryf jeszcze się nie policzyła — pierwszy przebieg po starcie add-onu trwa do ok. minuty. Odśwież za chwilę.';
+      document.getElementById('tsimContent').style.display = 'none';
+      return;
+    }
+    waiting.style.display = 'none';
+    document.getElementById('tsimContent').style.display = '';
+    _renderTsim();
+  } catch (e) {
+    waiting.style.display = '';
+    waiting.textContent = 'Błąd ładowania symulacji taryf: ' + e.message;
+  }
+}
+
+function _tsimHasB() {
+  const g = _tsim && _tsim.data && _tsim.data.last12 && _tsim.data.last12.gross_b;
+  return !!g;
+}
+
+function tsimSetVariant(v) {
+  _tsimVariant = v;
+  _renderTsimVariant();
+}
+
+function _renderTsim() {
+  const hasB = _tsimHasB();
+  if (!hasB) _tsimVariant = 'A';
+  document.getElementById('tsimVariantSwitch').style.display = hasB ? '' : 'none';
+  _renderTsimReco();
+  _renderTsimVariant();
+  _renderTsimBreakMonths();
+  renderTsimBreakdown();
+  _renderTsimRecon();
+  _fillTsimSettings();
+}
+
+function _renderTsimReco() {
+  const el = document.getElementById('tsimReco');
+  const rec = _tsim.recommendation || {};
+  const names = (_tsim.data.tariffs || []);
+  const line = (key, r) => {
+    if (!r) return null;
+    const txt = r.best === 'G12w' ? 'zostań przy G12w'
+      : (r.switch ? r.best + ' ' + _tsimSigned(-r.saving_pln) + '/rok' : 'zostań przy G12w (' + r.best + ' tańsza tylko o ' + _tsimZl(r.saving_pln) + '/rok)');
+    return '<div class="tsim-reco-line"><b>' + key + ':</b> ' + _esc(txt) +
+      ' <span class="tsim-reco-why">' + _esc(r.reason || '') + '</span></div>';
+  };
+  const lines = [line('A', rec.A), _tsimHasB() ? line('B', rec.B) : null].filter(Boolean);
+  const sw = (rec.A && rec.A.switch) || (rec.B && rec.B.switch);
+  let head;
+  if (!lines.length) head = 'Brak pełnych 12 miesięcy danych dla G12w — rekomendacja niedostępna.';
+  else if (sw) head = 'Zmiana taryfy może się opłacać.';
+  else head = 'Zostań przy obecnej taryfie G12w.';
+  el.className = 'tsim-reco' + (sw ? ' tsim-reco-switch' : '');
+  el.innerHTML = '<div class="tsim-reco-head">' + _esc(head) + '</div>' + lines.join('') +
+    '<div class="tsim-reco-foot">Próg rekomendacji: ' + _tsimZl((_tsim.settings || {}).recommend_threshold_pln || 0) +
+    '/rok, okres: ' + _esc(_tsim.data.last12.from) + '…' + _esc(_tsim.data.last12.to) + '. Taryfy: ' + _esc(names.join(', ')) + '.</div>' +
+    (_tsim.data.catalog_ends ? '<div class="tsim-reco-foot">Cennik w katalogu kończy się na ' + _esc(_tsim.data.catalog_ends) +
+      ' — nowsze miesiące nie są liczone, dopóki nie dodamy stawek.</div>' : '');
+}
+
+function _renderTsimVariant() {
+  const hasB = _tsimHasB();
+  document.getElementById('tsimBtnA').setAttribute('aria-pressed', String(_tsimVariant === 'A'));
+  document.getElementById('tsimBtnB').setAttribute('aria-pressed', String(_tsimVariant === 'B'));
+  document.getElementById('tsimVariantNote').textContent = _tsimVariant === 'B' && hasB
+    ? (_tsim.data.variant_b_note || 'Wariant B: z modułem magazynu.')
+    : 'Wariant A: ten sam pobór z sieci wyceniony w każdej taryfie.';
+  _renderTsimTable();
+  _renderTsimChart();
+  renderTsimBreakdown();
+}
+
+function _tsimCell(ym, t) {
+  const e = ((_tsim.data.months[ym] || {})[t]);
+  if (!e || e.available === false || e.gross == null) {
+    return { v: null, reason: e && e.reason ? e.reason : 'brak danych', unreliable: false };
+  }
+  let v = e.gross;
+  if (_tsimVariant === 'B') {
+    if (!e.b) return { v: null, reason: 'brak wyniku wariantu B', unreliable: false };
+    v = e.b.gross;
+  }
+  return { v, reason: '', unreliable: e.reliable === false, cov: e.coverage_pct };
+}
+
+function _tsimMonthList() {
+  const l12 = _tsim.data.last12;
+  const out = [];
+  let [y, m] = l12.from.split('-').map(Number);
+  for (let i = 0; i < 12; i++) {
+    out.push(String(y).padStart(4, '0') + '-' + String(m).padStart(2, '0'));
+    m++; if (m > 12) { m = 1; y++; }
+  }
+  return out;
+}
+
+function _renderTsimTable() {
+  const d = _tsim.data;
+  const tariffs = d.tariffs || [];
+  const yms = _tsimMonthList().concat([d.current_month.ym]);
+  const g12 = {};
+  let html = '<thead><tr><th>Miesiąc</th>' + tariffs.map(t => '<th>' + _esc(t) + '</th>').join('') + '</tr></thead><tbody>';
+  yms.forEach(ym => {
+    const cur = ym === d.current_month.ym;
+    const cells = tariffs.map(t => _tsimCell(ym, t));
+    const vals = cells.filter(c => c.v != null && !c.unreliable).map(c => c.v);
+    const min = vals.length ? Math.min(...vals) : null;
+    html += '<tr' + (cur ? ' class="cur"' : '') + '><td>' + _esc(ym) + (cur ? ' <span class="tsim-inprog">w toku</span>' : '') + '</td>';
+    cells.forEach(c => {
+      if (c.v == null) { html += '<td title="' + _esc(c.reason) + '">—</td>'; return; }
+      const txt = Math.round(c.v).toLocaleString('pl-PL');
+      const best = min != null && c.v === min && !c.unreliable;
+      const title = c.unreliable ? ' title="pokrycie cen ' + (c.cov != null ? Math.round(c.cov) : '?') + '%"' : '';
+      html += '<td class="' + (best ? 'tsim-best' : '') + '"' + title + '>' + (c.unreliable ? '~(' + txt + ')' : txt) + '</td>';
+    });
+    html += '</tr>';
+  });
+  const l12 = d.last12;
+  const sums = _tsimVariant === 'B' ? l12.gross_b : l12.gross;
+  html += '<tr class="tsim-sum"><td>Suma 12 mies.</td>' + tariffs.map(t => {
+    const v = sums ? sums[t] : null;
+    return v == null ? '<td title="brak pełnych 12 mies.">—</td>' : '<td>' + Math.round(v).toLocaleString('pl-PL') + '</td>';
+  }).join('') + '</tr>';
+  const base = sums ? sums.G12w : null;
+  html += '<tr class="tsim-sum"><td>vs G12w</td>' + tariffs.map(t => {
+    const v = sums ? sums[t] : null;
+    if (v == null || base == null) return '<td>—</td>';
+    const diff = v - base;
+    return '<td class="' + (diff < 0 ? 'tsim-cheaper' : diff > 0 ? 'tsim-worse' : '') + '">' + _tsimSigned(diff) + '</td>';
+  }).join('') + '</tr></tbody>';
+  document.getElementById('tsimTbl').innerHTML = html;
+  document.getElementById('tsimTblFoot').textContent =
+    'Brutto, zł. Pogrubiona = najtańsza w miesiącu; ~(…) = niepełne pokrycie cen; bieżący miesiąc nie wchodzi do sumy. „vs G12w”: plus = drożej, minus = taniej.';
+}
+
+function _renderTsimChart() {
+  const d = _tsim.data;
+  const yms = _tsimMonthList().concat([d.current_month.ym]);
+  const datasets = (d.tariffs || []).map(t => ({
+    label: t, borderColor: _TSIM_COLORS[t] || '#444', backgroundColor: _TSIM_COLORS[t] || '#444',
+    data: yms.map(ym => _tsimCell(ym, t).v), spanGaps: false, tension: 0.2,
+    borderWidth: t === 'G12w' ? 3 : 1.5, pointRadius: 2,
+  }));
+  if (_tsimChart) { _tsimChart.destroy(); _tsimChart = null; }
+  _tsimChart = new Chart(document.getElementById('tsimChart'), {
+    type: 'line',
+    data: { labels: yms, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      plugins: { legend: { position: 'bottom' } },
+      scales: { y: { beginAtZero: true, title: { display: true, text: 'zł brutto' } } },
+    },
+  });
+}
+
+function _renderTsimBreakMonths() {
+  const sel = document.getElementById('tsimBreakMonth');
+  const prev = sel.value;
+  const yms = _tsimMonthList();
+  sel.innerHTML = yms.slice().reverse().map(ym => '<option value="' + _esc(ym) + '">' + _esc(ym) + '</option>').join('');
+  sel.value = yms.includes(prev) ? prev : yms[yms.length - 1];
+}
+
+function renderTsimBreakdown() {
+  if (!_tsim || !_tsim.data) return;
+  const msg = document.getElementById('tsimBreakMsg');
+  const tbl = document.getElementById('tsimBreakTbl');
+  if (_tsimVariant === 'B') {
+    tbl.innerHTML = '';
+    msg.textContent = 'Rozbicie kosztów jest dostępne tylko dla wariantu A.';
+    return;
+  }
+  msg.textContent = '';
+  const ym = document.getElementById('tsimBreakMonth').value;
+  const cols = [['energy', 'Energia'], ['dist', 'Dystrybucja'], ['fees', 'Opłaty zm.'],
+                ['fixed', 'Stałe'], ['vat', 'VAT'], ['gross', 'Brutto']];
+  let html = '<thead><tr><th>Taryfa</th>' + cols.map(c => '<th>' + c[1] + '</th>').join('') + '</tr></thead><tbody>';
+  (_tsim.data.tariffs || []).forEach(t => {
+    const e = (_tsim.data.months[ym] || {})[t];
+    if (!e || e.available === false) {
+      html += '<tr><td>' + _esc(t) + '</td><td colspan="6" class="tsim-na">' + _esc((e && e.reason) || 'brak danych') + '</td></tr>';
+      return;
+    }
+    html += '<tr><td>' + _esc(t) + '</td>' + cols.map(c =>
+      '<td>' + (e[c[0]] == null ? '—' : e[c[0]].toFixed(2).replace('.', ',')) + '</td>').join('') + '</tr>';
+  });
+  tbl.innerHTML = html + '</tbody>';
+}
+
+function _renderTsimRecon() {
+  const d = _tsim.data;
+  const s = d.reconciliation_summary || {};
+  document.getElementById('tsimReconSummary').textContent = s.months
+    ? 'G12w vs faktury: ' + s.ok_months + ' z ' + s.months + ' mies. w ±3%, maks. rozjazd ' +
+      (s.max_abs_diff_pct != null ? s.max_abs_diff_pct.toFixed(1).replace('.', ',') + '%' : '—') + '.'
+    : 'Brak faktur do porównania.';
+  const rec = d.reconciliation || {};
+  const fmt = v => v == null ? '—' : v.toFixed(2).replace('.', ',');
+  document.getElementById('tsimReconTbl').innerHTML =
+    '<thead><tr><th>Miesiąc</th><th>Symulacja netto</th><th>Faktura netto</th><th>Różnica</th><th>kWh sym.</th><th>kWh fakt.</th></tr></thead><tbody>' +
+    Object.keys(rec).sort().map(ym => {
+      const r = rec[ym];
+      return '<tr><td>' + _esc(ym) + '</td><td>' + fmt(r.sim_net) + '</td><td>' + fmt(r.invoice_net) + '</td><td class="' +
+        (r.ok ? '' : 'tsim-worse') + '">' + (r.diff_pct >= 0 ? '+' : '−') + Math.abs(r.diff_pct).toFixed(1).replace('.', ',') + '%</td><td>' +
+        fmt(r.kwh_sim) + '</td><td>' + fmt(r.kwh_invoice) + '</td></tr>';
+    }).join('') + '</tbody>';
+}
+
+function _fillTsimSettings() {
+  const s = _tsim.settings || {};
+  document.getElementById('tsimPhases').value = String(s.phases ?? 3);
+  document.getElementById('tsimBracket').value = s.capacity_bracket || 'gt2800';
+  document.getElementById('tsimFee').value = s.sales_fee_net ?? 0;
+  document.getElementById('tsimThreshold').value = s.recommend_threshold_pln ?? 100;
+}
+
+async function saveTsimSettings() {
+  const msg = document.getElementById('tsimMsg');
+  msg.className = ''; msg.textContent = 'Zapisywanie…';
+  const payload = {
+    phases: parseInt(document.getElementById('tsimPhases').value, 10),
+    capacity_bracket: document.getElementById('tsimBracket').value,
+    sales_fee_net: parseFloat(document.getElementById('tsimFee').value),
+    recommend_threshold_pln: parseFloat(document.getElementById('tsimThreshold').value),
+  };
+  const before = _tsim && _tsim.data ? _tsim.data.generated_at : null;
+  try {
+    const r = await fetch('api/tariff_settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error || 'HTTP ' + r.status);
+    msg.textContent = 'Zapisano, przeliczanie…';
+    for (let i = 0; i < 24; i++) {
+      await new Promise(res => setTimeout(res, 5000));
+      const rr = await fetch('api/tariff_sim');
+      if (!rr.ok) continue;
+      const dd = await rr.json();
+      if (dd.data && dd.data.generated_at !== before) {
+        _tsim = dd; _renderTsim();
+        msg.className = 'ok'; msg.textContent = 'Zapisano i przeliczono';
+        return;
+      }
+    }
+    msg.className = 'err'; msg.textContent = 'Zapisano, ale przeliczenie trwa dłużej niż 2 min — odśwież zakładkę za chwilę.';
+  } catch (e) {
+    msg.className = 'err'; msg.textContent = 'Błąd: ' + e.message;
+  }
+}

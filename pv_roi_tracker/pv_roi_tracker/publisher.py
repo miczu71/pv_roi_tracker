@@ -81,6 +81,21 @@ _SENSORS: list[_Sensor] = [
     # Rozbudowa magazynu — symulacja drugiego modułu (v0.30.0)
     _Sensor('battery_expansion_savings',  'PV Battery Expansion Avg Savings', None,                        'PLN',  'monetary', None,      'mdi:battery-plus'),
     _Sensor('battery_expansion_payback',  'PV Battery Expansion Payback',   None,                          'years', None,      'measurement',      'mdi:battery-clock'),
+    # Symulacja taryf (wariant A): koszt brutto bieżącego miesiąca, suma 12 mies., najtańsza
+    _Sensor('tariffsim_month_g11', 'PV Tariff Sim Month G11', None, 'PLN', 'monetary', None, 'mdi:calendar-month'),
+    _Sensor('tariffsim_month_g12', 'PV Tariff Sim Month G12', None, 'PLN', 'monetary', None, 'mdi:calendar-month'),
+    _Sensor('tariffsim_month_g12w', 'PV Tariff Sim Month G12w', None, 'PLN', 'monetary', None, 'mdi:calendar-month'),
+    _Sensor('tariffsim_month_g13', 'PV Tariff Sim Month G13', None, 'PLN', 'monetary', None, 'mdi:calendar-month'),
+    _Sensor('tariffsim_month_dyn_a', 'PV Tariff Sim Month Dyn A', None, 'PLN', 'monetary', None, 'mdi:calendar-month'),
+    _Sensor('tariffsim_month_dyn_b', 'PV Tariff Sim Month Dyn B', None, 'PLN', 'monetary', None, 'mdi:calendar-month'),
+    _Sensor('tariffsim_12m_g11', 'PV Tariff Sim 12M G11', None, 'PLN', 'monetary', None, 'mdi:calendar-range'),
+    _Sensor('tariffsim_12m_g12', 'PV Tariff Sim 12M G12', None, 'PLN', 'monetary', None, 'mdi:calendar-range'),
+    _Sensor('tariffsim_12m_g12w', 'PV Tariff Sim 12M G12w', None, 'PLN', 'monetary', None, 'mdi:calendar-range'),
+    _Sensor('tariffsim_12m_g13', 'PV Tariff Sim 12M G13', None, 'PLN', 'monetary', None, 'mdi:calendar-range'),
+    _Sensor('tariffsim_12m_dyn_a', 'PV Tariff Sim 12M Dyn A', None, 'PLN', 'monetary', None, 'mdi:calendar-range'),
+    _Sensor('tariffsim_12m_dyn_b', 'PV Tariff Sim 12M Dyn B', None, 'PLN', 'monetary', None, 'mdi:calendar-range'),
+    _Sensor('tariffsim_cheapest', 'PV Tariff Sim Cheapest', None, None, None, None, 'mdi:medal'),
+    _Sensor('tariffsim_saving_vs_g12w', 'PV Tariff Sim Saving vs G12w', None, 'PLN', 'monetary', None, 'mdi:piggy-bank-outline'),
     # Latest-invoice rates (v0.20.0) — single source of truth for energy_simulation.yaml
     # and Analiza taryf; values come from invoice_rates (see _render_value), not RoiResult.
     # NOTE: per-kWh rates are NOT device_class 'monetary' — HA's monetary class requires a
@@ -134,6 +149,25 @@ def _disc_topic(slug: str) -> str:
     return f'{_DISC_PREFIX}/sensor/{_DEVICE_ID}/{slug}/config'
 
 
+def _tariff_sim_value(slug: str, tariff_sim: Optional[dict]) -> Any:
+    """Wartość sensora `tariffsim_*` z payloadu tariff_job; brak danych → None."""
+    sim = tariff_sim or {}
+    if slug == 'tariffsim_cheapest':
+        return (sim.get('last12') or {}).get('cheapest')
+    if slug == 'tariffsim_saving_vs_g12w':
+        return (sim.get('last12') or {}).get('saving_vs_g12w')
+    if slug.startswith('tariffsim_month_'):
+        gross = (sim.get('current_month') or {}).get('gross') or {}
+        part = slug[len('tariffsim_month_'):]
+    else:
+        gross = (sim.get('last12') or {}).get('gross') or {}
+        part = slug[len('tariffsim_12m_'):]
+    for name, val in gross.items():          # klucze w payloadzie: G12w, dyn_a; slug małymi
+        if name.lower() == part:
+            return val
+    return None
+
+
 def _render_value(sensor: _Sensor, result: RoiResult,
                   current_month_savings: Optional[float] = None,
                   rcem_scrape_status: Optional[str] = None,
@@ -142,7 +176,8 @@ def _render_value(sensor: _Sensor, result: RoiResult,
                   deposit_balance: Optional[float] = None,
                   deposit_expiring_30d: Optional[float] = None,
                   invoice_rates: Optional[dict] = None,
-                  battery_expansion: Optional[dict] = None) -> str:
+                  battery_expansion: Optional[dict] = None,
+                  tariff_sim: Optional[dict] = None) -> str:
     if sensor.slug == 'net_investment':
         v: Any = round(result.gross_investment - result.subsidy, 2)
     elif sensor.slug == 'current_month_savings':
@@ -161,6 +196,8 @@ def _render_value(sensor: _Sensor, result: RoiResult,
         v = (battery_expansion or {}).get('monthly_avg_savings')
     elif sensor.slug == 'battery_expansion_payback':
         v = (battery_expansion or {}).get('payback_years')
+    elif sensor.slug.startswith('tariffsim_'):
+        v = _tariff_sim_value(sensor.slug, tariff_sim)
     elif sensor.slug in _INVOICE_RATE_SENSORS:
         v = (invoice_rates or {}).get(_INVOICE_RATE_SENSORS[sensor.slug])
     else:
@@ -265,7 +302,8 @@ class MQTTPublisher:
                     deposit_balance: Optional[float] = None,
                     deposit_expiring_30d: Optional[float] = None,
                     invoice_rates: Optional[dict] = None,
-                    battery_expansion: Optional[dict] = None) -> None:
+                    battery_expansion: Optional[dict] = None,
+                    tariff_sim: Optional[dict] = None) -> None:
         if not self._connected:
             logger.debug('MQTT not connected — skipping publish')
             return
@@ -273,7 +311,7 @@ class MQTTPublisher:
             payload = _render_value(s, result, current_month_savings, rcem_scrape_status,
                                     projected_month_kwh, projected_month_savings,
                                     deposit_balance, deposit_expiring_30d, invoice_rates,
-                                    battery_expansion)
+                                    battery_expansion, tariff_sim)
             self._client.publish(_state_topic(s.slug), payload, retain=True)
         logger.debug('Published ROI state to MQTT (roi_pct=%.2f%%)', result.roi_pct)
 

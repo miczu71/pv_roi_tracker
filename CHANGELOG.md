@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.46.0] — 2026-10-21
+
+Nowa zakładka **Symulacja taryf**: ile kosztowałby ten sam pobór w G11, G12, G12w, G13 oraz w dwóch ofertach dynamicznych (A, B).
+
+- **Tabela 12 miesięcy × 6 taryf**, podsumowanie ostatnich 12 miesięcy, miesiąc bieżący i rekomendacja z progiem (domyślnie 100 zł/rok) — „zmień” tylko, gdy oszczędność przekracza próg.
+- **Wariant A / B:** B uwzględnia moduł magazynu przeliczony pod strefy i ceny każdej taryfy (wynik = A − oszczędność modułu).
+- **Stawki** wyłącznie z katalogu `tariffs/tauron.json` (bez założeń); brak stawki lub marży to błąd, nigdy cicho zero. Po ostatnim okresie cennika (do 2026-12-31) liczymy do jego końca i pokazujemy komunikat.
+- **Rozliczenie z fakturami:** zgodność symulacji G12w z fakturami (±3%).
+- **Ustawienia symulacji:** liczba faz, próg mocy umownej, opłata handlowa, próg rekomendacji (`/api/tariff_settings`; zapis częściowy zachowuje pozostałe pola); ceny RDN/Kompas pobierane i cache'owane.
+- **Sensory MQTT** `tariffsim_*` z kosztami i rekomendacją.
+- Usunięta jednorazowa migracja `drop_bounce_corrections` z 0.45.12 (wykonana, kopie `.pre-0.45.12` zostają na dysku).
+- Testy: 819 passed, 27 skipped.
+
 ## [0.45.12] — 2026-10-20
 
 Sprzątanie po błędzie parsera RCEm z 0.45.10.

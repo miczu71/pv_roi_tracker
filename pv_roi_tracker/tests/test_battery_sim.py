@@ -221,3 +221,36 @@ def test_config_from_dict_ignores_junk():
     assert cfg.arbitrage_enabled is True
     assert cfg.start_month == '2024-01'
     assert cfg.usable_kwh == 5.0
+
+
+# ── simulate_s1: price_fn (wariant B taryf) ──────────────────────────────────
+
+def _price_fn_hours():
+    return {_h(MON, 10): (2.0, 0.0), _h(MON, 11): (0.0, 1.5), _h(MON, 12): (0.0, 1.0)}
+
+
+def test_s1_price_fn_none_identyczny_jak_bez_argumentu():
+    hours = _price_fn_hours()
+    assert (simulate_s1(hours, CFG, ZONE, RCEM, price_fn=None)
+            == simulate_s1(hours, CFG, ZONE, RCEM))
+
+
+def test_s1_price_fn_stala_cena():
+    hours = _price_fn_hours()
+    rows = simulate_s1(hours, CFG, ZONE, RCEM, price_fn=lambda key: (0.9, False))
+    r = rows[0]
+    assert r['discharged_kwh'] > 0
+    assert r['avoided_buy_pln'] == pytest.approx(r['discharged_kwh'] * 0.9)
+    assert r['disch_offpeak_kwh'] == pytest.approx(r['discharged_kwh'])
+
+
+def test_s1_price_fn_none_pomija_godzine():
+    hours = _price_fn_hours()
+    skipped = _h(MON, 11)
+    rows = simulate_s1(hours, CFG, ZONE, RCEM,
+                       price_fn=lambda key: None if key == skipped else (0.9, True))
+    r = rows[0]
+    assert r['hours'] == 2
+    assert r['discharged_kwh'] == pytest.approx(1.0)   # tylko godzina 12, godzina 11 pominięta
+    only = simulate_s1({skipped: (0.0, 1.5)}, CFG, ZONE, RCEM, price_fn=lambda key: None)
+    assert only == []

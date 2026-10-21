@@ -36,6 +36,9 @@ MONTHLY_NOTIFY         = os.environ.get('MONTHLY_NOTIFY', 'true').lower() in ('1
 TARIFF_CONFIG_PATH     = Path(os.environ.get('TARIFF_CONFIG_PATH', '/data/tariff_config.json'))
 BATTERY_CONFIG_PATH    = Path(os.environ.get('BATTERY_CONFIG_PATH', '/data/battery_config.json'))
 BATTERY_HOURS_PATH     = Path(os.environ.get('BATTERY_HOURS_PATH', '/data/battery_sim.json'))
+TARIFF_SIM_PATH        = Path(os.environ.get('TARIFF_SIM_PATH', '/data/tariff_sim.json'))
+TARIFF_SETTINGS_PATH   = Path(os.environ.get('TARIFF_SETTINGS_PATH', '/data/tariff_settings.json'))
+TARIFF_PRICE_CACHE_PATH = Path(os.environ.get('TARIFF_PRICE_CACHE_PATH', '/data/tariff_prices.json'))
 HEATPUMP_HOURS_PATH    = Path(os.environ.get('HEATPUMP_HOURS_PATH', '/data/heatpump_hours.json'))
 HEATPUMP_ENERGY_ENTITY        = os.environ.get('HEATPUMP_ENERGY_ENTITY', '')
 HEATPUMP_HEATING_HOURS_ENTITY = os.environ.get('HEATPUMP_HEATING_HOURS_ENTITY', '')
@@ -270,6 +273,7 @@ def _backup_data() -> None:
         for src in [HISTORIC_PATH, RCEM_HISTORY_PATH, RCEM_CORRECTIONS_PATH,
                     INVOICE_PATH, INVOICE_LAYOUTS_PATH, RCE_HOURLY_CACHE_PATH,
                     TARIFF_CONFIG_PATH, BATTERY_CONFIG_PATH, BATTERY_HOURS_PATH,
+                    TARIFF_SIM_PATH, TARIFF_SETTINGS_PATH, TARIFF_PRICE_CACHE_PATH,
                     EBOK_STATE_PATH]:
             if src.exists():
                 shutil.copy2(src, BACKUP_SHARE / src.name)
@@ -294,11 +298,6 @@ def main() -> None:
         invoice_store.dedupe_corrections(INVOICE_PATH)
     except Exception:
         logger.exception('Migracja dedupe_corrections nie powiodła się — dane bez zmian')
-
-    try:  # jednorazowo (0.45.12): wpisy korekt sierpnia 2026 wywołane błędem parsera 0.45.10
-        rcem_scraper.drop_bounce_corrections('2026-08', 0.425186, RCEM_CORRECTIONS_PATH)
-    except Exception:
-        logger.exception('Czyszczenie korekt RCEm nie powiodło się — dane bez zmian')
 
     from . import web as _web
     _web.start_server(port=8099)
@@ -854,6 +853,55 @@ def main() -> None:
         finally:
             _battery_lock.release()
 
+    # ── Symulacja taryf (G11/G12/G12w/G13/dynamiczne) ────────────────────────
+    from . import tariff_catalog as _tcat, tariff_job, tariff_settings_store
+    from .price_sources import PriceCache
+
+    _tariff_lock = _threading.Lock()
+    _tariff_state: dict = {'payload': tariff_job.load_payload(TARIFF_SIM_PATH)}
+    _web.update_tariff_sim(_tariff_state['payload'])
+
+    def tariff_sim_job() -> None:
+        """Pobór godzinowy z cache battery_sim × ceny RDN/Kompas → payload taryf."""
+        _tariff_lock.acquire()
+        try:
+            hours = battery_store.load_hours(BATTERY_HOURS_PATH)
+            if not hours:
+                _record_job('tariff_sim', False, 'brak godzinowych statystyk liczników')
+                return
+            today = date.today()
+            cache = PriceCache(TARIFF_PRICE_CACHE_PATH)
+            cache.ensure('2024-12-01', today.isoformat())
+            invoices = invoice_store.filter_billing(
+                invoice_store.filter_real(invoice_store.load(INVOICE_PATH)))
+            payload = tariff_job.compute_payload(
+                tariff_job.import_series(hours), _tcat.load_catalog(),
+                tariff_settings_store.to_catalog_settings(
+                    tariff_settings_store.load(TARIFF_SETTINGS_PATH)),
+                cache.rdn, cache.kompas, invoices, today, hours=hours,
+                battery_cfg=battery_store.load_config(BATTERY_CONFIG_PATH),
+                rcem_by_ym={ym: float(v) for ym, v
+                            in rcem_scraper._load_history(RCEM_HISTORY_PATH).items()})
+            tariff_job.save_payload(payload, TARIFF_SIM_PATH)
+            _web.update_tariff_sim(payload)
+            _tariff_state['payload'] = payload
+            _record_job('tariff_sim', True)
+            logger.info('Tariff sim: %s..%s, najtańsza 12 mies.: %s', payload['from'],
+                        payload['to'], payload['last12']['cheapest'])
+        except Exception:
+            logger.exception('Tariff simulation failed')
+            _record_job('tariff_sim', False, 'symulacja taryf nie powiodła się')
+        finally:
+            _tariff_lock.release()
+
+    def _tariff_settings_changed(settings: dict) -> None:
+        tariff_settings_store.save(settings, TARIFF_SETTINGS_PATH)
+        _threading.Thread(target=tariff_sim_job, daemon=True,
+                          name='tariff-sim-settings').start()
+
+    _web.set_tariff_settings_path(TARIFF_SETTINGS_PATH)
+    _web.set_tariff_settings_callback(_tariff_settings_changed)
+
     def _battery_config_changed(cfg) -> None:
         battery_store.save_config(cfg, BATTERY_CONFIG_PATH)
         # Zmiana parametrów nie zmienia zmierzonych godzin — licz z cache,
@@ -1083,7 +1131,8 @@ def main() -> None:
                                              else (deposit_result.balance_model if deposit_result else None)),
                             deposit_expiring_30d=deposit_result.expiring_1m if deposit_result else None,
                             invoice_rates=_invoice_rates,
-                            battery_expansion=_battery_state['summary'])
+                            battery_expansion=_battery_state['summary'],
+                            tariff_sim=_tariff_state['payload'])
             _web.update_state(result, all_records, rcem_price, month_closed=month_closed,
                               rcem_scrape_status=scrape_status)
             _web.update_deposit(deposit_result)
@@ -1533,6 +1582,10 @@ def main() -> None:
     scheduler.add_job(battery_job, CronTrigger(hour=5, minute=15),
                       id='battery_sim', name='Battery expansion simulation', **_JOB_DEFAULTS)
 
+    # Symulacja taryf: po battery_job (czyta jego cache godzinowy).
+    scheduler.add_job(tariff_sim_job, CronTrigger(hour=5, minute=30),
+                      id='tariff_sim', name='Tariff simulation', **_JOB_DEFAULTS)
+
     # Pompa ciepła × PV: raz dziennie, jak battery_sim (LTS zmienia się co
     # godzinę, wynik miesięczny/sezonowy — wolno); pierwszy przebieg w tle.
     scheduler.add_job(heatpump_job, CronTrigger(hour=5, minute=45),
@@ -1611,6 +1664,7 @@ def main() -> None:
 
     # Pierwszy przebieg symulacji magazynu w tle (backfill LTS może potrwać ~30 s)
     _threading.Thread(target=battery_job, daemon=True, name='battery-sim-boot').start()
+    _threading.Thread(target=tariff_sim_job, daemon=True, name='tariff-sim-boot').start()
 
     # Pierwszy przebieg kosztu pompy ciepła w tle — pierwsze uruchomienie po
     # 0.39.0 dociąga ~3+ lata godzinowych LTS (paczki miesięczne), może

@@ -85,3 +85,12 @@ def test_no_duplicated_charset_in_content_type(client):
     for path in ('/', '/app.css'):
         ct = client.get(path).headers['Content-Type']
         assert ct.count('charset=') == 1, f'{path} Content-Type duplicated charset: {ct}'
+
+
+def test_tsim_tab_wired(client):
+    html = client.get('/').data.decode('utf-8')
+    assert 'id="tab-tsim"' in html
+    assert "showTab('tsim')" in html
+    from pathlib import Path
+    js = (Path(web.__file__).parent / 'static' / 'app.js').read_text(encoding='utf-8')
+    assert "'tsim'" in js and 'loadTsimTab' in js
