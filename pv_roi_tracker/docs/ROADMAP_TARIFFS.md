@@ -143,3 +143,23 @@ Po 0.46.0 zgodność G12w z fakturami: 12/21 mies. w ±3%, maks. 63% (2025-06); 
 | Energia G12w 2025 strefowa (0,76/0,42), nie płaska 0,50 (~1 zł) | faktury I–VI, X | świadomie bez zmiany (decyzja usera: bez założeń przy cennikach) |
 
 Miesiące z cennikiem `confirmed: false` są oznaczone w zgodności „cennik niepotwierdzony” i nie wchodzą do podsumowania.
+
+## Przegląd zakładek i dashboardu (2026-10-22)
+
+Zakładki add-onu:
+- **„Analiza taryf”** (`tab-tariff`) dubluje „Symulację taryf”: tylko G12w i dynamiczna, stare sensory HA (`koszt_zmienny_g12w_miesieczny`, `symulacja_miesieczna_dynamicznej_faktura`, `calkowity_koszt_1_kwh_dynamiczna`), bez opłat stałych, ze starą dystrybucją. Po E5 przestaje działać, więc **do usunięcia w E5**.
+- **„Taryfa”** (`tariff_config.py`, `/api/tariff_config*`) to nie duplikat: historia stawek z faktur zasila `month_close`, `battery_sim` i `live_reader`. Zostaje, opcjonalnie nowa nazwa „Stawki z faktur”.
+
+Do dopisania w E5 (kod add-onu, jedno wydanie z sprzątaniem HA):
+- usunąć `tab-tariff` z `index.html` i kod z `app.js`, `/api/tariff_stats` w `web.py`, wywołanie `compute_tariff_tab` i odczyty starych sensorów w `main.py` (ok. 1027, 1159–1176), `tariff_analysis.py` z testami;
+- najpierw przenieść to, czego używają inne moduły: `_DEFAULT_PEAK_GROSS`/`_DEFAULT_OFFPEAK_GROSS` (`battery_sim.py:40`) i `_month_label` (`web.py:22`, `yoy.py:41`);
+- usunąć z dashboardu `lovelace`, widok `energy`, pozostałe stare karty porównania: blok „G12w vs Dynamiczna — decyzja”, wykres 30 dni, wykresy G11/G12w/G14D, „Oszczędność G12W vs G11”.
+
+Dashboard HA, widok `lovelace/energy` (zrobione 2026-10-22):
+- dodana na górze sekcja „Symulacja taryf (pv_roi)”: `sensor.pv_roi_tracker_pv_tariff_sim_*` (miesiąc i 12 mies. dla 6 taryf, najtańsza, oszczędność vs G12w); `12m_dyn_a` i `12m_dyn_b` są `unavailable`, bo cennik dynamicznej startuje od 2026-04 i 2026-01;
+- poprawiona karta „Składowe ceny dynamicznej”: WSD netto z sensora (`wsd / 1.23`) zamiast sztywnych stawek 2025;
+- usunięte karty z G12 liczoną stawkami G12w oraz zdublowane mniej dokładne: „Najtańsza taryfa w tym miesiącu”, „Porównanie Taryf Energetycznych”, „Symulacja Faktury Miesięcznej”, „Ranking kosztów miesięcznych”, wiersz „Koszt 1 kWh G12”;
+- rollback: `scratchpad/rollback_lovelace_energy_sections3.json` (sesja 2026-10-22, plik tymczasowy).
+
+## Audyt cen (2026-10-22)
+Raport: `docs/TARIFF_PRICES_AUDIT_2026-10-22.md`. Zmiany w katalogu (niewydane, w commicie): akcyza 0,005 zł/kWh w `fees`, 2025 = min(cena strefy; 0,50) z osobnym okresem Q4. I–VI 2025 potwierdzone. Następny krok: `simplify` → `code-review` → `release` (0.46.2), potem sprawdzenie zgodności z fakturami w `/api/tariff_sim` (otwarte B3: faktury 0,76/0,42).

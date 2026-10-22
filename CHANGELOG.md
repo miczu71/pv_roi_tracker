@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.46.2] — 2026-10-22
+
+Audyt cen symulacji taryf Tauron.
+
+- **Akcyza:** 0,005 zł/kWh netto wliczona do opłat zmiennych (ceny sprzedaży w taryfie są bez akcyzy). G12w w szczycie 2026-03: 1,2304 zł brutto, jak na fakturach (1,23 zł).
+- **Energia 2025:** niższa z ceny strefy i ceny maksymalnej 0,50 zł/kWh (wcześniej płasko 0,50); okres 2025 podzielony na I–IX i IV kwartał (osobne ceny stref od 1.10.2025).
+- **Stawki dystrybucji I–VI 2025:** potwierdzone w taryfie z 16.12.2024, bez zmian.
+- **Otwarte:** faktury G12w 2025 pokazują strefowo 0,76/0,42, czego model nie odtwarza; zgodność za 2025 do sprawdzenia po wydaniu.
+
 ## [0.46.1] — 2026-10-22
 
 Poprawka zgodności symulacji G12w z fakturami 2025.

@@ -10,7 +10,7 @@ from datetime import date
 MON = "2026-06-01"   # poniedziałek
 SAT = "2026-06-06"
 VAT = 1.23
-FEES = 0.0332 + 0.0073 + 0.003
+FEES = 0.0332 + 0.0073 + 0.003 + 0.005   # w tym akcyza
 
 
 @pytest.fixture(scope="module")

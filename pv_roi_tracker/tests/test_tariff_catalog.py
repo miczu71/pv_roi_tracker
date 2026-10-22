@@ -153,9 +153,9 @@ def test_rates_g12w_2026_03(cat):
     r = rates_per_kwh("G12w", p, "peak")
     assert r["energy"] == pytest.approx(0.6220)
     assert r["dist"] == pytest.approx(0.3298)
-    assert r["fees"] == pytest.approx(0.0332 + 0.0073 + 0.0030)
+    assert r["fees"] == pytest.approx(0.0332 + 0.0073 + 0.0030 + 0.005)
     r2 = rates_per_kwh("G12w", p, "offpeak")
-    assert r2["energy"] + r2["dist"] + r2["fees"] == pytest.approx(0.5077)
+    assert r2["energy"] + r2["dist"] + r2["fees"] == pytest.approx(0.5127)
 
 
 def test_rates_null_to_valueerror(cat):
@@ -216,3 +216,19 @@ def test_fixed_1faza_i_przejsciowa(cat):
     assert f3["transitional"] == 0.10
     f4 = fixed_monthly(p, TariffSettings(capacity_bracket="gt2800"))
     assert f4["transitional"] == 0.33
+
+
+def test_okres_2025_granica_09_30_10_01(cat):
+    q3 = period_for(cat, date(2025, 9, 30))
+    q4 = period_for(cat, date(2025, 10, 1))
+    assert q3["energy_net"]["G12w"]["offpeak"] == pytest.approx(0.4620)
+    assert q4["energy_net"]["G12w"]["offpeak"] == pytest.approx(0.4300)
+    assert q4["valid_from"] == "2025-10-01"
+    assert q4["excise_net"] == 0.005 and q4["confirmed"] is False
+
+
+def test_rates_brak_akcyzy_to_valueerror(cat):
+    p = period_for(cat, date(2026, 3, 10), overrides={"excise_net": None})
+    with pytest.raises(ValueError):
+        rates_per_kwh("G12w", p, "peak")
+

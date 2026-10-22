@@ -7,7 +7,7 @@ from pv_roi_tracker.tariff_catalog import TariffSettings, load_catalog
 from pv_roi_tracker.tariff_sim import simulate_month, simulate_range
 
 VAT = 1.23
-FEES26 = 0.0332 + 0.0073 + 0.0030
+FEES26 = 0.0332 + 0.0073 + 0.0030 + 0.005   # w tym akcyza
 # stałe 2026-02+ (3 fazy, gt2800): 10.86 + 4.56 + 24.05
 FIXED26 = 10.86 + 4.56 + 24.05
 
@@ -23,8 +23,8 @@ def test_regresja_g12w_10_i_14(cat):
     r = simulate_month("2026-03", imp, cat)["G12w"]
     peak = 0.6220 + 0.3298 + FEES26
     off = 0.4130 + 0.0512 + FEES26
-    assert peak == pytest.approx(0.9953, abs=1e-4)
-    assert off == pytest.approx(0.5077, abs=1e-4)
+    assert peak == pytest.approx(1.0003, abs=1e-4)
+    assert off == pytest.approx(0.5127, abs=1e-4)
     assert r["energy"] == pytest.approx(0.6220 + 0.4130)
     assert r["dist"] == pytest.approx(0.3298 + 0.0512)
     assert r["fees"] == pytest.approx(2 * FEES26)
@@ -36,7 +36,7 @@ def test_regresja_g12w_10_i_14(cat):
     assert r["confirmed"] is True
     assert r["coverage_pct"] == 100
     assert r["missing_kwh"] == 0
-    assert peak * VAT == pytest.approx(1.2242, abs=1e-4)
+    assert peak * VAT == pytest.approx(1.2304, abs=1e-4)   # faktury: 1,23 zł brutto
 
 
 def test_taryfy_klucze_i_g11(cat):
@@ -78,8 +78,8 @@ def test_g13_przelom_lato_zima(cat):
 def test_styczen_vs_luty_jakosciowa(cat):
     jan = simulate_month("2026-01", {"2026-01-14T10": 1.0}, cat)["G11"]
     feb = simulate_month("2026-02", {"2026-02-12T10": 1.0}, cat)["G11"]
-    assert jan["fees"] == pytest.approx(0.0331 + 0.0073 + 0.0030)
-    assert feb["fees"] == pytest.approx(0.0332 + 0.0073 + 0.0030)
+    assert jan["fees"] == pytest.approx(0.0331 + 0.0073 + 0.0030 + 0.005)
+    assert feb["fees"] == pytest.approx(0.0332 + 0.0073 + 0.0030 + 0.005)
 
 
 def test_2025_niepotwierdzony_i_przejsciowa(cat):
@@ -89,6 +89,19 @@ def test_2025_niepotwierdzony_i_przejsciowa(cat):
     assert r["fixed"] == pytest.approx(10.34 + 4.56)   # faktury I–VI 2025: bez mocowej i przejściowej
     h2 = simulate_month("2025-08", {"2025-08-12T10": 1.0}, cat)["G11"]
     assert h2["fixed"] == pytest.approx(10.34 + 4.56 + 16.01)   # VII–XII: z mocową, bez przejściowej
+
+
+def test_2025_energia_nizsza_z_ceny_strefy_i_maksymalnej(cat):
+    # pkt 5.1a/5.3 (I–IX 2025) i 5.1b (Q4): min(cena strefy; 0,50)
+    def energy(tariff, ts):
+        return simulate_month(ts[:7], {ts: 1.0}, cat)[tariff]["energy"]
+    assert energy("G12w", "2025-08-12T10") == pytest.approx(0.50)     # wtorek, szczyt
+    assert energy("G12w", "2025-08-12T14") == pytest.approx(0.4620)   # pozaszczyt
+    assert energy("G12", "2025-08-12T23") == pytest.approx(0.4620)
+    assert energy("G13", "2025-08-12T14") == pytest.approx(0.50)
+    assert energy("G12w", "2025-11-12T14") == pytest.approx(0.4300)   # Q4: 5.1b
+    assert energy("G13", "2025-11-12T14") == pytest.approx(0.4820)
+    assert energy("G11", "2025-11-12T14") == pytest.approx(0.50)
 
 
 # ── dyn_a ────────────────────────────────────────────────────────────────────

@@ -2,7 +2,7 @@
   "_meta": {
     "operator": "Tauron Dystrybucja + Tauron Sprzedaż (grupy G, taryfa kompleksowa)",
     "currency": "PLN",
-    "units": "energy/dist_var/*_var: zł/kWh netto; fixed_*: zł/mies. netto; VAT osobno",
+    "units": "energy/dist_var/*_var: zł/kWh netto; fixed_*: zł/mies. netto; VAT osobno; excise_net: akcyza 5 zł/MWh (stawka dla gospodarstw domowych, spoza cenników: ceny sprzedaży są bez akcyzy, E pkt 1.6), dodawana do opłat zmiennych",
     "vat": 1.23,
     "collected": "2026-10-21",
     "confirmed_legend": "confirmed=false oznacza wartość niepotwierdzoną w dokumencie urzędowym; silnik ma ją nadpisać stawkami z faktur lub wpisem ręcznym z zakładki Taryfa",
@@ -47,7 +47,7 @@
       "valid_from": "2025-01-01",
       "valid_to": "2025-06-30",
       "confirmed": false,
-      "note": "Jak okres od 2025-07-01, ale opłaty stałe wg faktur I–VI 2025 (fixed_total_net 14,90 zł = sieciowa 3f + abonament, bez opłaty mocowej i przejściowej). Energia wciąż szacunek 0,50.",
+      "note": "Jak okres od 2025-07-01, ale opłaty stałe wg faktur I–VI 2025 (fixed_total_net 14,90 zł = sieciowa 3f + abonament, bez opłaty mocowej i przejściowej). Energia: min(cena strefy z pkt 5.1a; 0,50), jak w okresie od 2025-07-01 (faktury G12w pokazują strefowo 0,76/0,42, do wyjaśnienia).",
       "inherits": "2025-07-01",
       "override": {
         "fixed_net": {"capacity_by_annual_kwh": {"lt500": 0, "500_1200": 0, "1200_2800": 0, "gt2800": 0}}
@@ -55,27 +55,16 @@
     },
     {
       "valid_from": "2025-07-01",
-      "valid_to": "2025-12-31",
+      "valid_to": "2025-09-30",
       "confirmed": false,
-      "note": "Dystrybucja z wyciągu C (stan po zmianie 1.07.2025; stawek z 1.01.2025 nie rozdzielono). Opłaty stałe VII–XII 2025 wg faktur: 30,91 zł (z mocową, bez przejściowej). Sprzedaż 2025: brak dokumentu urzędowego, w 2025 obowiązywała zamrożona cena ok. 500 zł/MWh netto (F: 2026 jest ok. 1% niższa), strefy do ustalenia z faktur.",
+      "note": "Dystrybucja z wyciągu C (stan od 1.07.2025). Stawki zmienne, stała sieciowa, abonament, jakościowa i G14dynamic są identyczne w wersji I–VI 2025 (taryfa z decyzji DRE.WRE.4211.47.9.2024.ASa1 z 16.12.2024, tab. 7.1, https://www.tauron-dystrybucja.pl/-/media/offer-documents/dystrybucja/archiwum-taryf/2025/taryfa-td_sa-na-rok-2025.ashx, str. 41 taryfy; sprawdzone 2026-10-22). Opłaty stałe VII–XII 2025 wg faktur: 30,91 zł (z mocową, bez przejściowej). Energia: niższa z ceny strefy (pkt 5.1a) i ceny maksymalnej 0,50 (pkt 5.3).",
       "energy_net": {
         "G11": {"all": 0.50},
-        "G12": {"day": 0.50, "night": 0.50},
-        "G12w": {"peak": 0.50, "offpeak": 0.50},
+        "G12": {"day": 0.50, "night": 0.4620},
+        "G12w": {"peak": 0.50, "offpeak": 0.4620},
         "G13": {"morning_peak": 0.50, "evening_peak": 0.50, "other": 0.50}
       },
-      "energy_net_decision": "2026-10-21 (user): w całym 2025 obowiązywała zamrożona cena 500 zł/MWh netto, więc 0,50 zł/kWh netto we wszystkich strefach i taryfach. Zgodność sprawdza test G12w vs faktury (±3%).",
-      "energy_net_note": "Gospodarstwa domowe płaciły w 2025 zamrożone 500 zł/MWh netto (URE, ustawa z 23.04.2025). Ceny stref 1.01–30.09.2025: NIE USTALONO (pkt 5.1a taryfy z decyzji DRE.WRE.4211.29.11.2024.AKr3, PDF https://bip.ure.gov.pl/download/3/18556/TAURONSprzedazSpzoo.pdf). Nie wiadomo, czy zamrożenie dotyczyło każdej strefy, czy średniej ważonej. Do symulacji 2025 użyć faktur (G12w) albo oznaczyć jako szacunek.",
-      "energy_net_reference_q4": {
-        "valid_from": "2025-10-01",
-        "valid_to": "2025-12-31",
-        "confirmed": "ceny odniesienia z decyzji URE DRE.WRE.4211.39.13.2025.ASa1 z 30.09.2025 (pkt 5.1b), netto niepotwierdzone dla tego dokumentu; NIE są cenami płaconymi przez gospodarstwa (tam obowiązywało 500 zł/MWh)",
-        "source": "https://bip.ure.gov.pl/download/3/20036/TAURONSprzedaz.pdf",
-        "G11": {"all": 0.5767},
-        "G12": {"day": 0.6510, "night": 0.4300},
-        "G12w": {"peak": 0.7560, "offpeak": 0.4300},
-        "G13": {"morning_peak": 0.5470, "evening_peak": 0.8934, "other": 0.4820}
-      },
+      "energy_net_note": "2026-10-22: stawki = min(cena strefy z pkt 5.1a; cena maksymalna 0,500 zł/kWh z pkt 5.3) wg decyzji DRE.WRE.4211.29.11.2024.AKr3 (PDF https://bip.ure.gov.pl/download/3/18556/TAURONSprzedazSpzoo.pdf, str. 5–6: „w przypadku gdy cena … jest niższa niż cena maksymalna … stosuje … tę niższą cenę”). Ceny stref 5.1a netto: G11 0,6270; G12 0,7120/0,4620; G12w 0,8440/0,4620; G13 0,6700/0,9560/0,5140. Netto/brutto ceny maksymalnej nie ustalono, a faktury G12w I–VI i X 2025 pokazują strefowo 0,76/0,42 (do wyjaśnienia). Zgodność sprawdza test G12w vs faktury (±3%).",
       "dist_var_net": {
         "G11": {"all": 0.2541},
         "G12": {"day": 0.2899, "night": 0.0609},
@@ -86,11 +75,27 @@
       "quality_net": 0.0321,
       "oze_net": 0.0035,
       "cogeneration_net": 0.0030,
+      "excise_net": 0.005,
       "fixed_net": {
         "network_1ph": 7.02,
         "network_3ph": 10.34,
         "subscription_dist": 4.56,
         "capacity_by_annual_kwh": {"lt500": 2.86, "500_1200": 6.86, "1200_2800": 11.44, "gt2800": 16.01}
+      }
+    },
+    {
+      "valid_from": "2025-10-01",
+      "valid_to": "2025-12-31",
+      "confirmed": false,
+      "note": "Jak okres od 2025-07-01, z cenami stref z pkt 5.1b (od 1.10.2025); energia = min(cena strefy; 0,50). Ceny 5.1b netto: G11 0,5767; G12 0,6510/0,4300; G12w 0,7560/0,4300; G13 0,5470/0,8934/0,4820 (decyzja DRE.WRE.4211.39.13.2025.ASa1 z 30.09.2025, https://bip.ure.gov.pl/download/3/20036/TAURONSprzedaz.pdf, str. 5).",
+      "inherits": "2025-07-01",
+      "override": {
+        "energy_net_note": "2026-10-22: stawki = min(cena strefy z pkt 5.1b; 0,50), ceny 5.1b opisane w note okresu (decyzja z 30.09.2025). Netto/brutto ceny maksymalnej nie ustalono, a faktury G12w X 2025 pokazują strefowo 0,76/0,42 (do wyjaśnienia).",
+        "energy_net": {
+          "G12": {"night": 0.4300},
+          "G12w": {"offpeak": 0.4300},
+          "G13": {"other": 0.4820}
+        }
       }
     },
     {
@@ -122,6 +127,7 @@
       "quality_net": 0.0332,
       "oze_net": 0.0073,
       "cogeneration_net": 0.0030,
+      "excise_net": 0.005,
       "fixed_net": {
         "network_1ph": 7.38,
         "network_3ph": 10.86,

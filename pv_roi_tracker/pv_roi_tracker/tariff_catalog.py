@@ -156,12 +156,12 @@ def _scalar(period: dict, key: str) -> float:
 
 
 def rates_per_kwh(tariff: str, period: dict, zone: str) -> dict:
-    """Stawki zmienne netto zł/kWh: energy, dist, fees (jakościowa + OZE + kogeneracja)."""
+    """Stawki zmienne netto zł/kWh: energy, dist, fees (jakościowa + OZE + kogeneracja + akcyza)."""
     return {
         'energy': _zone_value(period['energy_net'], tariff, zone, 'energy_net'),
         'dist': _zone_value(period['dist_var_net'], tariff, zone, 'dist_var_net'),
         'fees': (_scalar(period, 'quality_net') + _scalar(period, 'oze_net')
-                 + _scalar(period, 'cogeneration_net')),
+                 + _scalar(period, 'cogeneration_net') + _scalar(period, 'excise_net')),
     }
 
 
