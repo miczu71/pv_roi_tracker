@@ -47,10 +47,11 @@
       "valid_from": "2025-01-01",
       "valid_to": "2025-06-30",
       "confirmed": false,
-      "note": "Jak okres od 2025-07-01, ale opłaty stałe wg faktur I–VI 2025 (fixed_total_net 14,90 zł = sieciowa 3f + abonament, bez opłaty mocowej i przejściowej). Energia: min(cena strefy z pkt 5.1a; 0,50), jak w okresie od 2025-07-01 (faktury G12w pokazują strefowo 0,76/0,42, do wyjaśnienia).",
+      "note": "Jak okres od 2025-07-01, ale opłaty stałe wg faktur I–VI 2025 (fixed_total_net 14,90 zł = sieciowa 3f + abonament, bez opłaty mocowej i przejściowej). Energia G12w wg faktur I–VI 2025: 0,7641/0,4153+0,005 → netto bez akcyzy 0,7591/0,4153 (strefowo, mimo ceny maksymalnej 0,505 podanej w stopce faktur; przyczyny nie podaje żaden dokument). Inne taryfy: jak od 2025-07-01.",
       "inherits": "2025-07-01",
       "override": {
-        "fixed_net": {"capacity_by_annual_kwh": {"lt500": 0, "500_1200": 0, "1200_2800": 0, "gt2800": 0}}
+        "fixed_net": {"capacity_by_annual_kwh": {"lt500": 0, "500_1200": 0, "1200_2800": 0, "gt2800": 0}},
+        "energy_net": {"G12w": {"peak": 0.7591, "offpeak": 0.4153}}
       }
     },
     {
@@ -61,10 +62,10 @@
       "energy_net": {
         "G11": {"all": 0.50},
         "G12": {"day": 0.50, "night": 0.4620},
-        "G12w": {"peak": 0.50, "offpeak": 0.4620},
+        "G12w": {"peak": 0.50, "offpeak": 0.50},
         "G13": {"morning_peak": 0.50, "evening_peak": 0.50, "other": 0.50}
       },
-      "energy_net_note": "2026-10-22: stawki = min(cena strefy z pkt 5.1a; cena maksymalna 0,500 zł/kWh z pkt 5.3) wg decyzji DRE.WRE.4211.29.11.2024.AKr3 (PDF https://bip.ure.gov.pl/download/3/18556/TAURONSprzedazSpzoo.pdf, str. 5–6: „w przypadku gdy cena … jest niższa niż cena maksymalna … stosuje … tę niższą cenę”). Ceny stref 5.1a netto: G11 0,6270; G12 0,7120/0,4620; G12w 0,8440/0,4620; G13 0,6700/0,9560/0,5140. Netto/brutto ceny maksymalnej nie ustalono, a faktury G12w I–VI i X 2025 pokazują strefowo 0,76/0,42 (do wyjaśnienia). Zgodność sprawdza test G12w vs faktury (±3%).",
+      "energy_net_note": "2026-10-22: stawki = min(cena strefy z pkt 5.1a; cena maksymalna 0,500 zł/kWh z pkt 5.3) wg decyzji DRE.WRE.4211.29.11.2024.AKr3 (PDF https://bip.ure.gov.pl/download/3/18556/TAURONSprzedazSpzoo.pdf, str. 5–6: „w przypadku gdy cena … jest niższa niż cena maksymalna … stosuje … tę niższą cenę”). Ceny stref 5.1a netto: G11 0,6270; G12 0,7120/0,4620; G12w 0,8440/0,4620; G13 0,6700/0,9560/0,5140. Cena maksymalna wg stopki faktur: 0,5050 netto (0,6212 brutto) = 0,50 + akcyza 0,005. G12w wg faktur VII–IX 2025: 0,505 płasko (obie strefy), więc strefa pozaszczytowa 0,50 (nie 0,462); G11/G12/G13 bez weryfikacji na fakturach. Zgodność sprawdza test G12w vs faktury (±3%).",
       "dist_var_net": {
         "G11": {"all": 0.2541},
         "G12": {"day": 0.2899, "night": 0.0609},
@@ -85,12 +86,27 @@
     },
     {
       "valid_from": "2025-10-01",
-      "valid_to": "2025-12-31",
+      "valid_to": "2025-10-31",
       "confirmed": false,
-      "note": "Jak okres od 2025-07-01, ale energia w IV kwartale 2025 płasko 0,50 zł/kWh netto: faktury G12w X–XII 2025 zgadzają się z 0,50 (±1,4%), a model min(cena strefy z pkt 5.1b; 0,50) dawał −6…−8% (decyzja usera 2026-10-22: źródłem prawdy są faktury). Ceny stref 5.1b netto (decyzja DRE.WRE.4211.39.13.2025.ASa1 z 30.09.2025, https://bip.ure.gov.pl/download/3/20036/TAURONSprzedaz.pdf, str. 5): G11 0,5767; G12 0,6510/0,4300; G12w 0,7560/0,4300; G13 0,5470/0,8934/0,4820.",
+      "note": "Jak okres od 2025-07-01, ale G12w wg faktury X 2025: 0,761/0,435 z akcyzą → netto bez akcyzy 0,756/0,430 (= ceny stref 5.1b: decyzja DRE.WRE.4211.39.13.2025.ASa1 z 30.09.2025, https://bip.ure.gov.pl/download/3/20036/TAURONSprzedaz.pdf, str. 5; G11 0,5767; G12 0,6510/0,4300; G13 0,5470/0,8934/0,4820). Faktura X rozlicza strefowo mimo ceny maksymalnej 0,505 w stopce; przyczyny nie podaje żaden dokument. Inne taryfy: płasko 0,50 jak w poprzedniej wersji, bez weryfikacji na fakturach.",
       "inherits": "2025-07-01",
       "override": {
-        "energy_net_note": "2026-10-22: Q4 2025 płasko 0,50 wg faktur G12w X–XII (zgodność ≤1,4%); model min(strefa 5.1b; 0,50) pogarszał zgodność do −8%.",
+        "energy_net_note": "2026-10-22: G12w X 2025 wg faktury (strefowo, netto bez akcyzy); G12 noc i G13 inne płasko 0,50.",
+        "energy_net": {
+          "G12": {"night": 0.50},
+          "G12w": {"peak": 0.756, "offpeak": 0.430},
+          "G13": {"other": 0.50}
+        }
+      }
+    },
+    {
+      "valid_from": "2025-11-01",
+      "valid_to": "2025-12-31",
+      "confirmed": false,
+      "note": "Jak okres od 2025-07-01, ale energia płasko 0,50 zł/kWh netto (faktury G12w XI–XII 2025: 0,505 z akcyzą w obu strefach; decyzja usera 2026-10-22: źródłem prawdy są faktury).",
+      "inherits": "2025-07-01",
+      "override": {
+        "energy_net_note": "2026-10-22: XI–XII 2025 płasko 0,50 wg faktur G12w (0,505 z akcyzą w obu strefach).",
         "energy_net": {
           "G12": {"night": 0.50},
           "G12w": {"offpeak": 0.50},

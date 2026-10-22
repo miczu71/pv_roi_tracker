@@ -169,3 +169,12 @@ Raport: `docs/TARIFF_PRICES_AUDIT_2026-10-22.md`. Zmiany w katalogu (niewydane, 
 - 2025 (cennik niepotwierdzony): I–IV w ±3%; V–VI +11…+12% (wcześniej do 63%), VII–VIII ~+3%; X–XII pogorszone do −5,9 / −7,5 / −8,3% (wcześniej ≤1,4%).
 - Decyzja usera: źródłem prawdy są faktury → 0.46.3 cofa tylko Q4 do płaskiego 0,50; akcyza i min(strefa; 0,50) dla I–IX zostają. Otwarte: B3 (faktury I–VI i X pokazują strefowo 0,76/0,42).
 
+### Weryfikacja na fakturach (2026-10-22, historia faktur add-onu: sparsowane pola + PDF-y I, VI, VII, X, XI 2025 i I 2026)
+- **A1 akcyza: POTWIERDZONA.** Faktury podają „od N kWh naliczono akcyzę w kwocie X zł”: 222 kWh → 1,11; 468 → 2,34; 656 → 3,28; 1072 → 5,36, czyli zawsze 0,005 zł/kWh netto. Cena na fakturze zawiera akcyzę: 2026 faktura 0,627/0,418 = katalog 0,622/0,413 + 0,005; VII–IX i XI–XII 2025 faktura 0,505 = cena maksymalna 0,5050 netto (0,6212 brutto) podana wprost w stopce faktur.
+- **B3: wyjaśnione, ale nie wynika z żadnej pozycji faktury.** Nie ma rekompensaty ani ujemnych linii. Faktury liczą energię wg ceny jednostkowej netto (z akcyzą): I–VI 0,7641/0,4203 (strefowo), VII–IX 0,505 płasko (obie strefy), X 0,761/0,435 (strefowo), XI–XII 0,505 płasko. Korekty do tych miesięcy zmieniają tylko depozyt prosumencki, nie cenę.
+- Faktury I–VI i X rozliczono więc **powyżej** ceny maksymalnej 0,505 (strefa szczytowa) mimo zapisu w stopce, że stosuje się niższą z cen. Przyczyny nie podaje żaden dokument faktury; to pytanie do Tauron, nie do modelu. Źródłem prawdy dla symulacji są kwoty faktur.
+- **Skutek dla zgodności:** V–VI +11…12% wynika wprost z tego, że model dawał strefie pozaszczytowej 0,505 zamiast faktycznych 0,4203 (w V–VI 85% kWh jest pozaszczytowe). Model 0,50 płasko w Q4 trafiał tylko w XI–XII, nie w X.
+- **Propozycja zmiany katalogu (osobna decyzja i wydanie):** stawki z faktur zamiast min(strefa; 0,50) dla 2025 (netto bez akcyzy, bo `excise_net` 0,005 dolicza model): I–VI G12w 0,7591/0,4153; VII–IX 0,50/0,50; X 0,756/0,430; XI–XII 0,50/0,50. Wpływ na inne taryfy (G11/G12/G13) nieweryfikowalny z faktur G12w, zostają bez zmian.
+- Ograniczenie: sparsowane stawki sprawdzone dla wszystkich 12 miesięcy 2025, a pełny tekst PDF tylko dla 5 faktur 2025 i 1 z 2026; `raw_text` nie jest w add-onie przechowywany (`has_raw_text=false`).
+
+- **0.46.4 (2026-10-22):** propozycja wdrożona w katalogu (G12w: I–VI 0,7591/0,4153, VII–IX 0,50/0,50, X 0,756/0,430, XI–XII 0,50/0,50 netto bez akcyzy; testy zaktualizowane). Zgodność z fakturami do sprawdzenia po wydaniu w `/api/tariff_sim`.

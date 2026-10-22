@@ -91,15 +91,20 @@ def test_2025_niepotwierdzony_i_przejsciowa(cat):
     assert h2["fixed"] == pytest.approx(10.34 + 4.56 + 16.01)   # VII–XII: z mocową, bez przejściowej
 
 
-def test_2025_energia_nizsza_z_ceny_strefy_i_maksymalnej(cat):
-    # I–IX 2025: min(cena strefy z pkt 5.1a; 0,50); Q4 2025: płasko 0,50 (zgodność z fakturami)
+def test_2025_energia_g12w_wg_faktur(cat):
+    # G12w 2025 wg faktur (netto bez akcyzy): I–VI 0,7591/0,4153, VII–IX 0,50 płasko, X 0,756/0,430, XI–XII 0,50 płasko;
+    # pozostałe taryfy: min(cena strefy z pkt 5.1a; 0,50), Q4 płasko 0,50
     def energy(tariff, ts):
         return simulate_month(ts[:7], {ts: 1.0}, cat)[tariff]["energy"]
-    assert energy("G12w", "2025-08-12T10") == pytest.approx(0.50)     # wtorek, szczyt
-    assert energy("G12w", "2025-08-12T14") == pytest.approx(0.4620)   # pozaszczyt
+    assert energy("G12w", "2025-03-11T10") == pytest.approx(0.7591)    # wtorek, szczyt
+    assert energy("G12w", "2025-03-11T14") == pytest.approx(0.4153)    # pozaszczyt
+    assert energy("G12w", "2025-08-12T10") == pytest.approx(0.50)
+    assert energy("G12w", "2025-08-12T14") == pytest.approx(0.50)
+    assert energy("G12w", "2025-10-14T10") == pytest.approx(0.756)
+    assert energy("G12w", "2025-10-14T14") == pytest.approx(0.430)
+    assert energy("G12w", "2025-11-12T14") == pytest.approx(0.50)
     assert energy("G12", "2025-08-12T23") == pytest.approx(0.4620)
     assert energy("G13", "2025-08-12T14") == pytest.approx(0.50)
-    assert energy("G12w", "2025-11-12T14") == pytest.approx(0.50)     # Q4: płasko 0,50 wg faktur
     assert energy("G13", "2025-11-12T14") == pytest.approx(0.50)
     assert energy("G11", "2025-11-12T14") == pytest.approx(0.50)
 

@@ -43,3 +43,9 @@ Zmiany `tauron.json` wymagają osobnego planu i wydania (bump, release).
 - B1+B2: 2025 liczone jako min(cena strefy; 0,50): okres I–IX wg 5.1a, Q4 wg 5.1b (osobny okres 2025-10-01).
 - B6: dokument znaleziony, bez zmian stawek.
 - Otwarte: B3 (faktury 0,76/0,42). Zgodność z fakturami sprawdzić po wydaniu w `/api/tariff_sim`; jeśli się pogorszy, wycofać zmianę 2025.
+
+## Weryfikacja na fakturach (2026-10-22, odczyt historii faktur add-onu)
+- A1: akcyza 0,005 zł/kWh netto **potwierdzona** na fakturach (linie „od N kWh naliczono akcyzę w kwocie X zł”: 1,11/222, 2,34/468, 3,28/656, 5,36/1072 kWh). Cena na fakturze ją zawiera (2026: 0,627/0,418 = 0,622/0,413 + 0,005).
+- B3: faktury G12w rozliczają I–VI 0,7641/0,4203 i X 0,761/0,435 strefowo (netto z akcyzą), VII–IX i XI–XII 0,505 płasko; brak pozycji rekompensaty. Stopka faktur podaje cenę maksymalną 0,5050 netto (0,6212 brutto) za 1.01–31.12.2025, czyli 0,50 + 0,005 akcyzy: **to rozstrzyga pytanie o netto/brutto ceny maksymalnej** (0,50 netto + akcyza). Rozliczenie I–VI i X powyżej tej ceny pozostaje niewyjaśnione dokumentem (pytanie do Tauron).
+- Szczegóły, liczby i propozycja katalogu: `ROADMAP_TARIFFS.md`, sekcja „Weryfikacja na fakturach”.
+

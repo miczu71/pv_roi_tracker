@@ -110,7 +110,7 @@ def test_nieznana_taryfa(cat):
 def test_okres_2025(cat):
     p = period_for(cat, date(2025, 6, 1))
     assert p["confirmed"] is False
-    assert p["energy_net"]["G12w"]["peak"] == 0.50
+    assert p["energy_net"]["G12w"]["peak"] == pytest.approx(0.7591)   # faktury I–VI: 0,7641 z akcyzą
 
 
 def test_okres_2026_01_dziedziczy_z_override(cat):
@@ -198,7 +198,7 @@ def test_okres_2025_dzieli_sie_na_dwa_pol_roczne(cat):
     h2 = period_for(cat, date(2025, 7, 1))
     assert h1["valid_to"] == "2025-06-30" and h2["valid_from"] == "2025-07-01"
     assert h1["confirmed"] is False and h2["confirmed"] is False
-    assert h1["energy_net"] == h2["energy_net"]
+    assert h1["energy_net"]["G12"] == h2["energy_net"]["G12"]   # inne taryfy niż G12w bez zmian względem II połowy
 
 
 def test_fixed_1faza_i_przejsciowa(cat):
@@ -221,10 +221,16 @@ def test_fixed_1faza_i_przejsciowa(cat):
 def test_okres_2025_granica_09_30_10_01(cat):
     q3 = period_for(cat, date(2025, 9, 30))
     q4 = period_for(cat, date(2025, 10, 1))
-    assert q3["energy_net"]["G12w"]["offpeak"] == pytest.approx(0.4620)
-    assert q4["energy_net"]["G12w"]["offpeak"] == pytest.approx(0.50)
-    assert q4["valid_from"] == "2025-10-01"
+    assert q3["energy_net"]["G12w"]["offpeak"] == pytest.approx(0.50)   # faktury VII–IX: 0,505 płasko z akcyzą
+    assert q4["energy_net"]["G12w"]["offpeak"] == pytest.approx(0.430)  # faktura X: 0,761/0,435 z akcyzą
+    assert q4["valid_from"] == "2025-10-01" and q4["valid_to"] == "2025-10-31"
     assert q4["excise_net"] == 0.005 and q4["confirmed"] is False
+
+
+def test_okres_2025_listopad_grudzien_plasko(cat):
+    nov = period_for(cat, date(2025, 11, 1))
+    assert nov["valid_from"] == "2025-11-01" and nov["valid_to"] == "2025-12-31"
+    assert nov["energy_net"]["G12w"] == {"peak": 0.50, "offpeak": 0.50}   # faktury XI–XII: 0,505 płasko z akcyzą
 
 
 def test_rates_brak_akcyzy_to_valueerror(cat):

@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.46.4] — 2026-10-22
+
+Ceny energii G12w 2025 wg faktur (potwierdzone w historii faktur add-onu).
+
+- **G12w 2025 strefowo tam, gdzie tak rozlicza faktura:** I–VI 0,7591/0,4153 zł/kWh netto (faktury: 0,7641/0,4203 z akcyzą), X 0,756/0,430 (faktura: 0,761/0,435). VII–IX i XI–XII płasko 0,50 w obu strefach (faktury: 0,505 z akcyzą). Wcześniej model dawał strefie pozaszczytowej 0,462–0,50, co zawyżało V–VI o 11–12%.
+- **Okres X 2025 wydzielony z Q4:** XI–XII zostają płasko 0,50. Taryfy G11/G12/G13 bez zmian (brak faktur do weryfikacji).
+- **Akcyza 0,005 zł/kWh potwierdzona liniami faktur** („od N kWh naliczono akcyzę w kwocie X zł”); cena maksymalna 0,5050 netto z faktur = 0,50 + akcyza.
+- Dokumentacja: `docs/ROADMAP_TARIFFS.md`, `docs/TARIFF_PRICES_AUDIT_2026-10-22.md`.
+
 ## [0.46.3] — 2026-10-22
 
 Q4 2025 wraca do cen z faktur.
