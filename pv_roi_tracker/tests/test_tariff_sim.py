@@ -92,15 +92,15 @@ def test_2025_niepotwierdzony_i_przejsciowa(cat):
 
 
 def test_2025_energia_nizsza_z_ceny_strefy_i_maksymalnej(cat):
-    # pkt 5.1a/5.3 (I–IX 2025) i 5.1b (Q4): min(cena strefy; 0,50)
+    # I–IX 2025: min(cena strefy z pkt 5.1a; 0,50); Q4 2025: płasko 0,50 (zgodność z fakturami)
     def energy(tariff, ts):
         return simulate_month(ts[:7], {ts: 1.0}, cat)[tariff]["energy"]
     assert energy("G12w", "2025-08-12T10") == pytest.approx(0.50)     # wtorek, szczyt
     assert energy("G12w", "2025-08-12T14") == pytest.approx(0.4620)   # pozaszczyt
     assert energy("G12", "2025-08-12T23") == pytest.approx(0.4620)
     assert energy("G13", "2025-08-12T14") == pytest.approx(0.50)
-    assert energy("G12w", "2025-11-12T14") == pytest.approx(0.4300)   # Q4: 5.1b
-    assert energy("G13", "2025-11-12T14") == pytest.approx(0.4820)
+    assert energy("G12w", "2025-11-12T14") == pytest.approx(0.50)     # Q4: płasko 0,50 wg faktur
+    assert energy("G13", "2025-11-12T14") == pytest.approx(0.50)
     assert energy("G11", "2025-11-12T14") == pytest.approx(0.50)
 
 

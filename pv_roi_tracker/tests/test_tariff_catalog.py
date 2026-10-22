@@ -222,7 +222,7 @@ def test_okres_2025_granica_09_30_10_01(cat):
     q3 = period_for(cat, date(2025, 9, 30))
     q4 = period_for(cat, date(2025, 10, 1))
     assert q3["energy_net"]["G12w"]["offpeak"] == pytest.approx(0.4620)
-    assert q4["energy_net"]["G12w"]["offpeak"] == pytest.approx(0.4300)
+    assert q4["energy_net"]["G12w"]["offpeak"] == pytest.approx(0.50)
     assert q4["valid_from"] == "2025-10-01"
     assert q4["excise_net"] == 0.005 and q4["confirmed"] is False
 

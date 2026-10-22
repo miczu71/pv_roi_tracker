@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.46.3] — 2026-10-22
+
+Q4 2025 wraca do cen z faktur.
+
+- **Energia IV kw. 2025:** płasko 0,50 zł/kWh netto (jak przed 0.46.2). Model min(cena strefy z pkt 5.1b; 0,50) pogarszał zgodność z fakturami G12w do −6…−8% (X–XII), a płasko 0,50 daje ≤1,4%. Źródłem prawdy dla G12w są faktury.
+- Bez zmian: akcyza 0,005 zł/kWh i energia I–IX 2025 = min(cena strefy; 0,50) (poprawia V–VII 2025).
+
 ## [0.46.2] — 2026-10-22
 
 Audyt cen symulacji taryf Tauron.

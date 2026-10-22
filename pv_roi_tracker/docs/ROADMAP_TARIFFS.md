@@ -163,3 +163,9 @@ Dashboard HA, widok `lovelace/energy` (zrobione 2026-10-22):
 
 ## Audyt cen (2026-10-22)
 Raport: `docs/TARIFF_PRICES_AUDIT_2026-10-22.md`. Zmiany w katalogu (niewydane, w commicie): akcyza 0,005 zł/kWh w `fees`, 2025 = min(cena strefy; 0,50) z osobnym okresem Q4. I–VI 2025 potwierdzone. Następny krok: `simplify` → `code-review` → `release` (0.46.2), potem sprawdzenie zgodności z fakturami w `/api/tariff_sim` (otwarte B3: faktury 0,76/0,42).
+
+### Wynik zgodności po 0.46.2 (2026-10-22, `/api/tariff_sim`)
+- 2026: 9/9 miesięcy w ±3%, maks. 1,34%.
+- 2025 (cennik niepotwierdzony): I–IV w ±3%; V–VI +11…+12% (wcześniej do 63%), VII–VIII ~+3%; X–XII pogorszone do −5,9 / −7,5 / −8,3% (wcześniej ≤1,4%).
+- Decyzja usera: źródłem prawdy są faktury → 0.46.3 cofa tylko Q4 do płaskiego 0,50; akcyza i min(strefa; 0,50) dla I–IX zostają. Otwarte: B3 (faktury I–VI i X pokazują strefowo 0,76/0,42).
+
