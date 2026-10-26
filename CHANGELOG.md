@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.46.5] — 2026-10-26
+
+Diagnostyka błędu „Płatnik nie znaleziony na /wyborKlienta”.
+
+- Gdy po poprawnym logowaniu strona `/wyborKlienta` nie zawiera płatnika, add-on loguje ostrzeżenie z tytułem strony, długością, liczbą wierszy i linków klienta oraz informacją, czy numer płatnika występuje w HTML (bez samego numeru i danych osobowych). Zachowanie poza logiem bez zmian.
+
 ## [0.46.4] — 2026-10-22
 
 Ceny energii G12w 2025 wg faktur (potwierdzone w historii faktur add-onu).

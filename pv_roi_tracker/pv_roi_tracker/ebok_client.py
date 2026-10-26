@@ -159,7 +159,10 @@ class EbokClient:
         r = self._get(f'{SERVICE}/wyborKlienta', REQUEST_TIMEOUT)
         if r.status_code != 200:
             raise EbokError(f'Pobranie /wyborKlienta nie powiodło się (status {r.status_code})')
-        return parse_client_id_for_payer(r.text, payer_id)
+        client_id = parse_client_id_for_payer(r.text, payer_id)
+        if client_id is None:
+            logger.warning('eBOK: /wyborKlienta bez płatnika — %s', summarize_client_page(r.text, payer_id))
+        return client_id
 
     # ── listing ──────────────────────────────────────────────────────────────
 
@@ -346,6 +349,16 @@ _ARCHIVE_ROW_RE = re.compile(
 def parse_archive_html(html: str) -> dict:
     """Map SYGNATURA → numeric id from one archiwumFaktur HTML page."""
     return {sig.strip(): doc_id for doc_id, sig in _ARCHIVE_ROW_RE.findall(html)}
+
+
+def summarize_client_page(html: str, payer_id: str) -> str:
+    """Diagnostyka strony /wyborKlienta, gdy parser nie znalazł płatnika: tylko
+    tytuł i liczby, bez numeru płatnika i danych osobowych."""
+    title = re.search(r'<title[^>]*>\s*([^<]{0,80}?)\s*</title>', html, re.I)
+    return (f'tytuł="{title.group(1) if title else "-"}", długość={len(html)}, '
+            f'wierszy tr={html.count("<tr>")}, '
+            f'linków klienta={len(re.findall(r"/wyborKlienta/id/\d+", html))}, '
+            f'numer płatnika w HTML={"tak" if str(payer_id) in html else "nie"}')
 
 
 def parse_client_id_for_payer(html: str, payer_id: str) -> Optional[str]:

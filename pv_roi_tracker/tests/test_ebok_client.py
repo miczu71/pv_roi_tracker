@@ -186,6 +186,20 @@ def test_session_still_expired_after_relogin_raises_clear_error():
         client.find_client_id('60567872')
 
 
+def test_find_client_id_logs_page_summary_when_payer_missing(caplog):
+    client, session = _seq_client()
+    session.when_seq('/wyborKlienta', [_FakeResponse(
+        text='<html><head><title>Regulamin</title></head><body><tr><td>Zaakceptuj</td></tr></body></html>')])
+    with caplog.at_level('WARNING'):
+        assert client.find_client_id('60567872') is None
+    msg = ' '.join(r.getMessage() for r in caplog.records)
+    assert 'Regulamin' in msg
+    assert 'wierszy tr=1' in msg
+    assert 'linków klienta=0' in msg
+    assert 'numer płatnika w HTML=nie' in msg
+    assert '60567872' not in msg
+
+
 # ── ponawianie przy timeoucie / błędzie połączenia ──────────────────────────
 
 class _FlakyGetSession(_SequenceSession):
