@@ -41,7 +41,7 @@ def test_regresja_g12w_10_i_14(cat):
 
 def test_taryfy_klucze_i_g11(cat):
     out = simulate_month("2026-03", {"2026-03-10T10": 2.0}, cat)
-    assert set(out) == {"G11", "G12", "G12w", "G13", "dyn_a", "dyn_b"}
+    assert set(out) == {"G11", "G12", "G12w", "G13", "G13s", "dyn_a", "dyn_b"}
     g11 = out["G11"]
     assert g11["energy"] == pytest.approx(2 * 0.4970)
     assert g11["dist"] == pytest.approx(2 * 0.2464)
@@ -296,3 +296,52 @@ def test_simulate_range(cat):
 def test_simulate_range_przez_rok(cat):
     out = simulate_range("2025-11", "2026-02", {}, cat)
     assert list(out) == ["2025-11", "2025-12", "2026-01", "2026-02"]
+
+
+# ── G13s (E1) ────────────────────────────────────────────────────────────────
+
+G13S_SAMPLE = {
+    '2026-03-10T03': 1.0,   # wtorek, zima, noc
+    '2026-03-10T08': 1.0,   # wtorek, zima, szczyt rano
+    '2026-03-10T12': 1.0,   # wtorek, zima, pozaszczyt
+    '2026-03-10T16': 1.0,   # wtorek, zima, szczyt wieczór
+    '2026-03-14T12': 1.0,   # sobota, zima, pozaszczyt (dzień wolny)
+}
+
+
+def test_g13s_przed_2026_niedostepna(cat):
+    r = simulate_month("2025-12", {"2025-12-10T12": 1.0}, cat)
+    assert r["G13s"] == {"available": False,
+                         "reason": "oferta „Tanie godziny” od 2026-01"}
+    assert "net" in r["G12w"]
+
+
+def test_g13s_marzec_2026_reczny_koszt(cat):
+    r = simulate_month("2026-03", G13S_SAMPLE, cat)["G13s"]
+    energy = 0.4900 + 0.7042 + 0.5500 + 0.7042 + 0.3300
+    dist = 0.1094 + 0.3332 + 0.1999 + 0.3332 + 0.1200
+    fees = 5 * (0.0332 + 0.0073 + 0.0030 + 0.005)
+    fixed = 10.86 + 4.56 + 24.05 + 19.10   # sieciowa 3f + abonament + moc gt2800 + handlowa G13s
+    assert r["kwh"] == pytest.approx(5.0)
+    assert r["energy"] == pytest.approx(energy)
+    assert r["dist"] == pytest.approx(dist)
+    assert r["fees"] == pytest.approx(fees)
+    assert r["fixed"] == pytest.approx(fixed)
+    assert r["net"] == pytest.approx(energy + dist + fees + fixed)
+    assert r["confirmed"] is False
+
+
+def test_g13s_niepotwierdzona_g12w_potwierdzona(cat):
+    r = simulate_month("2026-03", G13S_SAMPLE, cat)
+    assert r["G13s"]["confirmed"] is False
+    assert r["G12w"]["confirmed"] is True
+
+
+def test_g13s_stale_per_taryfa_sprzedaz(cat):
+    r = simulate_month("2026-03", {}, cat)
+    assert r["G13s"]["fixed"] == pytest.approx(10.86 + 4.56 + 24.05 + 19.10)
+    assert r["G12w"]["fixed"] == pytest.approx(10.86 + 4.56 + 24.05 + 0.0)
+    s = TariffSettings(sales_fee_g13s_net=10.0, sales_fee_net=5.0)
+    r2 = simulate_month("2026-03", {}, cat, settings=s)
+    assert r2["G13s"]["fixed"] == pytest.approx(10.86 + 4.56 + 24.05 + 10.0)
+    assert r2["G12w"]["fixed"] == pytest.approx(10.86 + 4.56 + 24.05 + 5.0)

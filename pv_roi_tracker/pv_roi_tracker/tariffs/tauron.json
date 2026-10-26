@@ -12,7 +12,8 @@
       "C": "https://www.tauron-dystrybucja.pl/-/media/offer-documents/dystrybucja/archiwum-taryf/2025/wyci%C4%85g-typu-g-z-taryfy-td_sa-na-rok-2025.ashx",
       "E": "https://bip.ure.gov.pl/download/3/20340/TauronSprzedaz.pdf",
       "F": "https://www.ure.gov.pl/pl/urzad/informacje-ogolne/aktualnosci/13002,Prezes-Urzedu-Regulacji-Energetyki-zatwierdzil-taryfy-na-sprzedaz-i-dystrybucje-.html",
-      "G": "https://www.tauron-dystrybucja.pl/o-spolce/komunikaty/2026/01/21-1"
+      "G": "https://www.tauron-dystrybucja.pl/o-spolce/komunikaty/2026/01/21-1",
+      "H": "https://www.tauron.pl/-/media/Additional/smart/img/sh135-template-lp-g13s/pdf/tanie_godziny_jak_dziala_taryfa_g13s_12_2025.pdf"
     }
   },
   "zones": {
@@ -40,8 +41,24 @@
       },
       "source": "A pkt 2.2.2, C"
     },
+    "G13s": {
+      "summer": {
+        "months": [4, 5, 6, 7, 8, 9],
+        "offpeak": [[9, 17]],
+        "peak": [[7, 9], [17, 21]],
+        "night": [[21, 7]]
+      },
+      "winter": {
+        "months": [10, 11, 12, 1, 2, 3],
+        "offpeak": [[10, 15]],
+        "peak": [[7, 10], [15, 21]],
+        "night": [[21, 7]]
+      },
+      "source": "Tauron Dystrybucja taryfa 2026 pkt 2.2.2a"
+    },
     "dynamic_distribution_zones": "strefy S1–S4 wg Energetycznego Kompasu PSE (bez stałych godzin), A pkt 2.2.10"
   },
+  "available_from": {"G13s": "2026-01-01"},
   "periods": [
     {
       "valid_from": "2025-01-01",
@@ -127,17 +144,31 @@
       "valid_to": "2026-12-31",
       "confirmed": true,
       "sources": ["A", "B", "E", "G"],
+      "energy_net_note": "G13s: brutto z oferty „Tanie godziny” (PDF 12/2025 i 08/2026, identyczne ceny) / 1,23 − 0,005 akcyzy; wniosek, nie zapis dokumentu; dostępność dla Wrocławia niepotwierdzona",
+      "unconfirmed_tariffs": ["G13s"],
       "energy_net": {
         "G11": {"all": 0.4970},
         "G12": {"day": 0.5430, "night": 0.4130},
         "G12w": {"peak": 0.6220, "offpeak": 0.4130},
-        "G13": {"morning_peak": 0.4668, "evening_peak": 0.7780, "other": 0.4210}
+        "G13": {"morning_peak": 0.4668, "evening_peak": 0.7780, "other": 0.4210},
+        "G13s": {
+          "summer_workday_offpeak": 0.2700, "summer_workday_peak": 0.7042, "summer_workday_night": 0.5000,
+          "summer_dayoff_offpeak": 0.1080, "summer_dayoff_peak": 0.2817, "summer_dayoff_night": 0.5000,
+          "winter_workday_offpeak": 0.5500, "winter_workday_peak": 0.7042, "winter_workday_night": 0.4900,
+          "winter_dayoff_offpeak": 0.3300, "winter_dayoff_peak": 0.4225, "winter_dayoff_night": 0.4900
+        }
       },
       "dist_var_net": {
         "G11": {"all": 0.2464},
         "G12": {"day": 0.2841, "night": 0.0558},
         "G12w": {"peak": 0.3298, "offpeak": 0.0512},
-        "G13": {"morning_peak": 0.2203, "evening_peak": 0.3898, "other": 0.0392}
+        "G13": {"morning_peak": 0.2203, "evening_peak": 0.3898, "other": 0.0392},
+        "G13s": {
+          "summer_workday_offpeak": 0.1000, "summer_workday_peak": 0.2842, "summer_workday_night": 0.1094,
+          "summer_dayoff_offpeak": 0.0400, "summer_dayoff_peak": 0.1176, "summer_dayoff_night": 0.1094,
+          "winter_workday_offpeak": 0.1999, "winter_workday_peak": 0.3332, "winter_workday_night": 0.1094,
+          "winter_dayoff_offpeak": 0.1200, "winter_dayoff_peak": 0.1960, "winter_dayoff_night": 0.1094
+        }
       },
       "dynamic_dist_var_net": {"S1": 0.0224, "S2": 0.0893, "S3": 0.3881, "S4": 2.3756},
       "quality_net": 0.0332,
@@ -148,7 +179,8 @@
         "network_1ph": 7.38,
         "network_3ph": 10.86,
         "subscription_dist": 4.56,
-        "capacity_by_annual_kwh": {"lt500": 4.29, "500_1200": 10.31, "1200_2800": 17.18, "gt2800": 24.05}
+        "capacity_by_annual_kwh": {"lt500": 4.29, "500_1200": 10.31, "1200_2800": 17.18, "gt2800": 24.05},
+        "sales_fee_by_tariff": {"G13s": 19.10}
       }
     }
   ],

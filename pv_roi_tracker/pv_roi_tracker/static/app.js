@@ -3179,7 +3179,7 @@ const _DOCS_HTML = `
 <li><strong>Ranking produkcji miesięcznej</strong> — kolorowane per rok, medale top 3</li>
 </ul>
 <h3>📈 Taryfy i energia</h3>
-<p>Osobna sekcja: Symulacja taryf (G11/G12/G12w/G13 i dynamiczne; mapa stref i cen, cena godzinowa, koszt wg stref, różnica narastająco), Faktury oraz Taryfa (stawki, godziny stref, cennik Tauron). Ustawienia symulacji i ręczne wpisy taryfy są pod ⚙.</p>
+<p>Osobna sekcja: Symulacja taryf (G11/G12/G12w/G13/G13s i dynamiczne; mapa stref i cen, cena godzinowa, koszt wg stref, różnica narastająco), Faktury oraz Taryfa (stawki, godziny stref, cennik Tauron). Ustawienia symulacji i ręczne wpisy taryfy są pod ⚙.</p>
 <h3>📑 Taryfa</h3>
 <p>Ręczne wpisy stawek z datą obowiązywania — wypełniają lukę ogłoszenia taryfy: nowe stawki Tauron wchodzą 1 stycznia, ale faktura potwierdzająca nadchodzi dopiero w lutym. Ręczny override automatycznie ustępuje po wgraniu faktury za dany miesiąc.<br><strong>Priorytet:</strong> baseline (seed) &lt; faktura &lt; override (aktywny tylko gdy data wpisu jest nowsza niż najnowsza faktura).</p>
 <h3>⚡ RCE vs RCEm</h3>
@@ -3512,6 +3512,17 @@ function _tfHours(h) {
   return (h || []).map(x => String(x[0]).padStart(2, '0') + '–' + String(x[1]).padStart(2, '0')).join(', ');
 }
 
+const _TF_G13S_BAND = { offpeak: 'poza szczytem', peak: 'szczyt', night: 'noc' };
+
+// G13s: pełny klucz {season}_{daytype}_{band} → „lato, dzień roboczy — szczyt”; sam pasmo → „szczyt”.
+function _tfG13sLabel(zone) {
+  const p = String(zone).split('_');
+  if (p.length === 1) return _TF_G13S_BAND[p[0]] || zone;
+  if (p.length !== 3) return zone;
+  return (p[0] === 'summer' ? 'lato' : 'zima') + ', ' + (p[1] === 'dayoff' ? 'dzień wolny' : 'dzień roboczy') +
+    ' — ' + (_TF_G13S_BAND[p[2]] || p[2]);
+}
+
 function _tfZoneDesc(tariff, zone, z) {
   if (!z) return '';
   if (tariff === 'G11') return 'cała doba';
@@ -3522,6 +3533,12 @@ function _tfZoneDesc(tariff, zone, z) {
     if (zone === 'morning_peak') return 'szczyt przedpołudniowy ' + rng(su.morning_peak);
     if (zone === 'evening_peak') return 'szczyt popołudniowy: lato ' + rng(su.evening_peak) + ', zima ' + rng(w.evening_peak);
     return 'pozostałe godziny; weekendy i święta';
+  }
+  if (tariff === 'G13s') {
+    // klucz {season}_{daytype}_{band}: godziny pasma w danym sezonie (dzień roboczy/wolny ten sam)
+    const p = String(zone).split('_');
+    const a = p.length === 3 && z[p[0]] ? z[p[0]][p[2]] : null;
+    return a ? _tfHours(a) : '';
   }
   const def = z[zone];
   if (!def || !def.hours) return '';
@@ -3604,13 +3621,22 @@ function _renderTaryfaCennik() {
   const vat = Number((d.meta || {}).vat) || 1.23;
   const ZN = { all: 'cała doba', peak: 'szczyt', offpeak: 'poza szczytem', day: 'dzień', night: 'noc',
                morning_peak: 'szczyt przedpołudniowy', evening_peak: 'szczyt popołudniowy', other: 'pozostałe' };
+  // G13s: 12 kluczy w stałej kolejności (sezon → pasmo → dzień); godziny pasma raz na parę dzień roboczy/wolny
+  const G13S_KEYS = [];
+  ['summer', 'winter'].forEach(s => ['offpeak', 'peak', 'night'].forEach(b =>
+    ['workday', 'dayoff'].forEach(dt => G13S_KEYS.push(s + '_' + dt + '_' + b))));
   let rows = '';
-  ['G11', 'G12', 'G12w', 'G13'].forEach(t => {
-    const zs = Object.keys((p.energy_net || {})[t] || {});
+  ['G11', 'G12', 'G12w', 'G13', 'G13s'].forEach(t => {
+    const zs = t === 'G13s'
+      ? G13S_KEYS.filter(k => k in ((p.energy_net || {}).G13s || {}))
+      : Object.keys((p.energy_net || {})[t] || {});
     zs.forEach((z, i) => {
       const r = _tfRates(t, p, z, vat);
+      const hours = t === 'G13s'
+        ? (z.indexOf('_workday_') >= 0 ? '<td class="l" rowspan="2">' + _esc(_tfZoneDesc(t, z, (d.zones || {})[t])) + '</td>' : '')
+        : '<td class="l">' + _esc(_tfZoneDesc(t, z, (d.zones || {})[t])) + '</td>';
       rows += '<tr>' + (i === 0 ? '<td rowspan="' + zs.length + '"><b>' + t + '</b></td>' : '') +
-        '<td class="l">' + (ZN[z] || _esc(z)) + '</td><td class="l">' + _esc(_tfZoneDesc(t, z, (d.zones || {})[t])) + '</td>' +
+        '<td class="l">' + (t === 'G13s' ? _esc(_tfG13sLabel(z)) : (ZN[z] || _esc(z))) + '</td>' + hours +
         '<td class="num">' + _tfZl(r.energy) + '</td><td class="num">' + _tfZl(r.dist) + '</td><td class="num">' +
         _tfZl(r.fees) + '</td><td class="num"><b>' + _tfZl(r.total) + '</b></td></tr>';
     });
@@ -3951,7 +3977,7 @@ let _tsim = null;              // ostatnia odpowiedź /api/tariff_sim
 let _tsimVariant = 'A';
 let _tsimChart = null;
 let _tsimPriceChart = null, _tsimZoneCostChart = null, _tsimDiffChart = null;
-const _TSIM_COLORS = { G11: '#718096', G12: '#a0aec0', G12w: '#2563eb', G13: '#7c3aed',
+const _TSIM_COLORS = { G11: '#718096', G12: '#a0aec0', G12w: '#2563eb', G13: '#7c3aed', G13s: '#0891b2',
                        dyn_a: '#16a34a', dyn_b: '#b45309' };
 const _TSIM_BRACKETS = { lt500: 'do 500 kWh/rok', '500_1200': '500–1200 kWh/rok',
                          '1200_2800': '1200–2800 kWh/rok', gt2800: 'powyżej 2800 kWh/rok' };
@@ -3990,7 +4016,7 @@ async function loadTsimTab() {
 }
 
 /* -- Symulacja: pasek sterowania + wykresy godzinowe (E4) --------------- */
-const _TSIM_ALL = ['G11', 'G12', 'G12w', 'G13', 'dyn_a', 'dyn_b'];
+const _TSIM_ALL = ['G11', 'G12', 'G12w', 'G13', 'G13s', 'dyn_a', 'dyn_b'];
 const _TSIM_PERIODS = [['today', 'Dziś'], ['yesterday', 'Wczoraj'], ['7d', '7 dni'], ['14d', '14 dni'],
                        ['month', 'Ten miesiąc'], ['12m', '12 mies.'], ['tomorrow', 'Jutro'], ['custom', 'Własny']];
 let _tsimCtl = { t: ['G12w'], p: '7d', pair: [], from: '', to: '' };
@@ -4050,6 +4076,7 @@ function _tsimParseCtl() {
     else c.p = '7d';
   }
   if (q.get('v') === 'B' && _tsimHasB()) _tsimVariant = 'B';
+  if (q.get('v') === 'C' && _tsimHasC()) _tsimVariant = 'C';
   return c;
 }
 
@@ -4086,7 +4113,9 @@ function _tsimInitCtl() {
   _renderTsimVariant();
   const box = document.getElementById('tsimTariffs');
   box.innerHTML = _tsimAvailTariffs().map(t =>
-    '<label class="tsim-chk" style="--tc:' + (_TSIM_COLORS[t] || '#444') + '"><input type="checkbox" value="' + _esc(t) +
+    '<label class="tsim-chk" style="--tc:' + (_TSIM_COLORS[t] || '#444') + '"' +
+    (t === 'G13s' ? ' title="G13s (oferta „Tanie godziny”, cennik niepotwierdzony)"' : '') +
+    '><input type="checkbox" value="' + _esc(t) +
     '" onchange="tsimCtlChanged(\'t\')"><i></i>' + _esc(t) + '</label>').join('');
   document.getElementById('tsimPeriod').innerHTML = _TSIM_PERIODS.map(x =>
     '<button type="button" data-p="' + x[0] + '" aria-pressed="false" onclick="tsimSetPeriod(\'' + x[0] + '\')">' + x[1] + '</button>').join('');
@@ -4106,6 +4135,7 @@ function _tsimApplyCtlUI() {
     sel.disabled = c.t.length < 2;
   });
   document.getElementById('tsimBtnB').disabled = c.p === 'tomorrow';
+  document.getElementById('tsimBtnC').disabled = c.p === 'tomorrow';
 }
 
 function tsimSetPeriod(p) {
@@ -4144,8 +4174,8 @@ function _tsimUpdateMsg() {
   const parts = [];
   if (_tsimHourlyErr) parts.push(_tsimHourlyErr);
   else parts.push(..._tsimHourlyInfo);
-  if (_tsimVariant === 'B') parts.push('Wykresy godzinowe liczą wariant A (B to miesięczna korekta bez godzin).');
-  if (_tsimCtl.p === 'tomorrow') parts.push('Wariant B niedostępny dla okresu „Jutro”.');
+  if (_tsimVariant === 'B' || _tsimVariant === 'C') parts.push('Wykresy godzinowe liczą wariant A (B i C liczone są miesięcznie, bez godzin).');
+  if (_tsimCtl.p === 'tomorrow') parts.push('Warianty B i C są niedostępne dla okresu „Jutro”.');
   document.getElementById('tsimHourlyMsg').textContent = parts.join(' ');
 }
 
@@ -4218,6 +4248,15 @@ function _tsimScaleColor(v, lo, hi) {
 }
 const _TSIM_ZONE_MARK = ['#1a202c', '#ffffff', '#2563eb', '#7c3aed', '#b45309', '#0e7490'];
 
+// Znacznik strefy na mapie: G13s koloruje się wg pasma (offpeak|peak|night), nie wg 12 kluczy.
+function _tsimMarkKey(t, zn) {
+  return t === 'G13s' ? 'G13s:' + String(zn).split('_').pop() : zn;
+}
+
+function _tsimMarkLbl(mk) {
+  return mk.indexOf('G13s:') === 0 ? 'G13s · ' + _tfG13sLabel(mk.slice(5)) : mk;
+}
+
 function _tsimRenderZoneMap() {
   const host = document.getElementById('tsimZoneMap');
   const legend = document.getElementById('tsimZoneLegend');
@@ -4275,8 +4314,9 @@ function _tsimRenderZoneMap() {
         g.fillStyle = _tsimScaleColor(c ? c.gross_per_kwh : null, lo, hi);
         g.fillRect(LM + hr * CW, y, CW - 1, Math.max(RH - 1, 2));
         if (c && c.zone) {
-          if (!(c.zone in zoneIdx)) zoneIdx[c.zone] = Object.keys(zoneIdx).length;
-          g.fillStyle = _TSIM_ZONE_MARK[zoneIdx[c.zone] % _TSIM_ZONE_MARK.length];
+          const mk = _tsimMarkKey(t, c.zone);
+          if (!(mk in zoneIdx)) zoneIdx[mk] = Object.keys(zoneIdx).length;
+          g.fillStyle = _TSIM_ZONE_MARK[zoneIdx[mk] % _TSIM_ZONE_MARK.length];
           g.fillRect(LM + hr * CW, y, 3, Math.max(RH - 1, 2));
         }
       });
@@ -4293,7 +4333,7 @@ function _tsimRenderZoneMap() {
   });
   if (isFinite(lo)) {
     const zl = Object.keys(zoneIdx).map(zn => '<span class="tsim-zl"><i style="background:' +
-      _TSIM_ZONE_MARK[zoneIdx[zn] % _TSIM_ZONE_MARK.length] + '"></i>' + _esc(zn) + '</span>').join('');
+      _TSIM_ZONE_MARK[zoneIdx[zn] % _TSIM_ZONE_MARK.length] + '"></i>' + _esc(_tsimMarkLbl(zn)) + '</span>').join('');
     legend.innerHTML = '<span>' + _tsimNum(lo, 2) + ' zł/kWh</span><span class="tsim-scale"></span><span>' +
       _tsimNum(hi, 2) + ' zł/kWh</span><span class="tsim-zl-sep">znacznik strefy:</span>' + zl;
   } else {
@@ -4428,6 +4468,11 @@ function _tsimHasB() {
   return !!g;
 }
 
+function _tsimHasC() {
+  const g = _tsim && _tsim.data && _tsim.data.last12 && _tsim.data.last12.gross_c;
+  return !!g;
+}
+
 function tsimSetVariant(v) {
   _tsimVariant = v;
   _renderTsimVariant();
@@ -4436,10 +4481,14 @@ function tsimSetVariant(v) {
 }
 
 function _renderTsim() {
-  const hasB = _tsimHasB();
+  const hasB = _tsimHasB(), hasC = _tsimHasC();
   if (!hasB) _tsimVariant = 'A';
+  if (_tsimVariant === 'C' && !hasC) _tsimVariant = 'B';
   document.getElementById('tsimVariantSwitch').style.display = hasB ? '' : 'none';
+  document.getElementById('tsimBtnC').style.display = hasC ? '' : 'none';
   _renderTsimReco();
+  _renderTsimPlan();
+  _renderTsimBest();
   _renderTsimVariant();
   _renderTsimBreakMonths();
   renderTsimBreakdown();
@@ -4458,8 +4507,8 @@ function _renderTsimReco() {
     return '<div class="tsim-reco-line"><b>' + key + ':</b> ' + _esc(txt) +
       ' <span class="tsim-reco-why">' + _esc(r.reason || '') + '</span></div>';
   };
-  const lines = [line('A', rec.A), _tsimHasB() ? line('B', rec.B) : null].filter(Boolean);
-  const sw = (rec.A && rec.A.switch) || (rec.B && rec.B.switch);
+  const lines = [line('A', rec.A), _tsimHasB() ? line('B', rec.B) : null, _tsimHasC() ? line('C', rec.C) : null].filter(Boolean);
+  const sw = (rec.A && rec.A.switch) || (rec.B && rec.B.switch) || (rec.C && rec.C.switch);
   let head;
   if (!lines.length) head = 'Brak pełnych 12 miesięcy danych dla G12w — rekomendacja niedostępna.';
   else if (sw) head = 'Zmiana taryfy może się opłacać.';
@@ -4473,13 +4522,16 @@ function _renderTsimReco() {
 }
 
 function _renderTsimVariant() {
-  const hasB = _tsimHasB();
+  const hasB = _tsimHasB(), hasC = _tsimHasC();
   document.getElementById('tsimBtnA').setAttribute('aria-pressed', String(_tsimVariant === 'A'));
   document.getElementById('tsimBtnB').setAttribute('aria-pressed', String(_tsimVariant === 'B'));
   document.getElementById('tsimBtnB').disabled = _tsimCtl.p === 'tomorrow';
-  document.getElementById('tsimVariantNote').textContent = _tsimVariant === 'B' && hasB
-    ? (_tsim.data.variant_b_note || 'Wariant B: z modułem magazynu.')
-    : 'Wariant A: ten sam pobór z sieci wyceniony w każdej taryfie.';
+  document.getElementById('tsimBtnC').setAttribute('aria-pressed', String(_tsimVariant === 'C'));
+  document.getElementById('tsimBtnC').disabled = _tsimCtl.p === 'tomorrow';
+  let note = 'Wariant A: ten sam pobór z sieci wyceniony w każdej taryfie.';
+  if (_tsimVariant === 'B' && hasB) note = _tsim.data.variant_b_note || 'Wariant B: z modułem magazynu.';
+  else if (_tsimVariant === 'C' && hasC) note = _tsim.data.variant_c_note || 'Wariant C: magazyn z optymalizacją dobową (z pułapem).';
+  document.getElementById('tsimVariantNote').textContent = note;
   _renderTsimTable();
   _renderTsimChart();
   renderTsimBreakdown();
@@ -4494,6 +4546,10 @@ function _tsimCell(ym, t) {
   if (_tsimVariant === 'B') {
     if (!e.b) return { v: null, reason: 'brak wyniku wariantu B', unreliable: false };
     v = e.b.gross;
+  }
+  if (_tsimVariant === 'C') {
+    if (!e.c) return { v: null, reason: 'brak wyniku wariantu C', unreliable: false };
+    v = e.c.gross;
   }
   return { v, reason: '', unreliable: e.reliable === false, cov: e.coverage_pct };
 }
@@ -4531,7 +4587,7 @@ function _renderTsimTable() {
     html += '</tr>';
   });
   const l12 = d.last12;
-  const sums = _tsimVariant === 'B' ? l12.gross_b : l12.gross;
+  const sums = _tsimVariant === 'C' ? l12.gross_c : _tsimVariant === 'B' ? l12.gross_b : l12.gross;
   html += '<tr class="tsim-sum"><td>Suma 12 mies.</td>' + tariffs.map(t => {
     const v = sums ? sums[t] : null;
     return v == null ? '<td title="brak pełnych 12 mies.">—</td>' : '<td>' + Math.round(v).toLocaleString('pl-PL') + '</td>';
@@ -4580,7 +4636,7 @@ function renderTsimBreakdown() {
   if (!_tsim || !_tsim.data) return;
   const msg = document.getElementById('tsimBreakMsg');
   const tbl = document.getElementById('tsimBreakTbl');
-  if (_tsimVariant === 'B') {
+  if (_tsimVariant === 'B' || _tsimVariant === 'C') {
     tbl.innerHTML = '';
     msg.textContent = 'Rozbicie kosztów jest dostępne tylko dla wariantu A.';
     return;
@@ -4624,11 +4680,101 @@ function _renderTsimRecon() {
     }).join('') + '</tbody>';
 }
 
+// Godziny startu [h, h+1) → zakresy: [21,22,23,0,1,2] → "21:00–03:00"; przedział przez północ łączony.
+function _tsimHourRanges(hs) {
+  const set = [...new Set((hs || []).map(Number).filter(h => h >= 0 && h < 24))].sort((a, b) => a - b);
+  if (!set.length) return '—';
+  if (set.length === 24) return 'cała doba';
+  const runs = [];
+  set.forEach(h => {
+    const last = runs[runs.length - 1];
+    if (last && last.e === h) last.e = h + 1;
+    else runs.push({ s: h, e: h + 1 });
+  });
+  if (runs.length > 1 && runs[0].s === 0 && runs[runs.length - 1].e === 24) {
+    const first = runs.shift();
+    runs[runs.length - 1].e = first.e;
+  }
+  const fmt = h => String(h % 24).padStart(2, '0') + ':00';
+  return runs.map(r => fmt(r.s) + '–' + fmt(r.e)).join(', ');
+}
+
+let _tsimPlanT = null;
+
+function tsimSetPlanTariff(t) {
+  _tsimPlanT = t;
+  _renderTsimPlan();
+}
+
+// Karta „Jak ustawić ładowanie z sieci” — plany dobowe z payloadu (data.plans) dla wybranej taryfy.
+function _renderTsimPlan() {
+  const el = document.getElementById('tsimPlan');
+  const plans = (_tsim && _tsim.data && _tsim.data.plans) || {};
+  const ts = Object.keys(plans);
+  if (!ts.length) { el.style.display = 'none'; el.innerHTML = ''; return; }
+  if (!_tsimPlanT || !ts.includes(_tsimPlanT)) _tsimPlanT = ts.includes('G12w') ? 'G12w' : ts[0];
+  const p = plans[_tsimPlanT] || {};
+  const cell = k => {
+    const e = p[k];
+    if (!e) return '<td class="tsim-na">brak danych</td>';
+    return '<td><div><b>Ładuj z sieci:</b> ' + _esc(_tsimHourRanges(e.charge_hours)) + '</div>' +
+      '<div><b>Rozładuj:</b> ' + _esc(_tsimHourRanges(e.discharge_hours)) + '</div>' +
+      '<div class="tsim-reco-why">oszczędność doby: ' + _esc(e.avg_saving_pln == null ? '—' : _tsimNum(e.avg_saving_pln, 2) + ' zł') +
+      ' · dni z akcją ' + _esc(e.days ?? '–') + '/' + _esc(e.days_total ?? '–') + '</div></td>';
+  };
+  const sel = '<label class="tsim-lbl">Taryfa: <select aria-label="Taryfa planu" onchange="tsimSetPlanTariff(this.value)">' +
+    ts.map(t => '<option value="' + _esc(t) + '"' + (t === _tsimPlanT ? ' selected' : '') + '>' + _esc(t) + '</option>').join('') +
+    '</select></label>';
+  const unconf = _tsimPlanT === 'G13s' ? ' <span class="tsim-badge-unconf">cennik niepotwierdzony</span>' : '';
+  const tbl = '<div class="tbl-wrap"><table class="tsim-tbl tsim-plan-tbl"><thead><tr><th>Sezon</th><th>Dzień roboczy</th><th>Dzień wolny</th></tr></thead><tbody>' +
+    [['summer', 'Lato'], ['winter', 'Zima']].map(x => '<tr><td>' + x[1] + '</td>' + cell(x[0] + '_workday') + cell(x[0] + '_dayoff') + '</tr>').join('') +
+    '</tbody></table></div>';
+  const l12 = _tsim.data.last12 || {};
+  const gb = l12.gross_b ? l12.gross_b[_tsimPlanT] : null;
+  const gc = l12.gross_c ? l12.gross_c[_tsimPlanT] : null;
+  const yr = (gb != null && gc != null)
+    ? '<p class="tsim-variant-note">Roczna oszczędność z optymalizacją (C) względem bez niej (B): ' + _esc(_tsimZl(gb - gc)) + '.</p>' : '';
+  el.style.display = '';
+  el.innerHTML = '<div class="tsim-reco-head">Jak ustawić ładowanie z sieci</div>' + sel + unconf + tbl + yr +
+    '<p class="tsim-variant-note">' + _esc(_tsim.data.variant_c_note || '') + '</p>';
+}
+
+// Najlepszy wariant w skali roku: ranking z data.best_year, zdanie z recommendation.best_year.
+function _renderTsimBest() {
+  const el = document.getElementById('tsimBest');
+  const d = _tsim.data || {}, by = d.best_year, rb = (_tsim.recommendation || {}).best_year;
+  const head = '<div class="tsim-reco-head">Najlepszy wariant w skali roku</div>';
+  if (!by) { el.innerHTML = head + '<p class="tsim-variant-note">Brak pełnych 12 miesięcy danych.</p>'; return; }
+  const base = by.baseline || {};
+  const rows = (by.rows || []).map((r, i) => {
+    const diff = base.gross != null ? r.gross - base.gross : null;
+    const cls = diff == null ? '' : diff < 0 ? 'tsim-cheaper' : diff > 0 ? 'tsim-worse' : '';
+    const first = i === 0 ? ' class="tsim-best"' : '';
+    return '<tr><td' + first + '>' + _esc(r.tariff) + '</td><td' + first + '>' + _esc(r.variant) + '</td><td' + first + '>' +
+      Math.round(r.gross).toLocaleString('pl-PL') + ' zł</td><td class="' + cls + '"' + first + '>' +
+      (diff == null ? '—' : _tsimSigned(diff)) + '</td><td' + first + '>' +
+      (r.confirmed ? '' : '<span class="tsim-badge-unconf">niepotwierdzony</span>') + '</td></tr>';
+  }).join('');
+  const tbl = '<div class="tbl-wrap"><table class="tsim-tbl tsim-plan-tbl"><thead><tr><th>Taryfa</th><th>Wariant</th>' +
+    '<th>Koszt 12 mies.</th><th>vs baseline</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+  let rec = '<p class="tsim-variant-note">Brak rekomendacji rocznej.</p>';
+  if (rb && rb.best) {
+    rec = '<div class="tsim-reco-line"><b>Rekomendacja:</b> ' + _esc(rb.best.tariff + ' ' + rb.best.variant) +
+      ' <span class="tsim-reco-why">' + _esc(rb.reason || '') + ' · ' + (rb.tariff_change ? 'zmiana taryfy' : 'bez zmiany taryfy') +
+      ' · ' + (rb.above_threshold ? 'powyżej progu' : 'poniżej progu') + '</span></div>';
+  }
+  const warn = (by.warnings || []).map(w => '<li>' + _esc(w) + '</li>').join('');
+  const foot = '<div class="tsim-reco-foot">Punkt odniesienia: ' + _esc(base.tariff || 'G12w') + ', wariant ' +
+    _esc(base.variant || 'A') + (base.gross != null ? ' (' + _esc(_tsimZl(base.gross)) + ' za 12 mies.)' : '') + '.</div>';
+  el.innerHTML = head + tbl + rec + (warn ? '<ul class="tsim-warn">' + warn + '</ul>' : '') + foot;
+}
+
 function _fillTsimSettings() {
   const s = _tsim.settings || {};
   document.getElementById('tsimPhases').value = String(s.phases ?? 3);
   document.getElementById('tsimBracket').value = s.capacity_bracket || 'gt2800';
   document.getElementById('tsimFee').value = s.sales_fee_net ?? 0;
+  document.getElementById('tsimFeeG13s').value = s.sales_fee_g13s_net ?? '';
   document.getElementById('tsimThreshold').value = s.recommend_threshold_pln ?? 100;
 }
 
@@ -4639,6 +4785,7 @@ async function saveTsimSettings() {
     phases: parseInt(document.getElementById('tsimPhases').value, 10),
     capacity_bracket: document.getElementById('tsimBracket').value,
     sales_fee_net: parseFloat(document.getElementById('tsimFee').value),
+    sales_fee_g13s_net: document.getElementById('tsimFeeG13s').value.trim() === '' ? null : parseFloat(document.getElementById('tsimFeeG13s').value),
     recommend_threshold_pln: parseFloat(document.getElementById('tsimThreshold').value),
   };
   const before = _tsim && _tsim.data ? _tsim.data.generated_at : null;

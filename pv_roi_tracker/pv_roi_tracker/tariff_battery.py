@@ -15,9 +15,11 @@ from typing import Callable, Optional
 
 from . import battery_sim
 from .tariff_catalog import period_for, rates_per_kwh, zone_for
-from .tariff_sim import ALL_TARIFFS as TARIFFS, STATIC_TARIFFS, _dyn_b_price, _required
+from .tariff_sim import ALL_TARIFFS as TARIFFS, STATIC_TARIFFS, _dyn_b_price, _g13s_from, _required
 
-_PEAK_ZONES = frozenset({'peak', 'morning_peak', 'evening_peak'})
+_PEAK_ZONES = frozenset({'peak', 'morning_peak', 'evening_peak',
+                         'summer_workday_peak', 'summer_dayoff_peak',
+                         'winter_workday_peak', 'winter_dayoff_peak'})
 
 PriceFn = Callable[[str], Optional[tuple]]
 
@@ -35,6 +37,7 @@ def make_price_fn(tariff: str, catalog: dict, rdn: Optional[dict], kompas: Optio
     sales = catalog.get('dynamic_sales') or {}
     margin = _required(sales, 'margin_net_per_kwh') if tariff == 'dyn_a' else 0.0
     fixed_b = _dyn_b_price(catalog, overrides) if tariff == 'dyn_b' else 0.0
+    g13s_from = _g13s_from(catalog)
     periods: dict = {}
 
     def period_of(d: date) -> dict:
@@ -45,6 +48,8 @@ def make_price_fn(tariff: str, catalog: dict, rdn: Optional[dict], kompas: Optio
 
     def price_fn(key: str) -> Optional[tuple]:
         dt = _parse(key)
+        if tariff == 'G13s' and g13s_from and dt.date().isoformat() < g13s_from:
+            return None
         p = period_of(dt.date())
         if tariff in STATIC_TARIFFS:
             zone = zone_for(tariff, dt, catalog)
@@ -71,9 +76,11 @@ def make_price_fn(tariff: str, catalog: dict, rdn: Optional[dict], kompas: Optio
 
 def simulate_variant_b(hours: dict, cfg, catalog: dict, rdn: Optional[dict],
                        kompas: Optional[dict], rcem_by_ym: dict, from_ym: str, to_ym: str,
-                       overrides: Optional[dict] = None) -> dict:
-    """`{ym: {taryfa: {savings_pln, charged_kwh, discharged_kwh}}}` dla wszystkich taryf."""
-    cfg_b = dataclasses.replace(cfg, arbitrage_enabled=False)
+                       overrides: Optional[dict] = None, soc_floor: float = 0.0) -> dict:
+    """`{ym: {taryfa: {savings_pln, charged_kwh, discharged_kwh}}}` dla wszystkich taryf.
+    `soc_floor` = ułamek pojemności zarezerwowany (dolny próg SoC), zmniejsza użyteczną pojemność."""
+    cfg_b = dataclasses.replace(cfg, arbitrage_enabled=False,
+                                usable_kwh=cfg.usable_kwh * (1 - soc_floor))
     keys = sorted(k for k in hours if from_ym <= k[:7] <= to_ym)
     out: dict = {}
     for t in TARIFFS:

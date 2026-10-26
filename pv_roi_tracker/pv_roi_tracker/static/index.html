@@ -221,6 +221,8 @@
         <div id="tsimWaiting" class="tsim-note">Ładowanie symulacji taryf…</div>
         <div id="tsimContent" style="display:none">
           <div id="tsimReco" class="tsim-reco" aria-live="polite"></div>
+          <div id="tsimPlan" class="tsim-reco" style="display:none" aria-live="polite"></div>
+          <div id="tsimBest" class="tsim-reco" aria-live="polite"></div>
           <div id="tsimCtl" class="tsim-ctl">
             <button type="button" id="tsimCtlToggle" class="tsim-ctl-toggle" aria-expanded="false" aria-controls="tsimCtlPanel" onclick="tsimToggleCtl()">Filtry</button>
             <div id="tsimCtlPanel" class="tsim-ctl-panel">
@@ -236,6 +238,7 @@
                 <div id="tsimVariantSwitch" class="tsim-seg" role="group" aria-label="Wariant symulacji">
                   <button type="button" id="tsimBtnA" aria-pressed="true" onclick="tsimSetVariant('A')">Wariant A</button>
                   <button type="button" id="tsimBtnB" aria-pressed="false" onclick="tsimSetVariant('B')">Wariant B</button>
+                  <button type="button" id="tsimBtnC" aria-pressed="false" onclick="tsimSetVariant('C')">Wariant C</button>
                 </div>
                 <p id="tsimVariantNote" class="tsim-variant-note"></p>
               </div>
@@ -488,6 +491,7 @@
                 <option value="1200_2800">1200–2800 kWh/rok</option>
                 <option value="gt2800">powyżej 2800 kWh/rok</option></select></label>
               <label>Opłata handlowa netto (zł/mies.): <input type="number" id="tsimFee" step="0.01" min="0" max="200" style="width:80px"></label>
+              <label>Opłata handlowa G13s netto (zł/mies., puste = domyślna 19,10): <input type="number" id="tsimFeeG13s" step="0.01" min="0" max="200" style="width:80px"></label>
               <label>Próg rekomendacji (zł/rok): <input type="number" id="tsimThreshold" step="10" min="0" max="5000" style="width:80px"></label>
               <button type="button" onclick="saveTsimSettings()">Zapisz i przelicz</button>
               <span id="tsimMsg" role="status"></span>

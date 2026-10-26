@@ -35,3 +35,19 @@ def test_z_payloadem(client, tmp_path, monkeypatch):
     assert j['recommendation']['A']['switch'] is True
     assert j['recommendation']['B'] is None
     assert j['settings']['phases'] == 3
+
+
+def test_rekomendacja_c_i_best_year(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(web, '_tariff_settings_path', tmp_path / 'ts.json')
+    best = {'tariff': 'G13s', 'variant': 'C', 'gross': 500.0, 'saving_pln': 500.0,
+            'confirmed': True}
+    payload = {'to': '2026-10',
+               'last12': {'gross': {'G12w': 1000.0},
+                          'gross_c': {'G12w': 900.0, 'G13s': 500.0}},
+               'best_year': {'baseline': {'tariff': 'G12w', 'variant': 'A', 'gross': 1000.0},
+                             'rows': [best], 'best': best, 'warnings': []}}
+    web.update_tariff_sim(payload)
+    j = client.get('/api/tariff_sim').get_json()
+    assert j['recommendation']['C']['best'] == 'G13s'
+    assert j['recommendation']['best_year']['tariff_change'] is True
+    assert j['data']['best_year']['best'] == best

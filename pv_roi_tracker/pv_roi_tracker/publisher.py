@@ -86,14 +86,23 @@ _SENSORS: list[_Sensor] = [
     _Sensor('tariffsim_month_g12', 'PV Tariff Sim Month G12', None, 'PLN', 'monetary', None, 'mdi:calendar-month'),
     _Sensor('tariffsim_month_g12w', 'PV Tariff Sim Month G12w', None, 'PLN', 'monetary', None, 'mdi:calendar-month'),
     _Sensor('tariffsim_month_g13', 'PV Tariff Sim Month G13', None, 'PLN', 'monetary', None, 'mdi:calendar-month'),
+    _Sensor('tariffsim_month_g13s', 'PV Tariff Sim Month G13s', None, 'PLN', 'monetary', None, 'mdi:calendar-month'),
     _Sensor('tariffsim_month_dyn_a', 'PV Tariff Sim Month Dyn A', None, 'PLN', 'monetary', None, 'mdi:calendar-month'),
     _Sensor('tariffsim_month_dyn_b', 'PV Tariff Sim Month Dyn B', None, 'PLN', 'monetary', None, 'mdi:calendar-month'),
     _Sensor('tariffsim_12m_g11', 'PV Tariff Sim 12M G11', None, 'PLN', 'monetary', None, 'mdi:calendar-range'),
     _Sensor('tariffsim_12m_g12', 'PV Tariff Sim 12M G12', None, 'PLN', 'monetary', None, 'mdi:calendar-range'),
     _Sensor('tariffsim_12m_g12w', 'PV Tariff Sim 12M G12w', None, 'PLN', 'monetary', None, 'mdi:calendar-range'),
     _Sensor('tariffsim_12m_g13', 'PV Tariff Sim 12M G13', None, 'PLN', 'monetary', None, 'mdi:calendar-range'),
+    _Sensor('tariffsim_12m_g13s', 'PV Tariff Sim 12M G13s', None, 'PLN', 'monetary', None, 'mdi:calendar-range'),
     _Sensor('tariffsim_12m_dyn_a', 'PV Tariff Sim 12M Dyn A', None, 'PLN', 'monetary', None, 'mdi:calendar-range'),
     _Sensor('tariffsim_12m_dyn_b', 'PV Tariff Sim 12M Dyn B', None, 'PLN', 'monetary', None, 'mdi:calendar-range'),
+    _Sensor('tariffsim_12m_c_g12', 'PV Tariff Sim 12M C G12', None, 'PLN', 'monetary', None, 'mdi:calendar-range'),
+    _Sensor('tariffsim_12m_c_g12w', 'PV Tariff Sim 12M C G12w', None, 'PLN', 'monetary', None, 'mdi:calendar-range'),
+    _Sensor('tariffsim_12m_c_g13', 'PV Tariff Sim 12M C G13', None, 'PLN', 'monetary', None, 'mdi:calendar-range'),
+    _Sensor('tariffsim_12m_c_g13s', 'PV Tariff Sim 12M C G13s', None, 'PLN', 'monetary', None, 'mdi:calendar-range'),
+    _Sensor('tariffsim_best_variant', 'PV Tariff Sim Best Variant', None, None, None, None, 'mdi:trophy-outline'),
+    _Sensor('tariffsim_best_cost', 'PV Tariff Sim Best Cost', None, 'PLN', 'monetary', None, 'mdi:cash'),
+    _Sensor('tariffsim_best_saving', 'PV Tariff Sim Best Saving', None, 'PLN', 'monetary', None, 'mdi:piggy-bank-outline'),
     _Sensor('tariffsim_cheapest', 'PV Tariff Sim Cheapest', None, None, None, None, 'mdi:medal'),
     _Sensor('tariffsim_saving_vs_g12w', 'PV Tariff Sim Saving vs G12w', None, 'PLN', 'monetary', None, 'mdi:piggy-bank-outline'),
     # Latest-invoice rates (v0.20.0) — single source of truth for energy_simulation.yaml
@@ -156,9 +165,17 @@ def _tariff_sim_value(slug: str, tariff_sim: Optional[dict]) -> Any:
         return (sim.get('last12') or {}).get('cheapest')
     if slug == 'tariffsim_saving_vs_g12w':
         return (sim.get('last12') or {}).get('saving_vs_g12w')
+    if slug.startswith('tariffsim_best_'):
+        best = (sim.get('best_year') or {}).get('best') or {}
+        if slug == 'tariffsim_best_variant':
+            return f"{best['tariff']} {best['variant']}" if best else None
+        return best.get('gross' if slug == 'tariffsim_best_cost' else 'saving_pln')
     if slug.startswith('tariffsim_month_'):
         gross = (sim.get('current_month') or {}).get('gross') or {}
         part = slug[len('tariffsim_month_'):]
+    elif slug.startswith('tariffsim_12m_c_'):
+        gross = (sim.get('last12') or {}).get('gross_c') or {}
+        part = slug[len('tariffsim_12m_c_'):]
     else:
         gross = (sim.get('last12') or {}).get('gross') or {}
         part = slug[len('tariffsim_12m_'):]

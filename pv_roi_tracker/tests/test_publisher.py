@@ -62,25 +62,46 @@ def test_render_value_unaffected_for_non_rate_sensors(result):
 _SIM = {
     'current_month': {'ym': '2026-10', 'gross': {'G12w': 55.5, 'dyn_a': None}},
     'last12': {'gross': {'G12w': 1234.5678, 'dyn_a': None}, 'cheapest': 'G12w',
-               'saving_vs_g12w': 0.0},
+               'saving_vs_g12w': 0.0,
+               'gross_c': {'G12w': 1000.0, 'G13s': 900.5, 'G11': None}},
+    'best_year': {'best': {'tariff': 'G13s', 'variant': 'C', 'gross': 900.5,
+                           'saving_pln': 334.0678, 'confirmed': False}},
 }
 
 
-def test_tariffsim_ma_14_sensorow_monetary_bez_state_class():
+def test_tariffsim_ma_23_sensory_monetary_bez_state_class():
     sims = [s for s in _SENSORS if s.slug.startswith('tariffsim_')]
-    assert len(sims) == 14
+    assert len(sims) == 23
     for s in sims:
         assert s.state_class is None
-        if s.slug != 'tariffsim_cheapest':
+        if s.slug not in ('tariffsim_cheapest', 'tariffsim_best_variant'):
             assert s.unit == 'PLN' and s.device_class == 'monetary'
     assert _sensor('tariffsim_cheapest').unit is None
+    assert _sensor('tariffsim_best_variant').unit is None
 
 
 def test_render_tariffsim(result):
+    assert _render_value(_sensor('tariffsim_12m_g13s'), result, tariff_sim={'last12': {'gross': {'G13s': 77.5}}}) == '77.5'
     assert _render_value(_sensor('tariffsim_12m_g12w'), result, tariff_sim=_SIM) == '1234.5678'
     assert _render_value(_sensor('tariffsim_month_g12w'), result, tariff_sim=_SIM) == '55.5'
     assert _render_value(_sensor('tariffsim_cheapest'), result, tariff_sim=_SIM) == 'G12w'
     assert _render_value(_sensor('tariffsim_saving_vs_g12w'), result, tariff_sim=_SIM) == '0.0'
+
+
+def test_render_tariffsim_c_i_best(result):
+    assert _render_value(_sensor('tariffsim_12m_c_g13s'), result, tariff_sim=_SIM) == '900.5'
+    assert _render_value(_sensor('tariffsim_12m_c_g12w'), result, tariff_sim=_SIM) == '1000.0'
+    assert _render_value(_sensor('tariffsim_best_variant'), result, tariff_sim=_SIM) == 'G13s C'
+    assert _render_value(_sensor('tariffsim_best_cost'), result, tariff_sim=_SIM) == '900.5'
+    assert _render_value(_sensor('tariffsim_best_saving'), result, tariff_sim=_SIM) == '334.0678'
+
+
+def test_render_tariffsim_c_i_best_unknown(result):
+    assert _render_value(_sensor('tariffsim_12m_c_g13'), result, tariff_sim=_SIM) == 'unknown'
+    assert _render_value(_sensor('tariffsim_12m_c_g12'), result) == 'unknown'
+    for slug in ('tariffsim_best_variant', 'tariffsim_best_cost', 'tariffsim_best_saving'):
+        assert _render_value(_sensor(slug), result, tariff_sim={'best_year': None}) == 'unknown'
+        assert _render_value(_sensor(slug), result) == 'unknown'
 
 
 def test_render_tariffsim_unknown(result):
@@ -90,7 +111,7 @@ def test_render_tariffsim_unknown(result):
     assert _render_value(_sensor('tariffsim_cheapest'), result, tariff_sim={}) == 'unknown'
 
 
-def test_publish_roi_publikuje_14_tematow_tariffsim(result):
+def test_publish_roi_publikuje_23_tematy_tariffsim(result):
     from unittest.mock import MagicMock
     from pv_roi_tracker.publisher import MQTTPublisher
     pub = MQTTPublisher('localhost', 1883, '', '')
@@ -99,4 +120,4 @@ def test_publish_roi_publikuje_14_tematow_tariffsim(result):
     result = dataclasses.replace(result, roi_pct=1.0)
     pub.publish_roi(result, tariff_sim=_SIM)
     topics = [c.args[0] for c in pub._client.publish.call_args_list]
-    assert sum('/tariffsim_' in t for t in topics) == 14
+    assert sum('/tariffsim_' in t for t in topics) == 23

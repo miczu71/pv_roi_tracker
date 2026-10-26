@@ -169,3 +169,20 @@ def test_e4_tsim_controls_and_charts_ids(client):
     # przełącznik wariantu mieszka w pasku sterowania
     ctl = body[body.index('id="tsimCtl"'):body.index('id="tsimHourlyMsg"')]
     assert 'id="tsimVariantSwitch"' in ctl
+
+
+def test_g13s_in_tsim_lists():
+    js = _static('app.js')
+    all_line = next(l for l in js.splitlines() if l.startswith('const _TSIM_ALL'))
+    assert "'G13s'" in all_line
+    colors_line = next(l for l in js.splitlines() if l.startswith('const _TSIM_COLORS'))
+    assert "G13s: '#0891b2'" in colors_line
+
+
+def test_e3_tsim_variant_c_plan_best_ids_and_js():
+    html = _static('index.html')
+    for i in ('tsimBtnC', 'tsimPlan', 'tsimBest', 'tsimFeeG13s'):
+        assert html.count(f'id="{i}"') == 1, i
+    js = _static('app.js')
+    for needle in ('_tsimHasC', '_tsimHourRanges', 'best_year'):
+        assert needle in js, needle

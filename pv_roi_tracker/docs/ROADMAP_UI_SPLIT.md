@@ -99,7 +99,7 @@ Kod add-onu powstaje skillem `tdd` z `addon-conventions`, UI skillem `impeccable
 - Dopisek przy dyn_a: „koszt godzinowy bez miesięcznej podłogi średniej”.
 - Rollback: revert.
 
-**E5 – Wydanie (bez pytania, wg CLAUDE.md)**
+**E5 – Wydanie (bez pytania, wg CLAUDE.md) — WYDANE 2026-10-26 jako 0.47.0 (weryfikacja na żywo: patrz Status)**
 - `simplify` → `code-review`, a równolegle `silent-failure-hunter`, `pr-test-analyzer`, security review (general-purpose) i second-opinion (pomiar 5/10) → `release`. Bump obu plików wersji: `pv_roi_tracker/config.yaml` czyta Supervisor. Wydanie jako minor 0.47.0.
 - Weryfikacja na żywo przez `playwright-ha`: każda sekcja i podzakładka, Ustawienia (tylko otwarcie formularzy, bez zapisu na produkcji), Symulacja z „Ten miesiąc” i „Jutro”, desktop 1440 i mobile 390, `browser_console_messages` czyste.
 - Rollback: reinstalacja 0.46.5 przez `ha_manage_updates` z backupem add-onu.
@@ -134,4 +134,5 @@ Kod add-onu powstaje skillem `tdd` z `addon-conventions`, UI skillem `impeccable
   Zrobione: przyklejony `#tsimCtl` (taryfy, okres Dziś…Własny, wariant A/B, para różnicy, stan w hashu, „Filtry” na mobile), 4 wykresy z `/api/tariff_hourly` (mapa stref canvas, cena+pobór, koszt wg stref, różnica narastająco). Lokalnie Playwright 1440/390 bez błędów konsoli.
   Odstępstwa: mapa to canvas (nie siatka CSS); brak `reason` dla `available:false` (ogólna etykieta; wymaga backendu).
   Do E5 (nieblokujące, verifier): serie ceny łączone indeksem a nie `key`; nawigacja wstecz nie aktualizuje paska; zmiana breakpointu 640 nie przerysowuje mapy; B + „Jutro” zostaje B (tylko szary przycisk). Niezweryfikowane lokalnie: suma kosztu wg stref vs `/api/tariff_sim` (pokryte testem E1), „Jutro” na realnym API, wariant B — sprawdzić live w E5.
-- **Następny krok: E5** (wydanie 0.47.0).
+- **E5 WYDANIE 0.47.0** (tag `v0.47.0` w `miczu71/pv_roi_tracker`, commit `2dfc4ef`; /config `ed4a987`). simplify `a4a1e7f` (martwa funkcja, odwołania do Analizy taryf), review → poprawka `c281a4f`: `tariff_hourly` dociąga RDN dnia bieżącego dla zakresów kończących się dziś (wcześniej dyn_a liczone po cenach sprzed tygodnia), cache w kubełkach 10 min i bez cache przy braku RDN, błąd katalogu jako JSON. pytest 868 passed, 27 skipped. Pubguard: 0 flag. Second-opinion pominięty: diff 252 KB > limit 60 KB, historia klona spłaszczona do commitów wydań (pomiar zostaje 4/10).
+  Nieblokujące z review (nie naprawione): efficiency — `_tariff_inputs` czyta dysk przed lookupem cache, `tariff_now/catalog` ładują pełne wejścia, każda zmiana checkboxa = nowy fetch, `renderTaryfySummary` refetchuje przy każdej zmianie zakładki; silent-failure — brak oznaczenia godzin dyn_a z fallbackiem, `kompas_reason`, brak daty kursu EUR/PLN, `tariff_now` na stałe G12w, kafle paska bez treści błędu; testy — zakres dziś+przyszłość, `_tariff_inputs`, gałęzie 400/500, 404 dla usuniętych endpointów, słabe asercje `test_web_tariff_hourly.py:68-70`; altitude — `_ALL_PANELS` duplikuje `ROUTES`, `loadTsimTab` wołany z Ustawień; martwe `_TSIM_BRACKETS`, docstring `tariff_analysis.py`; `str(exc)` w odpowiedzi 500.

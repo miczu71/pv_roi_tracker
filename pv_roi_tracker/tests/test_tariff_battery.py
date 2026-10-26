@@ -115,3 +115,32 @@ def test_brak_marzy_dyn_a_to_blad(cat):
     bad["dynamic_sales"]["margin_net_per_kwh"] = None
     with pytest.raises(ValueError):
         tb.make_price_fn("dyn_a", bad, {}, {})
+
+
+# ── G13s (E1) ────────────────────────────────────────────────────────────────
+
+def test_g13s_price_fn_przed_i_po_dostepnosci(cat):
+    fn = tb.make_price_fn("G13s", cat, None, None)
+    assert fn("2025-12-31T12") is None
+    price = fn("2026-01-05T12")          # poniedziałek, zima, pozaszczyt
+    assert price is not None
+    assert price[0] == pytest.approx((0.5500 + 0.1999 + 0.0331 + 0.0073 + 0.0030 + 0.005) * 1.23)
+    assert price[1] is False
+
+
+def test_g13s_szczyt_zima_is_peak(cat):
+    fn = tb.make_price_fn("G13s", cat, None, None)
+    assert fn("2026-01-05T16")[1] is True     # winter_workday_peak
+    assert fn("2026-01-05T03")[1] is False    # winter_workday_night
+
+
+def test_variant_b_soc_floor_zmniejsza_pojemnosc(cat):
+    cfg = BatteryConfig()
+    hours = {f"{MON}T{h:02d}": (2.5, 0.0) for h in range(8, 14)}
+    hours.update({f"{MON}T{h:02d}": (0.0, 2.5) for h in range(17, 21)})
+    full = tb.simulate_variant_b(hours, cfg, cat, {}, {}, RCEM, "2026-06", "2026-06")
+    default = tb.simulate_variant_b(hours, cfg, cat, {}, {}, RCEM, "2026-06", "2026-06", soc_floor=0.0)
+    floor = tb.simulate_variant_b(hours, cfg, cat, {}, {}, RCEM, "2026-06", "2026-06", soc_floor=0.16)
+    assert default == full
+    assert floor["2026-06"]["G12w"]["charged_kwh"] < full["2026-06"]["G12w"]["charged_kwh"]
+    assert floor["2026-06"]["G12w"]["charged_kwh"] == pytest.approx(4.2 / (0.92 ** 0.5))

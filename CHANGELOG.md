@@ -2,17 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.47.0] — 2026-10-26
+## [0.48.0] — 2026-10-26
 
-Nowy układ UI: dwie sekcje (PV ROI | Taryfy i energia) i osobne Ustawienia; Symulacja taryf z wykresami godzinowymi.
+G13s w symulacji taryf, planowanie ładowania magazynu z sieci i najlepszy wariant roczny.
 
-- **Nawigacja:** przełącznik sekcji „PV ROI” / „Taryfy i energia” w nagłówku, ⚙ Ustawienia jako osobny widok, podzakładki pod spodem, stan w adresie (`#pv/<zakładka>`, `#taryfy/<zakładka>`, `#ustawienia`). Karta główna (KPI) tylko w PV ROI, z nowym kafelkiem salda depozytu.
-- **Ustawienia (⚙):** ręczne nadpisanie RCEm, parametry symulacji taryf, parametry magazynu, eBOK (nauczone układy, diagnostyka parsera) i formularz ręcznych wpisów taryfy w jednym miejscu.
-- **Taryfy i energia:** pasek podsumowania (strefa i cena kWh teraz, ostatnia faktura i status, rekomendacja); zakładka Taryfa (stawki brutto G12w, godziny stref, skład ceny, wykres ceny z 7 dni, oś czasu stawek tylko do odczytu, cennik Tauron); Faktury w nowej kolejności (KPI, lista i wgrywanie PDF, „Na co idą pieniądze”, trend stawek, zwijane: depozyt, rekonsyliacja, pokrycie).
-- **Symulacja taryf:** przyklejony pasek sterowania (taryfy G11/G12/G12w/G13/dyn_a/dyn_b, okres Dziś/Wczoraj/7 dni/14 dni/Ten miesiąc/12 mies./Jutro/Własny, wariant A/B, para do różnicy; stan w adresie, na telefonie zwijany do „Filtry”) oraz cztery wykresy: mapa stref i cen, cena godzinowa z poborem, koszt wg stref, różnica narastająco. „Jutro” pokazuje tylko ceny i strefy.
-- **API:** nowe `GET /api/tariff_hourly` (strefy, ceny, koszty godzinowe; do 400 dni, godziny surowe do 31 dni), `GET /api/tariff_now`, `GET /api/tariff_catalog`.
-- **Usunięte:** zakładka „Analiza taryf” oraz `/api/tariff_stats`, `/api/export/tariff_csv` (zastąpione Symulacją).
-- Znane ograniczenia: godziny dyn_a wycenione ceną sprzed tygodnia nie są jeszcze oznaczone w UI; brak powodu przy niedostępnej cenie dyn_b (Kompas); wykresy godzinowe liczą wariant A.
+- **Nowa taryfa G13s (oferta „Tanie godziny”)** w symulacji: strefy sezonowe (lato 1.IV–30.IX, zima 1.X–31.III; nocna 21–7, dzienna pozaszczytowa, szczytowa), 12 stawek sezon × dzień roboczy/wolny × strefa, opłata handlowa 23,49 zł brutto (19,10 netto, edytowalna w Ustawieniach: „Opłata handlowa G13s”). Dostępna od 2026-01; cennik oznaczony jako niepotwierdzony (źródło: oferta sprzedawcy), dostępność dla adresu niepotwierdzona.
+- **Wariant C — ładowanie magazynu z sieci** dla G12, G12w, G13, G13s: dla każdej doby plan ładowania w najtańszej i rozładowania w najdroższej strefie (do 2 cykli na dobę, SoC 16→100%, sprawność i zużycie magazynu w koszcie). To pułap — plan zna dobę z góry. Wariant B (bez optymalizacji) liczy się teraz z dolnym SoC 16%, więc jego wartości mogą się zmienić względem 0.47.0.
+- **Karta „Jak ustawić ładowanie z sieci”** w Symulacji: godziny ładowania i rozładowania per taryfa, sezon i typ dnia, oszczędność doby oraz roczna z optymalizacją i bez.
+- **Sekcja „Najlepszy wariant w skali roku”**: ranking taryfa × wariant (A/B/C) z oszczędnością względem G12w (wariant A), ostrzeżenia o niepotwierdzonym ccenniku i o zmianie grupy raz na 12 miesięcy.
+- **API** `/api/tariff_sim`: `months[ym][taryfa].c`, `last12.gross_c/cheapest_c/saving_vs_g12w_c`, `plans`, `variant_c_note`, `best_year`, `recommendation.C` i `recommendation.best_year`; `/api/tariff_settings` przyjmuje `sales_fee_g13s_net`.
+- **Nowe sensory MQTT:** `tariffsim_month_g13s`, `tariffsim_12m_g13s`, `tariffsim_12m_c_g12`, `_c_g12w`, `_c_g13`, `_c_g13s`, `tariffsim_best_variant`, `tariffsim_best_cost`, `tariffsim_best_saving`.
+- Dokumentacja: `docs/ROADMAP_G13S_GRIDCHARGE.md`.
 
 ## [0.46.5] — 2026-10-26
 

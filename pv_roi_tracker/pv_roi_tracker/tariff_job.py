@@ -12,7 +12,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
-from . import tariff_battery
+from . import tariff_battery, tariff_grid_charge
 from .battery_store import _atomic_write
 from .tariff_catalog import TariffSettings
 from .tariff_sim import ALL_TARIFFS as TARIFFS, simulate_range
@@ -20,6 +20,8 @@ from .tariff_sim import ALL_TARIFFS as TARIFFS, simulate_range
 logger = logging.getLogger(__name__)
 
 RECONCILE_TOLERANCE_PCT = 3.0
+RECOMMEND_VARIANTS = (('A', 'gross'), ('B', 'gross_b'), ('C', 'gross_c'))
+BASELINE_TARIFF = 'G12w'
 _INVOICE_NET_FIELDS = (
     'energy_amount_net', 'dist_var_amount_net', 'dist_jakosciowa_amount_net',
     'dist_oze_amount_net', 'dist_kogeneracja_amount_net', 'fixed_total_net',
@@ -64,15 +66,56 @@ def _sum12(months: dict, tariff: str, yms: list, field: str) -> Optional[float]:
     return total
 
 
-def _sum12_b(months: dict, tariff: str, yms: list) -> Optional[float]:
+def _sum12_variant(months: dict, tariff: str, yms: list, key: str) -> Optional[float]:
+    """Suma 12 mies. `gross` wariantu (`entry['b']`/`entry['c']`); brak miesiąca → None."""
     total = 0.0
     for ym in yms:
         entry = (months.get(ym) or {}).get(tariff)
-        b = entry.get('b') if _usable(entry) else None
-        if not b:
+        v = entry.get(key) if _usable(entry) else None
+        if not v:
             return None
-        total += float(b['gross'])
+        total += float(v['gross'])
     return total
+
+
+def _attach_variant_c(months: dict, c_monthly: dict) -> None:
+    """Dokłada `entry['c']` (gross = gross − oszczędność planu C) lub None (nie-GRID, brak wyniku)."""
+    for ym, tmap in months.items():
+        for t, entry in tmap.items():
+            res = (c_monthly.get(ym) or {}).get(t) if t in tariff_grid_charge.GRID_TARIFFS else None
+            if not _usable(entry, False) or not res or entry.get('gross') is None:
+                entry['c'] = None
+                continue
+            entry['c'] = {**res, 'gross': entry['gross'] - res['savings_pln']}
+
+
+def _best_year(months: dict, yms: list, gross: dict, gross_b: Optional[dict],
+               gross_c: Optional[dict]) -> Optional[dict]:
+    """Ranking taryfa × wariant w skali 12 mies. względem G12w wariant A; brak baseline → None."""
+    base = gross.get(BASELINE_TARIFF)
+    if base is None:
+        return None
+
+    def confirmed(t: str) -> bool:
+        return all(((months.get(ym) or {}).get(t) or {}).get('confirmed', True) is not False
+                   for ym in yms)
+
+    rows = []
+    for variant, values in (('A', gross), ('B', gross_b), ('C', gross_c)):
+        for t, g in (values or {}).items():
+            if g is not None:
+                rows.append({'tariff': t, 'variant': variant, 'gross': g,
+                             'saving_pln': base - g, 'confirmed': confirmed(t)})
+    rows.sort(key=lambda r: r['gross'])
+    best = rows[0] if rows else None
+    warnings = []
+    unconfirmed = sorted({r['tariff'] for r in rows if not r['confirmed']})
+    if unconfirmed:
+        warnings.append(f"Cennik niepotwierdzony: {', '.join(unconfirmed)} — wynik orientacyjny")
+    if best and best['tariff'] != BASELINE_TARIFF:
+        warnings.append('Zmiana grupy taryfowej jest możliwa raz na 12 miesięcy')
+    return {'baseline': {'tariff': BASELINE_TARIFF, 'variant': 'A', 'gross': base},
+            'rows': rows, 'best': best, 'warnings': warnings}
 
 
 def _attach_variant_b(months: dict, b_res: dict) -> None:
@@ -138,7 +181,10 @@ def compute_payload(import_by_hour: dict, catalog: dict, settings: Optional[Tari
     with_b = bool(hours) and battery_cfg is not None
     if with_b:
         _attach_variant_b(months, tariff_battery.simulate_variant_b(
-            hours, battery_cfg, catalog, rdn, kompas, rcem_by_ym or {}, from_ym, to_ym))
+            hours, battery_cfg, catalog, rdn, kompas, rcem_by_ym or {}, from_ym, to_ym, soc_floor=tariff_grid_charge.SOC_FLOOR))
+        c_monthly, c_plans = tariff_grid_charge.simulate_variant_c(
+            hours, battery_cfg, catalog, rdn, kompas, rcem_by_ym or {}, from_ym, to_ym)
+        _attach_variant_c(months, c_monthly)
 
     cur = months.get(to_ym) or {}
     current = {t: (cur[t]['gross'] if _usable(cur.get(t), False) else None) for t in TARIFFS}
@@ -155,8 +201,9 @@ def compute_payload(import_by_hour: dict, catalog: dict, settings: Optional[Tari
         saving = max(0.0, gross['G12w'] - ranked[cheapest])
 
     l12_extra: dict = {}
+    gross_b = gross_c = None
     if with_b:
-        gross_b = {t: _sum12_b(months, t, yms) for t in TARIFFS}
+        gross_b = {t: _sum12_variant(months, t, yms, 'b') for t in TARIFFS}
         ranked_b = {t: g for t, g in gross_b.items() if g is not None}
         cheapest_b = min(ranked_b, key=ranked_b.get) if ranked_b else None
         saving_b = None
@@ -164,6 +211,16 @@ def compute_payload(import_by_hour: dict, catalog: dict, settings: Optional[Tari
             saving_b = max(0.0, gross_b['G12w'] - ranked_b[cheapest_b])
         l12_extra = {'gross_b': gross_b, 'cheapest_b': cheapest_b,
                      'saving_vs_g12w_b': saving_b}
+        gross_c = {t: _sum12_variant(months, t, yms, 'c') for t in TARIFFS}
+        ranked_c = {t: g for t, g in gross_c.items() if g is not None}
+        cheapest_c = min(ranked_c, key=ranked_c.get) if ranked_c else None
+        saving_c = None
+        if cheapest_c is not None and gross_c.get('G12w') is not None:
+            saving_c = max(0.0, gross_c['G12w'] - ranked_c[cheapest_c])
+        l12_extra.update({'gross_c': gross_c, 'cheapest_c': cheapest_c,
+                          'saving_vs_g12w_c': saving_c})
+        current_c = {t: (cur[t]['c']['gross'] if _usable(cur.get(t), False) and cur[t].get('c')
+                         else None) for t in TARIFFS}
         current_b = {t: (cur[t]['b']['gross'] if _usable(cur.get(t), False) and cur[t].get('b')
                          else None) for t in TARIFFS}
 
@@ -185,13 +242,21 @@ def compute_payload(import_by_hour: dict, catalog: dict, settings: Optional[Tari
             'unconfirmed_months': len(recon) - len(confirmed),
             'max_abs_diff_pct': max(diffs) if diffs else None,
         },
+        'best_year': _best_year(months, yms, gross, gross_b, gross_c),
         'settings': {'phases': settings.phases, 'capacity_bracket': settings.capacity_bracket,
-                     'sales_fee_net': settings.sales_fee_net},
+                     'sales_fee_net': settings.sales_fee_net,
+                     'sales_fee_g13s_net': settings.sales_fee_g13s_net},
     }
     if with_b:
         payload['current_month']['gross_b'] = current_b
+        payload['current_month']['gross_c'] = current_c
+        payload['plans'] = c_plans
         payload['variant_b_note'] = ('Wariant B: gross_b = gross − oszczędność modułu magazynu '
-                                     '(bez ceny modułu; zwrot w zakładce Magazyn)')
+                                     '(bez ceny modułu; zwrot w zakładce Magazyn; SoC ≥ 16%)')
+        payload['variant_c_note'] = ('Wariant C to pułap: zna dobę z góry i planuje ładowanie z sieci. '
+                                     'SoC dolny 16%, zakres 16→100%; do 2 cykli na dobę; '
+                                     'C startuje każdą dobę z dolnego SoC (B przenosi SoC między dobami); '
+                                     'ceny G13s są niepotwierdzone')
     return payload
 
 
@@ -212,11 +277,31 @@ def _recommend_one(gross: Optional[dict], threshold_pln: float) -> Optional[dict
             'switch': switch, 'reason': reason}
 
 
+def _recommend_best_year(best_year: Optional[dict], threshold_pln: float) -> Optional[dict]:
+    best = (best_year or {}).get('best')
+    if not best:
+        return None
+    saving = best['saving_pln']
+    change = best['tariff'] != BASELINE_TARIFF
+    above = saving >= threshold_pln
+    label = f"{best['tariff']} {best['variant']}"
+    if saving <= 0:
+        reason = f'{label} jest najtańsza — bez zmian'
+    elif above:
+        reason = f'{label} oszczędza {saving:.0f} zł/rok względem G12w A'
+    else:
+        reason = f'{label}: oszczędność {saving:.0f} zł poniżej progu {threshold_pln:.0f} zł'
+    return {'best': best, 'saving_pln': saving, 'tariff_change': change,
+            'above_threshold': above, 'reason': reason}
+
+
 def recommend(payload: Optional[dict], threshold_pln: float) -> dict:
-    """Rekomendacja dla wariantów A i B z `last12` (czysta funkcja); brak danych → None."""
-    l12 = (payload or {}).get('last12') or {}
-    return {'A': _recommend_one(l12.get('gross'), threshold_pln),
-            'B': _recommend_one(l12.get('gross_b'), threshold_pln)}
+    """Rekomendacja dla wariantów A/B/C z `last12` i `best_year` (czysta funkcja); brak danych → None."""
+    p = payload or {}
+    l12 = p.get('last12') or {}
+    out = {v: _recommend_one(l12.get(f), threshold_pln) for v, f in RECOMMEND_VARIANTS}
+    out['best_year'] = _recommend_best_year(p.get('best_year'), threshold_pln)
+    return out
 
 
 def load_payload(path) -> Optional[dict]:

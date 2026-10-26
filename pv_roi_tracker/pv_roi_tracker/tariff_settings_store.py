@@ -14,8 +14,9 @@ from .tariff_catalog import TariffSettings
 logger = logging.getLogger(__name__)
 
 DEFAULTS = {'phases': 3, 'capacity_bracket': 'gt2800', 'sales_fee_net': 0.0,
-            'recommend_threshold_pln': 100.0}
+            'sales_fee_g13s_net': None, 'recommend_threshold_pln': 100.0}
 BRACKETS = ('lt500', '500_1200', '1200_2800', 'gt2800')
+_G13S_FEE_LABEL = 'opłata handlowa G13s netto musi być w zakresie 0–200 zł/mies. (lub pusta)'
 
 
 def validate(raw: dict) -> dict:
@@ -46,6 +47,17 @@ def validate(raw: dict) -> dict:
             if not (lo <= val <= hi):
                 raise ValueError(label)
             out[key] = val
+    g13s = raw.get('sales_fee_g13s_net')
+    if g13s in (None, ''):
+        out['sales_fee_g13s_net'] = None
+    else:
+        try:
+            val = float(g13s)
+        except (TypeError, ValueError):
+            raise ValueError(_G13S_FEE_LABEL)
+        if not (0.0 <= val <= 200.0):
+            raise ValueError(_G13S_FEE_LABEL)
+        out['sales_fee_g13s_net'] = val
     return out
 
 
@@ -67,5 +79,7 @@ def save(settings: dict, path) -> None:
 
 
 def to_catalog_settings(d: dict) -> TariffSettings:
+    g13s = d.get('sales_fee_g13s_net')
     return TariffSettings(phases=int(d['phases']), capacity_bracket=d['capacity_bracket'],
-                          sales_fee_net=float(d['sales_fee_net']))
+                          sales_fee_net=float(d['sales_fee_net']),
+                          sales_fee_g13s_net=None if g13s is None else float(g13s))

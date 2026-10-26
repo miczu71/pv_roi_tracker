@@ -238,3 +238,101 @@ def test_rates_brak_akcyzy_to_valueerror(cat):
     with pytest.raises(ValueError):
         rates_per_kwh("G12w", p, "peak")
 
+
+
+# ── G13s (E1: oferta „Tanie godziny”) ────────────────────────────────────────
+
+G13S_ENERGY = {
+    'summer_workday': (0.2700, 0.7042, 0.5000),
+    'summer_dayoff': (0.1080, 0.2817, 0.5000),
+    'winter_workday': (0.5500, 0.7042, 0.4900),
+    'winter_dayoff': (0.3300, 0.4225, 0.4900),
+}
+G13S_DIST = {
+    'summer_workday': (0.1000, 0.2842, 0.1094),
+    'summer_dayoff': (0.0400, 0.1176, 0.1094),
+    'winter_workday': (0.1999, 0.3332, 0.1094),
+    'winter_dayoff': (0.1200, 0.1960, 0.1094),
+}
+
+
+def test_g13s_granice_lato(cat):
+    assert z(cat, "G13s", 2026, 7, 15, 8) == "summer_workday_peak"
+    assert z(cat, "G13s", 2026, 7, 15, 9) == "summer_workday_offpeak"
+    assert z(cat, "G13s", 2026, 7, 15, 16) == "summer_workday_offpeak"
+    assert z(cat, "G13s", 2026, 7, 15, 17) == "summer_workday_peak"
+    assert z(cat, "G13s", 2026, 7, 15, 20) == "summer_workday_peak"
+    assert z(cat, "G13s", 2026, 7, 15, 21) == "summer_workday_night"
+    assert z(cat, "G13s", 2026, 7, 15, 6) == "summer_workday_night"
+    assert z(cat, "G13s", 2026, 7, 15, 7) == "summer_workday_peak"
+
+
+def test_g13s_granice_zima(cat):
+    assert z(cat, "G13s", 2026, 1, 15, 9) == "winter_workday_peak"
+    assert z(cat, "G13s", 2026, 1, 15, 10) == "winter_workday_offpeak"
+    assert z(cat, "G13s", 2026, 1, 15, 14) == "winter_workday_offpeak"
+    assert z(cat, "G13s", 2026, 1, 15, 15) == "winter_workday_peak"
+    assert z(cat, "G13s", 2026, 1, 15, 20) == "winter_workday_peak"
+    assert z(cat, "G13s", 2026, 1, 15, 21) == "winter_workday_night"
+
+
+def test_g13s_przelom_sezonow_31_03_01_04(cat):
+    assert z(cat, "G13s", 2026, 3, 31, 23) == "winter_workday_night"
+    assert z(cat, "G13s", 2026, 3, 31, 12) == "winter_workday_offpeak"
+    assert z(cat, "G13s", 2026, 4, 1, 0) == "summer_workday_night"
+    assert z(cat, "G13s", 2026, 4, 1, 12) == "summer_workday_offpeak"
+
+
+def test_g13s_weekend_i_swieto_dayoff(cat):
+    assert z(cat, "G13s", 2026, 3, 14, 12) == "winter_dayoff_offpeak"   # sobota
+    assert z(cat, "G13s", 2026, 3, 15, 18) == "winter_dayoff_peak"      # niedziela, pasmo 18:00 = szczyt
+    assert z(cat, "G13s", 2026, 11, 11, 12) == "winter_dayoff_offpeak"  # święto
+
+
+def test_g13s_dst_bez_wyjatkow(cat):
+    for dt in (datetime(2026, 3, 29, 2), datetime(2026, 3, 29, 3),
+               datetime(2026, 10, 25, 2), datetime(2026, 10, 25, 3)):
+        assert zone_for("G13s", dt, cat).startswith("winter_dayoff_")
+
+
+@pytest.mark.parametrize("key", [f"{s}_{d}_{b}" for s in ("summer", "winter")
+                                 for d in ("workday", "dayoff") for b in ("offpeak", "peak", "night")])
+def test_g13s_stawki_z_tabel(cat, key):
+    season_daytype, band = key.rsplit("_", 1)
+    p = period_for(cat, date(2026, 3, 10), None)
+    r = rates_per_kwh("G13s", p, key)
+    idx = ("offpeak", "peak", "night").index(band)
+    assert r["energy"] == pytest.approx(G13S_ENERGY[season_daytype][idx])
+    assert r["dist"] == pytest.approx(G13S_DIST[season_daytype][idx])
+    assert r["fees"] == pytest.approx(0.0332 + 0.0073 + 0.0030 + 0.005)
+
+
+def test_g13s_fees_styczen_jakosciowa(cat):
+    p = period_for(cat, date(2026, 1, 15), None)
+    assert rates_per_kwh("G13s", p, "winter_workday_peak")["fees"] == pytest.approx(
+        0.0331 + 0.0073 + 0.0030 + 0.005)
+
+
+def test_g13s_oplata_handlowa_domyslnie_19_10(cat):
+    p = period_for(cat, date(2026, 3, 10), None)
+    assert fixed_monthly(p, TariffSettings(), "G13s")["sales_fee"] == pytest.approx(19.10)
+
+
+def test_g13s_oplata_handlowa_nadpisana(cat):
+    p = period_for(cat, date(2026, 3, 10), None)
+    s = TariffSettings(sales_fee_g13s_net=10.0)
+    assert fixed_monthly(p, s, "G13s")["sales_fee"] == pytest.approx(10.0)
+
+
+def test_g13s_globalna_oplata_nie_sumuje_sie(cat):
+    p = period_for(cat, date(2026, 3, 10), None)
+    s = TariffSettings(sales_fee_net=5.0)
+    assert fixed_monthly(p, s, "G13s")["sales_fee"] == pytest.approx(19.10)
+    assert fixed_monthly(p, s, "G12w")["sales_fee"] == pytest.approx(5.0)
+    assert fixed_monthly(p, s)["sales_fee"] == pytest.approx(5.0)
+
+
+def test_g13s_przed_2026_brak_oplaty_valueerror(cat):
+    p = period_for(cat, date(2025, 3, 10), None)
+    with pytest.raises(ValueError):
+        fixed_monthly(p, TariffSettings(), "G13s")

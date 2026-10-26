@@ -54,3 +54,29 @@ def test_to_catalog_settings():
     s = ts.to_catalog_settings({'phases': 1, 'capacity_bracket': '500_1200',
                                 'sales_fee_net': 5.0, 'recommend_threshold_pln': 10})
     assert s == TariffSettings(phases=1, capacity_bracket='500_1200', sales_fee_net=5.0)
+
+
+def test_sales_fee_g13s_domyslnie_none():
+    assert ts.DEFAULTS['sales_fee_g13s_net'] is None
+    assert ts.validate({})['sales_fee_g13s_net'] is None
+
+
+@pytest.mark.parametrize("raw", [None, '', 'null'])
+def test_sales_fee_g13s_pusta_wartosc_to_none(raw):
+    if raw == 'null':
+        raw = None
+    assert ts.validate({'sales_fee_g13s_net': raw})['sales_fee_g13s_net'] is None
+
+
+def test_sales_fee_g13s_wartosc_przechodzi():
+    assert ts.validate({'sales_fee_g13s_net': 19.1})['sales_fee_g13s_net'] == pytest.approx(19.1)
+
+
+def test_sales_fee_g13s_zakres():
+    with pytest.raises(ValueError):
+        ts.validate({'sales_fee_g13s_net': 500})
+
+
+def test_sales_fee_g13s_do_catalog_settings():
+    s = ts.to_catalog_settings(ts.validate({'sales_fee_g13s_net': 10}))
+    assert s.sales_fee_g13s_net == pytest.approx(10.0)

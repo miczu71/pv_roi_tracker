@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CATALOG_PATH = Path(__file__).parent / 'tariffs' / 'tauron.json'
 
-TARIFFS = ('G11', 'G12', 'G12w', 'G13')
+TARIFFS = ('G11', 'G12', 'G12w', 'G13', 'G13s')
 
 
 @dataclass
@@ -33,6 +33,7 @@ class TariffSettings:
     phases: int = 3
     capacity_bracket: str = 'gt2800'      # lt500 | 500_1200 | 1200_2800 | gt2800
     sales_fee_net: float = 0.0            # opłata handlowa netto zł/mies.
+    sales_fee_g13s_net: Optional[float] = None  # opłata handlowa G13s; None = z okresu cennika
 
 
 def load_catalog(path: Optional[Path] = None) -> dict:
@@ -104,6 +105,13 @@ def _g13_season(zones: dict, month: int) -> dict:
     raise ValueError(f'G13: brak sezonu dla miesiąca {month}')
 
 
+def _g13s_season(zones: dict, month: int) -> tuple:
+    for name in ('summer', 'winter'):
+        if month in zones[name]['months']:
+            return name, zones[name]
+    raise ValueError(f'G13s: brak sezonu dla miesiąca {month}')
+
+
 def zone_for(tariff: str, dt: datetime, catalog: dict) -> str:
     """Nazwa strefy taryfy `tariff` dla godziny `dt` (czas lokalny)."""
     if tariff not in TARIFFS:
@@ -118,6 +126,13 @@ def zone_for(tariff: str, dt: datetime, catalog: dict) -> str:
             if any(_in_hours(h, a, b) for a, b in spec['hours']):
                 return name
         raise ValueError(f'G12: brak strefy dla godziny {h}')
+    if tariff == 'G13s':
+        daytype = 'dayoff' if _is_day_off(d) else 'workday'
+        season_name, season = _g13s_season(zones, dt.month)
+        for band in ('offpeak', 'peak', 'night'):
+            if any(_in_hours(h, a, b) for a, b in season[band]):
+                return f'{season_name}_{daytype}_{band}'
+        raise ValueError(f'G13s: brak pasma dla godziny {h}')
     if tariff == 'G12w':
         if _is_day_off(d):
             return 'offpeak'
@@ -171,8 +186,21 @@ def _transitional_key(bracket: str) -> str:
     return 'gt1200'
 
 
-def fixed_monthly(period: dict, settings: Optional[TariffSettings] = None) -> dict:
-    """Opłaty stałe netto zł/mies. Brak pola `transitional_by_annual_kwh` w okresie → 0."""
+def _g13s_sales_fee(period: dict, s: TariffSettings) -> float:
+    if s.sales_fee_g13s_net is not None:
+        return float(s.sales_fee_g13s_net)
+    v = (period['fixed_net'].get('sales_fee_by_tariff') or {}).get('G13s')
+    if v is None:
+        raise ValueError('G13s: brak opłaty handlowej w okresie cennika (sales_fee_by_tariff)')
+    return float(v)
+
+
+def fixed_monthly(period: dict, settings: Optional[TariffSettings] = None,
+                  tariff: Optional[str] = None) -> dict:
+    """Opłaty stałe netto zł/mies. Brak pola `transitional_by_annual_kwh` w okresie → 0.
+
+    `tariff` wpływa tylko na opłatę handlową: G13s ma własną (zastępuje globalną `sales_fee_net`).
+    """
     s = settings or TariffSettings()
     fx = period['fixed_net']
     network = fx['network_3ph'] if s.phases == 3 else fx['network_1ph']
@@ -185,5 +213,6 @@ def fixed_monthly(period: dict, settings: Optional[TariffSettings] = None) -> di
         'subscription_dist': float(fx['subscription_dist']),
         'capacity': float(fx['capacity_by_annual_kwh'][s.capacity_bracket]),
         'transitional': transitional,
-        'sales_fee': float(s.sales_fee_net),
+        'sales_fee': (_g13s_sales_fee(period, s) if tariff == 'G13s'
+                      else float(s.sales_fee_net)),
     }

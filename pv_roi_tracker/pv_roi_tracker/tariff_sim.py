@@ -27,7 +27,7 @@ from .tariff_catalog import (
 
 logger = logging.getLogger(__name__)
 
-STATIC_TARIFFS = ('G11', 'G12', 'G12w', 'G13')
+STATIC_TARIFFS = ('G11', 'G12', 'G12w', 'G13', 'G13s')
 ALL_TARIFFS = STATIC_TARIFFS + ('dyn_a', 'dyn_b')
 RELIABLE_MIN_COVERAGE_PCT = 95.0
 
@@ -42,6 +42,11 @@ def _required(sales: dict, key: str) -> float:
     if v is None:
         raise ValueError(f'dyn_a: brak {key} w katalogu')
     return float(v)
+
+
+def _g13s_from(catalog: dict) -> Optional[str]:
+    """Pierwszy dzień oferty G13s („Tanie godziny”); przed nim taryfa niedostępna."""
+    return (catalog.get('available_from') or {}).get('G13s')
 
 
 def _dyn_b_price(catalog: dict, overrides: Optional[dict]) -> float:
@@ -86,18 +91,26 @@ def simulate_month(ym: str, import_by_hour: dict, catalog: dict,
             p = periods[d] = period_for(catalog, d, overrides)
         return p
 
+    g13s_from = _g13s_from(catalog)
+    g13s_month_ok = not (g13s_from and ym < g13s_from[:7])
     for key in sorted(k for k in import_by_hour if k.startswith(ym)):
         kwh = float(import_by_hour[key])
         if kwh <= 0:
             continue
         dt = _parse_key(key)
         p = period_of(dt.date())
-        for n in names:
+        g13s_on = not (g13s_from and dt.date().isoformat() < g13s_from)
+        active = tuple(n for n in names if n != 'G13s' or g13s_on)
+        for n in active:
             acc[n]['kwh'] += kwh
             if not p['confirmed']:
                 confirmed[n] = False
+        for t in p.get('unconfirmed_tariffs') or ():
+            confirmed[t] = False
 
         for n in STATIC_TARIFFS:
+            if n not in active:
+                continue
             r = rates_per_kwh(n, p, zone_for(n, dt, catalog))
             for f in ('energy', 'dist', 'fees'):
                 acc[n][f] += kwh * r[f]
@@ -137,10 +150,14 @@ def simulate_month(ym: str, import_by_hour: dict, catalog: dict,
 
     first = period_of(date(int(ym[:4]), int(ym[5:7]), 1))
     fixed = sum(fixed_monthly(first, settings).values())
+    fixed_g13s = sum(fixed_monthly(first, settings, 'G13s').values()) if g13s_month_ok else None
     confirmed_first = bool(first['confirmed'])
 
     out: dict = {}
     for n in names:
+        if n == 'G13s' and not g13s_month_ok:
+            out[n] = {'available': False, 'reason': f'oferta „Tanie godziny” od {g13s_from[:7]}'}
+            continue
         if n == 'dyn_b' and not b_available:
             out[n] = {'available': False, 'reason': f'oferta od {b_from}'}
             continue
@@ -149,12 +166,13 @@ def simulate_month(ym: str, import_by_hour: dict, catalog: dict,
                       'reason': 'cennik dynamiczny od 2026-04-01; wcześniejsze wersje nieustalone'}
             continue
         a = acc[n]
-        net = a['energy'] + a['dist'] + a['fees'] + fixed
+        fx = fixed_g13s if n == 'G13s' else fixed
+        net = a['energy'] + a['dist'] + a['fees'] + fx
         gross = net * vat
         coverage = 100.0 * (a['kwh'] - a['missing']) / a['kwh'] if a['kwh'] > 0 else 100.0
         res = {
             'kwh': a['kwh'], 'energy': a['energy'], 'dist': a['dist'], 'fees': a['fees'],
-            'fixed': fixed, 'net': net, 'vat': gross - net, 'gross': gross,
+            'fixed': fx, 'net': net, 'vat': gross - net, 'gross': gross,
             'confirmed': confirmed[n] and confirmed_first,
             'coverage_pct': coverage, 'missing_kwh': a['missing'],
         }
@@ -214,8 +232,13 @@ def hourly_series(from_date: date, to_date: date, import_by_hour: dict, catalog:
     sales = catalog.get('dynamic_sales', {})
     a_from = sales.get('valid_from')
     b_from = (catalog.get('dynamic_sales_b') or {}).get('valid_from')
+    g13s_from = _g13s_from(catalog)
     out: dict = {}
     for n in tariffs:
+        if n == 'G13s' and g13s_from and to_date.isoformat() < g13s_from:
+            out[n] = {'available': False, 'reason': f'oferta „Tanie godziny” od {g13s_from[:7]}',
+                      'hours': []}
+            continue
         if n == 'dyn_a' and a_from and to_date.isoformat() < a_from:
             out[n] = {'available': False, 'reason': 'cennik dynamiczny od 2026-04-01; wcześniejsze wersje nieustalone',
                       'hours': []}
@@ -239,7 +262,10 @@ def hourly_series(from_date: date, to_date: date, import_by_hour: dict, catalog:
                     continue
                 fallback = False
                 net: Optional[float]
-                if n in STATIC_TARIFFS:
+                if n == 'G13s' and g13s_from and iso < g13s_from:
+                    zone = None     # przed ofertą: brak strefy i ceny (nie ValueError z katalogu)
+                    net = None
+                elif n in STATIC_TARIFFS:
                     zone = zone_for(n, dt, catalog)
                     r = rates_per_kwh(n, p, zone)
                     net = r['energy'] + r['dist'] + r['fees']
@@ -300,6 +326,9 @@ def cost_by_zone(series: dict, catalog: dict, settings: Optional[TariffSettings]
         missing = 0.0
         days = set()
         for r in s['hours']:
+            if n == 'G13s' and r['zone'] is None:    # przed ofertą: bez opłat stałych
+                missing += r['kwh']
+                continue
             days.add(r['key'][:10])
             if r['cost_net'] is None:
                 missing += r['kwh']
@@ -311,7 +340,7 @@ def cost_by_zone(series: dict, catalog: dict, settings: Optional[TariffSettings]
         fixed_net = 0.0
         for iso in days:
             d = date.fromisoformat(iso)
-            monthly = sum(fixed_monthly(period_for(catalog, d, overrides), settings).values())
+            monthly = sum(fixed_monthly(period_for(catalog, d, overrides), settings, n).values())
             fixed_net += monthly / calendar.monthrange(d.year, d.month)[1]
         fixed_gross = fixed_net * vat
         out[n] = {'zones': zones, 'fixed_net': fixed_net, 'fixed_gross': fixed_gross,

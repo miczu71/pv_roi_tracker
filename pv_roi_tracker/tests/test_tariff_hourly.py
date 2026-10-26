@@ -176,3 +176,29 @@ def test_dst_jeden_wiersz_na_klucz(cat):
     assert len(s) == 24 and [r['key'] for r in s].count('2026-10-25T02') == 1
     assert zone_map({'G11': {'available': True, 'reason': None, 'hours': s}})['G11']['cells'][
         '2026-10-25'][2]['zone'] == 'all'
+
+
+# ── G13s (E1) ────────────────────────────────────────────────────────────────
+
+def test_g13s_seria_przed_2026_ceny_none(cat):
+    s = hourly_series(date(2025, 12, 31), date(2026, 1, 1), {}, cat, tariffs=("G13s",))["G13s"]
+    assert s["available"] is True
+    before = [r for r in s["hours"] if r["key"].startswith("2025-12-31")]
+    after = [r for r in s["hours"] if r["key"].startswith("2026-01-01")]
+    assert len(before) == 24 and len(after) == 24
+    assert all(r["net_per_kwh"] is None and r["zone"] is None for r in before)
+    assert all(r["net_per_kwh"] is not None for r in after)
+
+
+def test_g13s_caly_zakres_przed_2026_niedostepna(cat):
+    s = hourly_series(date(2025, 6, 1), date(2025, 6, 2), {}, cat, tariffs=("G13s",))["G13s"]
+    assert s["available"] is False and s["hours"] == []
+
+
+def test_g13s_cost_by_zone_oplata_tylko_od_dostepnosci(cat):
+    series = hourly_series(date(2025, 12, 31), date(2026, 1, 1), {"2026-01-01T12": 1.0}, cat,
+                           tariffs=("G13s",))
+    res = cost_by_zone(series, cat)["G13s"]
+    jan = (10.86 + 4.56 + 24.05 + 19.10)
+    assert res["fixed_net"] == pytest.approx(jan / 31)
+    assert res["zones"]["winter_dayoff_offpeak"]["kwh"] == pytest.approx(1.0)   # 1 stycznia = święto
