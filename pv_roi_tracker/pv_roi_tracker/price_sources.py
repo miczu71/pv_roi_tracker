@@ -201,3 +201,41 @@ class PriceCache:
             except Exception as e:
                 logger.warning('price_sources: Kompas %s..%s niedostępny: %s', *rng, e)
         self.save()
+
+
+def fetch_ahead(day: date, cache: 'PriceCache', http_get: Optional[HttpGet] = None) -> dict:
+    """Ceny RDN i strefy Kompasu dla dnia bieżącego/przyszłego — BEZ zapisu do cache na dysku.
+
+    Ceny dnia bieżącego i przyszłych nie są ostateczne, więc nie trafiają do `PriceCache`.
+    Kurs: `cache.eurpln[day]`, w razie braku ostatni znany kurs (`eurpln_fallback: True`);
+    bez żadnego kursu `rdn_available: False`. Błąd sieci / pusta odpowiedź RDN → `rdn_available:
+    False` z treścią błędu w `reason`. Kompas pobierany osobno — jego brak nie blokuje RDN.
+    """
+    iso = day.isoformat()
+    out = {'rdn': {}, 'kompas': {}, 'eurpln_fallback': False, 'eurpln_used': None,
+           'rdn_available': False, 'reason': None}
+
+    try:
+        out['kompas'] = fetch_kompas_hourly(iso, iso, http_get=http_get)
+    except Exception as e:
+        logger.warning('price_sources: Kompas %s niedostępny: %s', iso, e)
+
+    rate = cache.eurpln.get(iso)
+    if rate is None and cache.eurpln:
+        rate = cache.eurpln[max(cache.eurpln)]
+        out['eurpln_fallback'] = True
+    if rate is None:
+        out['reason'] = f'brak kursu EUR/PLN w cache dla {iso}'
+        return out
+    out['eurpln_used'] = float(rate)
+    try:
+        rdn = fetch_rdn_hourly(iso, iso, http_get=http_get, eurpln={iso: float(rate)})
+    except Exception as e:
+        out['reason'] = f'RDN {iso} niedostępne: {e}'
+        return out
+    if not rdn:
+        out['reason'] = f'brak notowań RDN dla {iso} (jeszcze nieopublikowane?)'
+        return out
+    out['rdn'] = rdn
+    out['rdn_available'] = True
+    return out

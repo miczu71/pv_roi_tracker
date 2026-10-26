@@ -203,3 +203,70 @@ def test_cache_uszkodzony_plik(tmp_path):
     path.write_text("{nie json")
     c = ps.PriceCache(path)
     assert c.rdn == {} and c.kompas == {} and c.eurpln == {}
+
+
+# ── fetch_ahead (E1) ─────────────────────────────────────────────────────────
+
+def _ahead_cache(tmp_path, eurpln):
+    c = ps.PriceCache(tmp_path / 'c.json')
+    c.eurpln = dict(eurpln)
+    return c
+
+
+def _ahead_fake(calls, rdn_ok=True, kompas_ok=True):
+    def fake(url):
+        calls.append(url)
+        if 'energy-charts' in url:
+            if not rdn_ok:
+                raise OSError('timeout RDN')
+            return {"unix_seconds": [_unix(2026, 10, 26, 23)], "price": [100.0]}   # 00:00 lokalnie 27.10
+        if 'pdgsz' in url:
+            if not kompas_ok:
+                raise OSError('timeout PSE')
+            return {"value": [{"is_active": True, "usage_fcst": 2, "dtime": "2026-10-27 10:00:00"}]}
+        raise AssertionError(url)
+    return fake
+
+
+def test_fetch_ahead_ok_bez_zapisu_na_dysk(tmp_path):
+    cache = _ahead_cache(tmp_path, {"2026-10-27": 4.0})
+    calls = []
+    r = ps.fetch_ahead(date(2026, 10, 27), cache, http_get=_ahead_fake(calls))
+    assert r['rdn_available'] is True and r['reason'] is None
+    assert r['rdn'] == {"2026-10-27T00": pytest.approx(400.0)}
+    assert r['kompas'] == {"2026-10-27T10": "S3"}
+    assert r['eurpln_used'] == 4.0 and r['eurpln_fallback'] is False
+    assert not (tmp_path / 'c.json').exists() and cache.rdn == {}
+    assert not any('nbp' in u for u in calls)
+
+
+def test_fetch_ahead_brak_kursu_na_dzien_uzywa_ostatniego(tmp_path):
+    cache = _ahead_cache(tmp_path, {"2026-10-20": 4.1, "2026-10-23": 4.2})
+    r = ps.fetch_ahead(date(2026, 10, 27), cache, http_get=_ahead_fake([]))
+    assert r['eurpln_fallback'] is True and r['eurpln_used'] == 4.2
+    assert r['rdn_available'] is True
+
+
+def test_fetch_ahead_brak_jakiegokolwiek_kursu(tmp_path):
+    r = ps.fetch_ahead(date(2026, 10, 27), _ahead_cache(tmp_path, {}), http_get=_ahead_fake([]))
+    assert r['rdn_available'] is False and 'kurs' in r['reason']
+    assert r['rdn'] == {} and r['eurpln_used'] is None
+
+
+def test_fetch_ahead_blad_sieci_rdn_ale_kompas_dziala(tmp_path):
+    cache = _ahead_cache(tmp_path, {"2026-10-27": 4.0})
+    r = ps.fetch_ahead(date(2026, 10, 27), cache, http_get=_ahead_fake([], rdn_ok=False))
+    assert r['rdn_available'] is False and 'timeout RDN' in r['reason']
+    assert r['kompas'] == {"2026-10-27T10": "S3"}
+
+
+def test_fetch_ahead_pusta_odpowiedz_rdn(tmp_path):
+    cache = _ahead_cache(tmp_path, {"2026-10-27": 4.0})
+
+    def fake(url):
+        if 'energy-charts' in url:
+            return {"unix_seconds": [], "price": []}
+        return {"value": []}
+
+    r = ps.fetch_ahead(date(2026, 10, 27), cache, http_get=fake)
+    assert r['rdn_available'] is False and r['reason'] and r['kompas'] == {}

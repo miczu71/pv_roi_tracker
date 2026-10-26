@@ -97,7 +97,7 @@ _SENSORS: list[_Sensor] = [
     _Sensor('tariffsim_cheapest', 'PV Tariff Sim Cheapest', None, None, None, None, 'mdi:medal'),
     _Sensor('tariffsim_saving_vs_g12w', 'PV Tariff Sim Saving vs G12w', None, 'PLN', 'monetary', None, 'mdi:piggy-bank-outline'),
     # Latest-invoice rates (v0.20.0) — single source of truth for energy_simulation.yaml
-    # and Analiza taryf; values come from invoice_rates (see _render_value), not RoiResult.
+    # and the tariff UI; values come from invoice_rates (see _render_value), not RoiResult.
     # NOTE: per-kWh rates are NOT device_class 'monetary' — HA's monetary class requires a
     # currency unit (PLN), and 'PLN/kWh' triggers warnings + blocks long-term stats.
     # Only the whole-PLN/month fixed_* charges keep device_class 'monetary'.

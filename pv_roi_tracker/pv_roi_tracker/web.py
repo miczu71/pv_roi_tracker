@@ -7,9 +7,11 @@ import io
 import logging
 import re
 import threading
-from datetime import date, datetime
+from collections import OrderedDict
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from dateutil.relativedelta import relativedelta
 from flask import Flask, Response, jsonify, request
@@ -17,8 +19,6 @@ from flask import Flask, Response, jsonify, request
 from . import __version__
 from .models import MonthlyRecord
 from .roi import RoiResult, bill_comparison as _bill_comparison, underperformance_analysis as _underperformance_analysis
-from . import tariff_analysis as _tariff_analysis
-from . import live_reader as _live_reader
 from .tariff_analysis import _month_label
 
 app = Flask(__name__)
@@ -179,7 +179,6 @@ _state: dict = {
     'month_closed': False,
     'rcem_scrape_status': None,
     'updated_at': None,
-    'tariff_comparison': None,
     'rce_comparison': None,
     'deposit': None,
     'battery_sim': None,
@@ -199,12 +198,6 @@ def update_state(result: RoiResult, records: list[MonthlyRecord],
         _state['month_closed'] = month_closed
         _state['rcem_scrape_status'] = rcem_scrape_status
         _state['updated_at'] = datetime.now().isoformat(timespec='seconds')
-
-
-def update_tariff_comparison(tariff_data: dict) -> None:
-    """Store the computed tariff comparison payload (called from main.py poll loop)."""
-    with _lock:
-        _state['tariff_comparison'] = tariff_data
 
 
 def update_rce_comparison(rce_data: dict) -> None:
@@ -539,7 +532,6 @@ def api_data():
         'cost_breakdown': _build_cost_breakdown(_real_invoices),
         'rate_trend': _build_rate_trend(_real_invoices),
         'layouts_summary': _build_layouts_summary(),
-        'tariff_comparison': _state.get('tariff_comparison'),
         'rce_comparison': _state.get('rce_comparison'),
         'deposit': deposit_payload,
         'battery_sim': _state.get('battery_sim'),
@@ -1088,6 +1080,164 @@ def api_tariff_settings_post():
         return jsonify({'ok': False, 'error': str(exc)}), 500
 
 
+_tariff_inputs_callback = None
+_tariff_hourly_cache: 'OrderedDict' = OrderedDict()
+_TARIFF_HOURLY_CACHE_MAX = 32
+_TARIFF_HOURLY_MAX_DAYS = 400
+_TARIFF_HOURLY_RAW_MAX_DAYS = 31
+_WARSAW = ZoneInfo('Europe/Warsaw')
+_TARIFF_AHEAD_DAYS = 2      # ile dni do przodu (od jutra) dociągamy z fetch_ahead
+
+
+def set_tariff_inputs_callback(fn) -> None:
+    """fn() -> dict: import_by_hour, catalog, settings, rdn, kompas, overrides, price_cache (per request)."""
+    global _tariff_inputs_callback
+    _tariff_inputs_callback = fn
+
+
+def _today() -> date:
+    return date.today()
+
+
+def _now() -> datetime:
+    return datetime.now(_WARSAW).replace(tzinfo=None)
+
+
+def _tariff_error(msg: str, code: int = 400):
+    return jsonify({'ok': False, 'error': msg}), code
+
+
+def _parse_tariff_range():
+    """(from, to, tariffs) z query string; ValueError (po polsku) przy błędnych parametrach."""
+    from .tariff_sim import ALL_TARIFFS
+    try:
+        a = date.fromisoformat(request.args.get('from', ''))
+        b = date.fromisoformat(request.args.get('to', ''))
+    except ValueError:
+        raise ValueError('parametry from/to muszą mieć format YYYY-MM-DD')
+    if a > b:
+        raise ValueError('from musi być nie późniejsze niż to')
+    if (b - a).days + 1 > _TARIFF_HOURLY_MAX_DAYS:
+        raise ValueError(f'zakres nie może przekraczać {_TARIFF_HOURLY_MAX_DAYS} dni')
+    raw = request.args.get('tariffs')
+    tariffs = tuple(t.strip() for t in raw.split(',') if t.strip()) if raw else ALL_TARIFFS
+    unknown = [t for t in tariffs if t not in ALL_TARIFFS]
+    if unknown or not tariffs:
+        raise ValueError(f'nieznana taryfa: {", ".join(unknown) or raw}')
+    return a, b, tariffs
+
+
+@app.route('/api/tariff_hourly')
+def api_tariff_hourly():
+    """Strefy, ceny i koszty godzinowe wybranych taryf dla zakresu dat (E1)."""
+    if _tariff_inputs_callback is None:
+        return _tariff_error('tariff inputs not wired', 503)
+    try:
+        a, b, tariffs = _parse_tariff_range()
+    except ValueError as exc:
+        return _tariff_error(str(exc))
+    from . import price_sources as _ps, tariff_sim as _ts
+    inp = _tariff_inputs_callback()
+    today = _today()
+    future = b > today
+    # zakres z dniem bieżącym/przyszłym: ceny RDN i pobór się zmieniają → cache tylko w 10-min kubełku
+    bucket = _now().strftime('%Y%m%d%H%M')[:-1] if b >= today else None
+    key = (a.isoformat(), b.isoformat(), tariffs, len(inp['rdn']), len(inp['kompas']),
+           len(inp['import_by_hour']), repr(inp['settings']), bucket)
+    cached = _tariff_hourly_cache.get(key)
+    if cached is not None:
+        return jsonify(cached)
+    try:
+        rdn, kompas = dict(inp['rdn']), dict(inp['kompas'])
+        tomorrow = None
+        ahead: dict = {}
+        if b >= today:
+            # PriceCache.ensure nie cache'uje dnia bieżącego, więc jego RDN też dociągamy tu
+            for i in range(0, _TARIFF_AHEAD_DAYS + 1):
+                day = today + timedelta(days=i)
+                if not (a <= day <= b) and not (future and i == 1):
+                    continue
+                res = _ps.fetch_ahead(day, inp['price_cache'])
+                ahead[day] = res
+                rdn.update(res['rdn'])
+                kompas.update(res['kompas'])
+        if future:
+            t = ahead[today + timedelta(days=1)]
+            tomorrow = {'day': (today + timedelta(days=1)).isoformat(),
+                        **{k: t[k] for k in ('rdn_available', 'reason', 'eurpln_fallback', 'eurpln_used')}}
+        series = _ts.hourly_series(a, b, inp['import_by_hour'], inp['catalog'], tariffs,
+                                   inp['settings'], rdn, kompas, inp['overrides'])
+        if a > today and 'dyn_a' in series and series['dyn_a']['available']:
+            dayres = [ahead[d] for d in ahead if a <= d <= b]
+            if dayres and not any(r['rdn_available'] for r in dayres):
+                series['dyn_a'] = {'available': False, 'hours': [],
+                                   'reason': next(r['reason'] for r in dayres if r['reason'])}
+        past = {n: {**s, 'hours': [r for r in s['hours'] if r['key'][:10] <= today.isoformat()]}
+                for n, s in series.items()}
+        resp = {'ok': True, 'from': a.isoformat(), 'to': b.isoformat(),
+                'zone_map': _ts.zone_map(series),
+                'cost_by_zone': _ts.cost_by_zone(past, inp['catalog'], inp['settings'],
+                                                 inp['overrides'])}
+        if len(tariffs) >= 2:
+            resp['cumulative_diff'] = _ts.cumulative_diff(past, tariffs[0], tariffs[1])
+        resp['hours'] = ({n: s['hours'] for n, s in series.items()}
+                         if (b - a).days + 1 <= _TARIFF_HOURLY_RAW_MAX_DAYS else None)
+        if tomorrow is not None:
+            resp['tomorrow'] = tomorrow
+    except (ValueError, LookupError) as exc:
+        return _tariff_error(str(exc))
+    except Exception as exc:
+        log.exception('tariff_hourly failed')
+        return _tariff_error(str(exc), 500)
+    if all(r['rdn_available'] for r in ahead.values()):      # brak RDN/sieci nie jest cache'owany
+        _tariff_hourly_cache[key] = resp
+        while len(_tariff_hourly_cache) > _TARIFF_HOURLY_CACHE_MAX:
+            _tariff_hourly_cache.popitem(last=False)
+    return jsonify(resp)
+
+
+@app.route('/api/tariff_now')
+def api_tariff_now():
+    """Bieżąca strefa i cena taryfy użytkownika (G12w) + najbliższa zmiana strefy."""
+    if _tariff_inputs_callback is None:
+        return _tariff_error('tariff inputs not wired', 503)
+    from .tariff_catalog import period_for, rates_per_kwh, zone_for
+    tariff = 'G12w'
+    inp = _tariff_inputs_callback()
+    cat, ov = inp['catalog'], inp['overrides']
+    now = _now().replace(minute=0, second=0, microsecond=0)
+    try:
+        zone = zone_for(tariff, now, cat)
+        r = rates_per_kwh(tariff, period_for(cat, now.date(), ov), zone)
+        net = r['energy'] + r['dist'] + r['fees']
+        nxt = None
+        for i in range(1, 49):
+            t = now + timedelta(hours=i)
+            z = zone_for(tariff, t, cat)
+            if z != zone:
+                nxt = {'at': t.strftime('%Y-%m-%dT%H'), 'zone': z}
+                break
+    except (ValueError, LookupError) as exc:
+        return _tariff_error(str(exc))
+    return jsonify({'ok': True, 'now': now.strftime('%Y-%m-%dT%H'), 'tariff': tariff,
+                    'zone': zone, 'net_per_kwh': net,
+                    'gross_per_kwh': net * float(cat['_meta']['vat']), 'next_change': nxt})
+
+
+@app.route('/api/tariff_catalog')
+def api_tariff_catalog():
+    """Katalog taryf (tylko odczyt): meta, strefy i rozwinięte okresy cennika."""
+    if _tariff_inputs_callback is None:
+        return _tariff_error('tariff inputs not wired', 503)
+    from .tariff_catalog import _expand
+    cat = _tariff_inputs_callback()['catalog']
+    try:
+        periods = [_expand(cat, e) for e in cat['periods']]
+    except (ValueError, LookupError) as exc:
+        return _tariff_error(f'błędny katalog taryf: {exc}', 500)
+    return jsonify({'ok': True, 'meta': cat['_meta'], 'zones': cat['zones'], 'periods': periods})
+
+
 @app.route('/api/invoice/upload', methods=['POST'])
 def invoice_upload():
     if _invoice_reconcile_callback is None:
@@ -1622,71 +1772,6 @@ def api_battery_config_post():
     except Exception as exc:
         log.exception('battery_config POST failed')
         return jsonify({'ok': False, 'error': str(exc)}), 500
-
-
-@app.route('/api/tariff_stats')
-def api_tariff_stats():
-    """
-    On-demand tariff statistics for the interactive chart.
-    Query params:
-      from   — start date ISO string, default '2025-01-01'
-      period — 'day' or 'month', default 'day'
-    Returns JSON with 'kpis' and 'series' keys.
-    """
-    from_date = request.args.get('from', '2025-01-01')
-    period    = request.args.get('period', 'day')
-    if period not in ('day', 'month'):
-        return jsonify({'error': "period must be 'day' or 'month'"}), 400
-    stats = _live_reader.get_ha_tariff_stats(
-        [
-            'sensor.symulacja_miesieczna_dynamicznej_faktura',
-            'sensor.koszt_zmienny_g12w_miesieczny',
-        ],
-        start=from_date,
-        period=period,
-    )
-    dyn  = stats.get('sensor.symulacja_miesieczna_dynamicznej_faktura', {})
-    g12w = stats.get('sensor.koszt_zmienny_g12w_miesieczny', {})
-    return jsonify(_tariff_analysis.compute_range_data(dyn, g12w, period))
-
-
-@app.route('/api/export/tariff_csv')
-def export_tariff_csv():
-    with _lock:
-        tc = _state.get('tariff_comparison')
-    if tc is None or not tc.get('months'):
-        return Response('Brak danych porównania taryf', status=202)
-
-    buf = io.StringIO()
-    w = csv.writer(buf)
-    w.writerow([
-        'Miesiac', 'kWh zakup', 'kWh prod.',
-        'G12w PLN', 'Dynamiczna PLN', 'Roznica PLN',
-        'G12w gr/kWh', 'Dyn gr/kWh', 'PV offset %',
-    ])
-    for m in tc['months']:
-        purchased = m.get('purchased_kwh') or 0
-        g12w_var = m.get('g12w_variable_pln') or 0
-        dyn_var = m.get('dynamic_variable_pln') or 0
-        g12w_price = round(g12w_var / purchased * 100, 1) if purchased > 0 else ''
-        dyn_price = round(dyn_var / purchased * 100, 1) if purchased > 0 else ''
-        w.writerow([
-            m.get('ym', ''),
-            round(purchased, 2),
-            round(m.get('produced_kwh') or 0, 2),
-            round(g12w_var, 2),
-            round(dyn_var, 2),
-            round(m.get('diff_pln') or 0, 2),
-            g12w_price,
-            dyn_price,
-            m.get('pv_offset_pct', ''),
-        ])
-    filename = f'taryfa_porownanie_{date.today().strftime("%Y%m%d")}.csv'
-    return Response(
-        '﻿' + buf.getvalue(),
-        mimetype='text/csv; charset=utf-8',
-        headers={'Content-Disposition': f'attachment; filename={filename}'},
-    )
 
 
 _STATIC_DIR = Path(__file__).parent / 'static'

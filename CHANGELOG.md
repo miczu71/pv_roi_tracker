@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.47.0] — 2026-10-26
+
+Nowy układ UI: dwie sekcje (PV ROI | Taryfy i energia) i osobne Ustawienia; Symulacja taryf z wykresami godzinowymi.
+
+- **Nawigacja:** przełącznik sekcji „PV ROI” / „Taryfy i energia” w nagłówku, ⚙ Ustawienia jako osobny widok, podzakładki pod spodem, stan w adresie (`#pv/<zakładka>`, `#taryfy/<zakładka>`, `#ustawienia`). Karta główna (KPI) tylko w PV ROI, z nowym kafelkiem salda depozytu.
+- **Ustawienia (⚙):** ręczne nadpisanie RCEm, parametry symulacji taryf, parametry magazynu, eBOK (nauczone układy, diagnostyka parsera) i formularz ręcznych wpisów taryfy w jednym miejscu.
+- **Taryfy i energia:** pasek podsumowania (strefa i cena kWh teraz, ostatnia faktura i status, rekomendacja); zakładka Taryfa (stawki brutto G12w, godziny stref, skład ceny, wykres ceny z 7 dni, oś czasu stawek tylko do odczytu, cennik Tauron); Faktury w nowej kolejności (KPI, lista i wgrywanie PDF, „Na co idą pieniądze”, trend stawek, zwijane: depozyt, rekonsyliacja, pokrycie).
+- **Symulacja taryf:** przyklejony pasek sterowania (taryfy G11/G12/G12w/G13/dyn_a/dyn_b, okres Dziś/Wczoraj/7 dni/14 dni/Ten miesiąc/12 mies./Jutro/Własny, wariant A/B, para do różnicy; stan w adresie, na telefonie zwijany do „Filtry”) oraz cztery wykresy: mapa stref i cen, cena godzinowa z poborem, koszt wg stref, różnica narastająco. „Jutro” pokazuje tylko ceny i strefy.
+- **API:** nowe `GET /api/tariff_hourly` (strefy, ceny, koszty godzinowe; do 400 dni, godziny surowe do 31 dni), `GET /api/tariff_now`, `GET /api/tariff_catalog`.
+- **Usunięte:** zakładka „Analiza taryf” oraz `/api/tariff_stats`, `/api/export/tariff_csv` (zastąpione Symulacją).
+- Znane ograniczenia: godziny dyn_a wycenione ceną sprzed tygodnia nie są jeszcze oznaczone w UI; brak powodu przy niedostępnej cenie dyn_b (Kompas); wykresy godzinowe liczą wariant A.
+
 ## [0.46.5] — 2026-10-26
 
 Diagnostyka błędu „Płatnik nie znaleziony na /wyborKlienta”.

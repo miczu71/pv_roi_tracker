@@ -8,7 +8,7 @@ import calendar
 import json as _json
 import logging
 import os
-from datetime import date, datetime as _dt, timedelta, timezone as _tz
+from datetime import date, datetime as _dt
 from statistics import mean
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -21,7 +21,6 @@ from .models import MonthlyRecord
 logger = logging.getLogger(__name__)
 
 _BASE     = 'http://supervisor/core/api/states'
-_BASE_API = 'http://supervisor/core/api'
 _TOKEN    = os.environ.get('SUPERVISOR_TOKEN', '')
 _HEADERS  = {'Authorization': f'Bearer {_TOKEN}', 'Content-Type': 'application/json'}
 _SYSTEM_KWP           = float(os.environ.get('SYSTEM_KWP', '6.72'))
@@ -99,18 +98,6 @@ def _get_state(entity_id: str) -> Optional[float]:
         return float(state)
     except (requests.RequestException, ValueError) as exc:
         logger.warning('Cannot read %s: %s', entity_id, exc)
-        return None
-
-
-def _get_state_raw(entity_id: str) -> Optional[str]:
-    """Return raw HA entity state as string, or None if unavailable/unknown."""
-    try:
-        resp = requests.get(f'{_BASE}/{entity_id}', headers=_HEADERS, timeout=10)
-        resp.raise_for_status()
-        state = resp.json().get('state', '')
-        return None if state in ('unavailable', 'unknown', '') else state
-    except (requests.RequestException, ValueError) as exc:
-        logger.warning('Cannot read raw %s: %s', entity_id, exc)
         return None
 
 
@@ -607,64 +594,6 @@ def get_energy_window(start_date: date, end_date_exclusive: date) -> dict:
         'battery_charge':    _role_sum(sources['battery_charge']),
         'battery_discharge': _role_sum(sources['battery_discharge']),
         'arb_kwh':           _entity_sum(arb_entity),
-    }
-
-
-def get_ha_history_7d(entity_ids: list) -> dict:
-    """
-    Fetch 7-day state history from HA Recorder for the given entity_ids.
-    Returns {entity_id: [{t: iso_str, v: float}]} filtered to numeric states.
-    """
-    now   = _dt.now(_tz.utc)
-    start = (now - timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%S+00:00')
-    end   = now.strftime('%Y-%m-%dT%H:%M:%S+00:00')
-    ids_param = ','.join(entity_ids)
-    try:
-        resp = requests.get(
-            f'{_BASE_API}/history/period/{start}',
-            headers=_HEADERS,
-            params={
-                'filter_entity_id': ids_param,
-                'end_time': end,
-                'minimal_response': 'true',
-                'no_attributes': 'true',
-            },
-            timeout=30,
-        )
-        resp.raise_for_status()
-        data = resp.json()  # list of lists of state dicts
-        result = {eid: [] for eid in entity_ids}
-        for entity_history in data:
-            if not entity_history:
-                continue
-            eid = entity_history[0].get('entity_id', '')
-            if eid not in result:
-                continue
-            for sd in entity_history:
-                state = sd.get('state', '')
-                ts = sd.get('last_changed') or sd.get('lu', '')
-                try:
-                    v = float(state)
-                    result[eid].append({'t': ts, 'v': v})
-                except (ValueError, TypeError):
-                    pass
-        return result
-    except Exception as exc:
-        logger.warning('get_ha_history_7d failed: %s', exc)
-        return {eid: [] for eid in entity_ids}
-
-
-def read_tariff_live() -> dict:
-    """Fetch live tariff comparison sensor values from HA."""
-    return {
-        'dynamic_diff_monthly':  _get_state('sensor.roznica_miesieczna_g12w_vs_dynamiczna'),
-        'dynamic_annual_proj':   _get_state('sensor.prognozowana_oszczednosc_roczna_dynamiczna'),
-        'dynamic_pct_cheaper':   _get_state('sensor.dynamiczna_tansza_procent_miesiac'),
-        'dyn_price_now':         _get_state('sensor.calkowity_koszt_1_kwh_dynamiczna'),
-        'g12w_price_now':        _get_state('sensor.power_tauron_g12w_current_price'),
-        'dyn_cheaper_now':       _get_state_raw('binary_sensor.dynamiczna_tansza_niz_g12w_teraz'),
-        'dyn_spike_now':         _get_state_raw('binary_sensor.dynamiczna_drozsza_niz_g12w_szczyt'),
-        'diff_kwh_now':          _get_state('sensor.dynamiczna_vs_g12w_roznica_kwh'),
     }
 
 

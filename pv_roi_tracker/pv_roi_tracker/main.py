@@ -902,6 +902,20 @@ def main() -> None:
     _web.set_tariff_settings_path(TARIFF_SETTINGS_PATH)
     _web.set_tariff_settings_callback(_tariff_settings_changed)
 
+    def _tariff_inputs() -> dict:
+        """Wejścia dla /api/tariff_hourly|now|catalog — czytane per request, bez stanu."""
+        cache = PriceCache(TARIFF_PRICE_CACHE_PATH)
+        return {
+            'import_by_hour': tariff_job.import_series(battery_store.load_hours(BATTERY_HOURS_PATH)),
+            'catalog': _tcat.load_catalog(),
+            'settings': tariff_settings_store.to_catalog_settings(
+                tariff_settings_store.load(TARIFF_SETTINGS_PATH)),
+            'rdn': cache.rdn, 'kompas': cache.kompas, 'overrides': None,
+            'price_cache': cache,
+        }
+
+    _web.set_tariff_inputs_callback(_tariff_inputs)
+
     def _battery_config_changed(cfg) -> None:
         battery_store.save_config(cfg, BATTERY_CONFIG_PATH)
         # Zmiana parametrów nie zmienia zmierzonych godzin — licz z cache,
@@ -1023,8 +1037,6 @@ def main() -> None:
         if now.day <= 20:
             return 'retrying'
         return 'error'
-
-    from .tariff_analysis import compute_tariff_tab
 
     _last: dict = {'result': None}
     _last_current: dict = {'record': None, 'key': None}
@@ -1151,44 +1163,6 @@ def main() -> None:
             except Exception:
                 logger.exception('Lifetime forecast failed — continuing')
                 _record_job('lifetime_forecast', False, 'prognoza wieloletnia nie powiodła się')
-
-            # --- Tariff comparison tab ---
-            try:
-                monthly_stats = live_reader.get_ha_monthly_stats(
-                    [
-                        'sensor.symulacja_miesieczna_dynamicznej_faktura',
-                        'sensor.koszt_zmienny_g12w_miesieczny',
-                    ],
-                    start_month='2024-12-01',
-                )
-                dyn_monthly  = monthly_stats.get('sensor.symulacja_miesieczna_dynamicznej_faktura', {})
-                g12w_monthly = monthly_stats.get('sensor.koszt_zmienny_g12w_miesieczny', {})
-                history_7d = live_reader.get_ha_history_7d([
-                    'sensor.calkowity_koszt_1_kwh_dynamiczna',
-                    'sensor.power_tauron_g12w_current_price',
-                    'sensor.roznica_dzienna_g12w_vs_dynamiczna',
-                ])
-                live_tariff = live_reader.read_tariff_live()
-                # Single source of truth: latest parsed invoice (_invoice_rates,
-                # computed once above) overrides the FIXED_GROSS_PLN / 1.23 / 0.63
-                # fallback constants when available.
-                _fixed_net = _invoice_rates.get('fixed_total_net')
-                tariff_data = compute_tariff_tab(
-                    records=all_records,
-                    dynamic_monthly_stats=dyn_monthly,
-                    g12w_monthly_stats=g12w_monthly,
-                    current_roi=result,
-                    current_month_live=live_tariff,
-                    tariff_history_7d=history_7d,
-                    fixed_gross_pln=round(_fixed_net * 1.23, 2) if _fixed_net is not None else None,
-                    peak_gross=_invoice_rates.get('peak_gross'),
-                    offpeak_gross=_invoice_rates.get('offpeak_gross'),
-                )
-                _web.update_tariff_comparison(tariff_data)
-                _record_job('tariff_comparison', True)
-            except Exception:
-                logger.exception('Tariff comparison update failed — continuing')
-                _record_job('tariff_comparison', False, 'porównanie taryf nie powiodło się')
 
             # --- RCEm vs RCE-godzinowa ---
             try:

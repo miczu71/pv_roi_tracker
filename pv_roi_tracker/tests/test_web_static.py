@@ -87,10 +87,85 @@ def test_no_duplicated_charset_in_content_type(client):
         assert ct.count('charset=') == 1, f'{path} Content-Type duplicated charset: {ct}'
 
 
+def _static(name):
+    from pathlib import Path
+    return (Path(web.__file__).parent / 'static' / name).read_text(encoding='utf-8')
+
+
 def test_tsim_tab_wired(client):
     html = client.get('/').data.decode('utf-8')
     assert 'id="tab-tsim"' in html
-    assert "showTab('tsim')" in html
-    from pathlib import Path
-    js = (Path(web.__file__).parent / 'static' / 'app.js').read_text(encoding='utf-8')
-    assert "'tsim'" in js and 'loadTsimTab' in js
+    js = _static('app.js')
+    # przycisk zakładki renderowany z ROUTES (slug symulacja -> panel tsim)
+    assert "['symulacja',  'tsim'" in js
+    assert 'loadTsimTab' in js and "name === 'tsim'" in js
+
+
+def test_tariff_analysis_tab_removed(client):
+    html = client.get('/').data.decode('utf-8')
+    assert 'id="tab-tariff"' not in html
+    js = _static('app.js')
+    for needle in ('renderTariffTab', 'fetchTariffRange', 'api/tariff_stats'):
+        assert needle not in js, needle
+
+
+def _settings_fragment(html):
+    start = html.index('id="tab-settings"')
+    return html[start:]
+
+
+def test_settings_panel_contains_moved_blocks(client):
+    html = client.get('/').data.decode('utf-8')
+    assert html.count('id="tab-settings"') == 1
+    frag = _settings_fragment(html)
+    for needle in ('submitOverride', 'saveTsimSettings', 'saveBatteryConfig', 'id="taryfaForm"',
+                   'ebokSync()', 'id="invLayoutsPanel"', 'runInvoiceDebug()'):
+        assert needle in frag, needle
+    # upload PDF zostaje w Fakturach, poza Ustawieniami
+    assert 'uploadInvoices()' not in frag
+    assert 'uploadInvoices()' in html
+
+
+def test_settings_ids_unique(client):
+    html = client.get('/').data.decode('utf-8')
+    for i in ('ovMonth', 'ovPrice', 'ovMsg', 'rcemBadge', 'tsimPhases', 'tsimBracket', 'tsimFee',
+              'tsimThreshold', 'tsimMsg', 'batPrice', 'batKwh', 'batKw', 'batEff', 'batCycles',
+              'batStart', 'batArb', 'batDynDist', 'batMsg', 'ebokSyncBtn', 'ebokMsg',
+              'invLayoutsPanel', 'debugPdfFile', 'debugOutput', 'taryfaFormTitle', 'taryfaForm',
+              'taryfaMsg'):
+        assert html.count(f'id="{i}"') == 1, i
+
+
+def test_routes_defined_and_showtab_adapter():
+    js = _static('app.js')
+    for slug in ('historia', 'prognoza', 'roczne', 'wykresy', 'rce', 'magazyn', 'prognoza25',
+                 'pompa', 'symulacja', 'faktury', 'taryfa'):
+        assert f"['{slug}'" in js, slug
+    assert 'const ROUTES' in js and 'function applyRoute' in js and 'function showTab' in js
+    assert "addEventListener('hashchange'" in js
+    html = _static('index.html')
+    assert 'id="secNav"' in html and 'id="tabsBar"' in html and 'aria-label="Ustawienia"' in html
+
+
+def test_e3_summary_taryfa_invoices_wired():
+    html = _static('index.html')
+    js = _static('app.js')
+    for i in ('taryfySummary', 'taryfaRates', 'taryfaWeekChart', 'taryfaList', 'taryfaBadge', 'taryfaCennik',
+              'invKpiCards', 'depKpiCards', 'depositChart', 'reconKpiCards', 'invCoverageGrid',
+              'tariffDriftBanner', 'costBreakdownChart', 'rateTrendChart', 'invoiceTableWrap'):
+        assert html.count(f'id="{i}"') == 1, i
+    assert html.index('id="invoiceTableWrap"') < html.index('id="costBreakdownChart"') \
+        < html.index('id="rateTrendChart"') < html.index('id="depositChart"')
+    assert 'function renderTaryfySummary' in js and 'function renderDepositTile' in js
+    assert 'stepped: true' in js
+
+
+def test_e4_tsim_controls_and_charts_ids(client):
+    body = client.get('/').data.decode('utf-8')
+    for i in ('tsimCtl', 'tsimZoneMap', 'tsimPriceChart', 'tsimZoneCost', 'tsimDiffChart', 'tsimHourlyMsg',
+              'tsimMapTariff', 'tsimReco', 'tsimTbl', 'tsimChart', 'tsimBreakMonth', 'tsimBreakTbl', 'tsimBreakMsg',
+              'tsimReconSummary', 'tsimReconTbl', 'tsimBtnA', 'tsimBtnB', 'tsimVariantSwitch'):
+        assert f'id="{i}"' in body, i
+    # przełącznik wariantu mieszka w pasku sterowania
+    ctl = body[body.index('id="tsimCtl"'):body.index('id="tsimHourlyMsg"')]
+    assert 'id="tsimVariantSwitch"' in ctl

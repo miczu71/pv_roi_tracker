@@ -1,6 +1,5 @@
 'use strict';
 let _barChart = null, _rcemChart = null, _autarkiaChart = null, _prodChart = null, _arbitrageChart = null, _netCostChart = null, _priceSpreadChart = null, _yieldChart = null, _energyBalChart = null, _yearCompChart = null, _prodRankChart = null, _depositChart = null, _costBreakdownChart = null;
-let _tariffPriceChart = null, _tariffCompChart = null, _tariffCumChart = null, _tariffSeasonChart = null, _tariffHistChart = null;
 let _rceCmpChart = null;
 let _fanChart = null, _waterfallChart = null, _sankeyChart = null, _cpiRealChart = null, _degradChart = null;
 let _billChart = null, _co2Chart = null, _rateTrendChart = null;
@@ -44,15 +43,83 @@ document.addEventListener('click', function(e) {
   if (el) el.classList.toggle('tip-open');
 });
 
-/* -- Tab switching -- */
-function showTab(name) {
-  const TABS = ['hist','pred','years','charts','invoices','tariff','taryfa','tsim','rce','battery','heatpump','forecast'];
-  TABS.forEach(t => {
+/* -- Nawigacja: sekcje + podzakładki (hash routing) -- */
+// Jedno źródło prawdy: sekcja -> podzakładki [slug, id panelu (tab-<id>), etykieta HTML].
+const ROUTES = {
+  pv: { label: 'PV ROI', tabs: [
+    ['historia',   'hist',     'Historia miesieczna'],
+    ['prognoza',   'pred',     'Prognoza splaty'],
+    ['roczne',     'years',    'Podsumowanie roczne'],
+    ['wykresy',    'charts',   'Wykresy'],
+    ['rce',        'rce',      '&#9889; RCE vs RCEm'],
+    ['magazyn',    'battery',  '&#128267; Magazyn +5 kWh'],
+    ['prognoza25', 'forecast', '&#128200; Prognoza 25 lat'],
+    ['pompa',      'heatpump', '&#128293; Pompa ciepła'],
+  ] },
+  taryfy: { label: 'Taryfy i energia', tabs: [
+    ['symulacja',  'tsim',     '<svg class="tsim-ico" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M2 13V3m0 10h12M5 10l3-3 2 2 4-5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg> Symulacja taryf'],
+    ['faktury',    'invoices', '&#128196; Faktury'],
+    ['taryfa',     'taryfa',   '&#128209; Taryfa'],
+  ] },
+  ustawienia: { label: 'Ustawienia', tabs: [] },
+};
+const _SECTION_NAV = ['pv', 'taryfy'];   // przyciski w nagłówku (ustawienia = ⚙)
+const _ALL_PANELS = ['hist','pred','years','charts','rce','battery','forecast','heatpump',
+                     'tsim','invoices','taryfa','settings'];
+let _routeReady = false, _appliedHash = null;
+
+function _parseHash() {
+  const raw = (location.hash || '').replace(/^#/, '');
+  const qi = raw.indexOf('?');
+  const path = qi >= 0 ? raw.slice(0, qi) : raw;
+  const query = qi >= 0 ? raw.slice(qi) : '';
+  const [secName, slug] = path.split('/');
+  const sec = Object.prototype.hasOwnProperty.call(ROUTES, secName) ? secName : 'pv';
+  if (sec === 'ustawienia') return { sec, slug: '', panel: 'settings', query };
+  const tabs = ROUTES[sec].tabs;
+  const t = tabs.find(x => x[0] === slug) || tabs[0];
+  return { sec, slug: t[0], panel: t[1], query };
+}
+
+function _routeHash(r) {
+  return '#' + r.sec + (r.slug ? '/' + r.slug : '');
+}
+
+function _renderNav(r) {
+  const nav = document.getElementById('secNav');
+  nav.innerHTML = _SECTION_NAV.map(k =>
+    '<button type="button" class="sec-btn' + (r.sec === k ? ' active' : '') + '"' +
+    (r.sec === k ? ' aria-current="page"' : '') +
+    ' onclick="showTab(\'' + ROUTES[k].tabs[0][1] + '\')">' + ROUTES[k].label + '</button>'
+  ).join('');
+  const gear = document.getElementById('secGear');
+  gear.classList.toggle('active', r.sec === 'ustawienia');
+  if (r.sec === 'ustawienia') gear.setAttribute('aria-current', 'page');
+  else gear.removeAttribute('aria-current');
+  const bar = document.getElementById('tabsBar');
+  const tabs = ROUTES[r.sec].tabs;
+  bar.style.display = tabs.length ? '' : 'none';
+  bar.innerHTML = tabs.map(t =>
+    '<button type="button" role="tab" class="tab-btn' + (t[0] === r.slug ? ' active' : '') + '"' +
+    ' aria-selected="' + (t[0] === r.slug) + '"' +
+    (t[1] === 'tsim' ? ' id="tab-btn-tsim"' : '') +
+    ' onclick="showTab(\'' + t[1] + '\')">' + t[2] + '</button>'
+  ).join('');
+}
+
+function applyRoute() {
+  const r = _parseHash();
+  const hash = _routeHash(r) + r.query;
+  if (location.hash !== hash) history.replaceState(null, '', hash);
+  _appliedHash = hash;
+  const name = r.panel;
+  _ALL_PANELS.forEach(t => {
     document.getElementById('tab-' + t).style.display = (t === name) ? '' : 'none';
   });
-  document.querySelectorAll('.tab-btn').forEach((b, i) =>
-    b.classList.toggle('active', TABS[i] === name)
-  );
+  document.getElementById('pvTop').style.display = (r.sec === 'pv') ? '' : 'none';
+  _renderNav(r);
+  _toggleTaryfySummary(r.sec === 'taryfy');
+  if (r.sec === 'pv') [_barChart, _yoyChart].forEach(c => c && c.resize());
   if (name === 'rce' && _rceCmpChart) _rceCmpChart.resize();
   if (name === 'battery') [_batMonthlyChart, _batCumChart].forEach(c => c && c.resize());
   if (name === 'heatpump' && _hpMonthlyChart) _hpMonthlyChart.resize();
@@ -66,14 +133,34 @@ function showTab(name) {
   if (name === 'invoices' && _costBreakdownChart) _costBreakdownChart.resize();
   if (name === 'invoices' && _rateTrendChart) _rateTrendChart.resize();
   if (name === 'forecast' && _forecastChart) _forecastChart.resize();
-  if (name === 'tariff') {
-    [_tariffPriceChart, _tariffCompChart, _tariffCumChart,
-     _tariffSeasonChart, _tariffHistChart].forEach(c => c && c.resize());
-    if (!_rangeData) fetchTariffRange();
-  }
   if (name === 'taryfa') loadTaryfaTab();
-  if (name === 'tsim') { loadTsimTab(); if (_tsimChart) _tsimChart.resize(); }
+  if (name === 'tsim') { loadTsimTab(); [_tsimChart, _tsimPriceChart, _tsimZoneCostChart, _tsimDiffChart].forEach(c => c && c.resize()); }
+  // Ustawienia: pola tsim* wypełnia loadTsimTab (idempotentne); pola bat*/invLayoutsPanel/
+  // rcemBadge wypełnia loadData niezależnie od widoczności; formularz taryfy nie wymaga danych.
+  if (name === 'settings') loadTsimTab();
 }
+
+// Adapter: zachowuje dotychczasowe wywołania showTab(id) z onclick i kodu.
+function showTab(name) {
+  let target = null;
+  if (name === 'settings') target = { sec: 'ustawienia', slug: '' };
+  else {
+    for (const [sec, def] of Object.entries(ROUTES)) {
+      const t = def.tabs.find(x => x[1] === name);
+      if (t) { target = { sec, slug: t[0] }; break; }
+    }
+  }
+  if (!target) return;
+  const cur = _parseHash();
+  const keepQuery = cur.sec === target.sec && cur.slug === target.slug ? cur.query : '';
+  const hash = _routeHash(target) + keepQuery;
+  if (location.hash !== hash) location.hash = hash;
+  applyRoute();   // synchronicznie (hashchange potem zobaczy ten sam hash i nic nie zrobi)
+}
+
+window.addEventListener('hashchange', () => {
+  if (_routeReady && location.hash !== _appliedHash) applyRoute();
+});
 
 /* -- Summary cards -- */
 function renderCards(s) {
@@ -2188,6 +2275,7 @@ async function loadData() {
 
     document.getElementById('loading').style.display = 'none';
     document.getElementById('content').style.display = '';
+    if (!_routeReady) { _routeReady = true; applyRoute(); }
     document.getElementById('updated').textContent = 'Aktualizacja: ' + (d.updated_at || '—');
 
     const badge = document.getElementById('rcemBadge');
@@ -2218,7 +2306,6 @@ async function loadData() {
     renderPredTable(d.predictions, d.summary, d.summary.avg_window);
     renderYearsTable(d.records, systemKwp);
     renderInvoicesTab(d.invoices || [], d.tariff_drift, d.records, d.layouts_summary, d.cost_breakdown, d.rate_trend);
-    if (d.tariff_comparison) renderTariffTab(d.tariff_comparison);
     if (d.rce_comparison) renderRceTab(d.rce_comparison);
     renderBatteryTab(d.battery_sim);
     renderHeatpumpTab(d.heatpump, !!d.heatpump_enabled);
@@ -2237,6 +2324,7 @@ async function loadData() {
     _populateSankeySelect(d.records);
     try { redrawSankey(); } catch (e) { console.warn('sankey:', e); }
     renderDepositSection(d.deposit, d.invoices || []);
+    renderDepositTile(d.deposit);
     // v0.27.0: nowe wykresy
     renderBillChart(d.records);
     renderCo2Chart(d.records, d.summary.co2_factor_kg_kwh || 0.597);
@@ -2364,7 +2452,7 @@ async function _refreshEbokStatus() {
    Faktury tab renderer
    ───────────────────────────────────────────────────────────── */
 function renderInvoicesTab(invoices, tariffDrift, records, layoutsSummary, costBreakdown, rateTrend) {
-  _renderInvKpiCards(invoices, tariffDrift, records);
+  _renderInvKpiCards(invoices, tariffDrift, records, rateTrend);
   _renderDriftBanner(tariffDrift);
   _renderCoverageGrid(invoices, records);
   _renderCostBreakdown(costBreakdown);
@@ -2457,17 +2545,12 @@ function _renderCostBreakdown(breakdown) {
   });
 }
 
-/* KPI summary cards */
-function _renderInvKpiCards(invoices, tariffDrift, records) {
+/* KPI summary cards: ostatnia faktura, średni koszt, efektywna zł/kWh, depozyt */
+function _renderInvKpiCards(invoices, tariffDrift, records, rateTrend) {
   const wrap = document.getElementById('invKpiCards');
   if (!wrap) return;
   const sorted = [...invoices].filter(i => i.month).sort((a,b) => b.month.localeCompare(a.month));
   const latest = sorted[0] || null;
-
-  const totalHistoric = (records || []).filter(r => !r.is_current).length;
-  const covered = invoices.filter(i => i.reconciled).length;
-  const coveragePct = totalHistoric > 0 ? Math.round(covered / totalHistoric * 100) : 0;
-  const hasDrift = tariffDrift && (tariffDrift.peak || tariffDrift.offpeak || tariffDrift.fixed_net);
 
   const kpiStyle = 'min-width:160px;padding:12px 16px;background:var(--card);border-radius:var(--radius);box-shadow:var(--shadow);flex:1 1 160px';
   const lbl = (t) => '<div style="font-size:11px;color:var(--muted);margin-bottom:4px">' + t + '</div>';
@@ -2476,26 +2559,42 @@ function _renderInvKpiCards(invoices, tariffDrift, records) {
     '</div>';
 
   let html = '';
-  // Deposit balance
-  const depBal = latest ? (latest.deposit_previous != null ? latest.deposit_previous.toFixed(2) + ' zł' : '—') : '—';
-  html += '<div style="' + kpiStyle + '">' + lbl('Saldo depozytu') + val(depBal) + '</div>';
-
-  // Last invoice
+  // Ostatnia faktura
   const lastInv = latest ? (latest.amount_due != null ? latest.amount_due.toFixed(2) + ' zł' : '—') : '—';
   const lastMon = latest ? latest.month : '—';
   html += '<div style="' + kpiStyle + '">' + lbl('Ostatnia faktura (' + lastMon + ')') + val(lastInv) + '</div>';
 
-  // Coverage
-  html += '<div style="' + kpiStyle + '">' + lbl('Pokrycie faktury') +
-    val(covered + ' / ' + totalHistoric, coveragePct + '%') + '</div>';
+  // Średni koszt: średnia amount_due z ostatnich 12 faktur
+  const amts = sorted.slice(0, 12).map(i => i.amount_due).filter(v => v != null);
+  const avg = amts.length ? amts.reduce((a, b) => a + b, 0) / amts.length : null;
+  html += '<div style="' + kpiStyle + '">' + lbl('Średni koszt faktury') +
+    val(avg != null ? avg.toFixed(2) + ' zł' : '—', amts.length ? 'z ' + amts.length + ' fakt.' : '') + '</div>';
 
-  // Drift status
-  const driftTxt = hasDrift ? '⚠ zmiana stawek' : '✓ stawki OK';
-  const driftCol = hasDrift ? '#e67e22' : '#27ae60';
-  html += '<div style="' + kpiStyle + ';">' + lbl('Status taryfy') +
-    '<div style="font-size:15px;font-weight:700;color:' + driftCol + '">' + driftTxt + '</div></div>';
+  // Efektywna zł/kWh
+  const eff = rateTrend ? rateTrend.latest_effective_gross_per_kwh : null;
+  html += '<div style="' + kpiStyle + '">' + lbl('Efektywna cena brutto') +
+    val(eff != null ? Number(eff).toFixed(4) + ' zł/kWh' : '—') + '</div>';
+
+  // Depozyt (saldo jak dotychczas: z ostatniej faktury)
+  const depBal = latest ? (latest.deposit_previous != null ? latest.deposit_previous.toFixed(2) + ' zł' : '—') : '—';
+  html += '<div style="' + kpiStyle + '">' + lbl('Saldo depozytu') + val(depBal) + '</div>';
 
   wrap.innerHTML = html;
+
+  // Pokrycie i status dryfu — w zwijanej sekcji pokrycia
+  const cov = document.getElementById('invCoverageSummary');
+  if (cov) {
+    const totalHistoric = (records || []).filter(r => !r.is_current).length;
+    const covered = invoices.filter(i => i.reconciled).length;
+    const coveragePct = totalHistoric > 0 ? Math.round(covered / totalHistoric * 100) : 0;
+    const hasDrift = tariffDrift && (tariffDrift.peak || tariffDrift.offpeak || tariffDrift.fixed_net);
+    const driftTxt = hasDrift ? '⚠ zmiana stawek' : '✓ stawki OK';
+    const driftCol = hasDrift ? '#e67e22' : '#27ae60';
+    cov.innerHTML = '<div style="' + kpiStyle + '">' + lbl('Pokrycie faktury') +
+      val(covered + ' / ' + totalHistoric, coveragePct + '%') + '</div>' +
+      '<div style="' + kpiStyle + '">' + lbl('Status taryfy') +
+      '<div style="font-size:15px;font-weight:700;color:' + driftCol + '">' + driftTxt + '</div></div>';
+  }
 }
 
 /* Drift banner */
@@ -2507,11 +2606,11 @@ function _renderDriftBanner(tariffDrift) {
     if (tariffDrift.peak)      msgs.push('szczyt: skonfig. ' + tariffDrift.peak.configured + ' → faktura ' + tariffDrift.peak.invoice + ' zł/kWh');
     if (tariffDrift.offpeak)   msgs.push('poza szczytem: skonfig. ' + tariffDrift.offpeak.configured + ' → faktura ' + tariffDrift.offpeak.invoice + ' zł/kWh');
     if (tariffDrift.fixed_net) msgs.push('opłaty stałe (net): oczekiwano ' + tariffDrift.fixed_net.expected + ' → faktura ' + tariffDrift.fixed_net.invoice + ' zł/mc');
-    // Informational, not actionable: symulacja i Analiza taryf już automatycznie
+    // Informational, not actionable: symulacja taryf już automatycznie
     // korzystają ze stawek z najnowszej faktury — config.yaml jest tu tylko
     // wartością zapasową (fallback), gdy żadna faktura nie jest jeszcze wgrana.
     banner.innerHTML = 'ℹ Stawki z konfiguracji różnią się od najnowszej faktury: ' + msgs.join('; ') +
-      '. Symulacja i Analiza taryf używają już automatycznie stawek z faktury — ' +
+      '. Symulacja taryf używa już automatycznie stawek z faktury — ' +
       'config.yaml służy tylko jako wartość zapasowa, aktualizacja opcjonalna.';
     banner.style.background = '#e7f3ff';
     banner.style.borderLeft = '4px solid #3182ce';
@@ -3079,8 +3178,8 @@ const _DOCS_HTML = `
 <li><strong>Trend degradacji kWh/kWp</strong> — specyficzny uzysk miesięczny z linią trendu; badge ostrzega, gdy trend spadkowy jest szybszy niż zakładana gwarancja producenta (<code>panel_degradation_pct_year</code>)</li>
 <li><strong>Ranking produkcji miesięcznej</strong> — kolorowane per rok, medale top 3</li>
 </ul>
-<h3>📈 Analiza taryf</h3>
-<p>Porównanie G12w (szczyt/poza szczytem) z taryfą dynamiczną opartą na godzinowych cenach RCE. Wykres 7-dniowy i tabela podsumowania. Stawki referencyjne G12w pochodzą z ostatniej przetworzonej faktury.</p>
+<h3>📈 Taryfy i energia</h3>
+<p>Osobna sekcja: Symulacja taryf (G11/G12/G12w/G13 i dynamiczne; mapa stref i cen, cena godzinowa, koszt wg stref, różnica narastająco), Faktury oraz Taryfa (stawki, godziny stref, cennik Tauron). Ustawienia symulacji i ręczne wpisy taryfy są pod ⚙.</p>
 <h3>📑 Taryfa</h3>
 <p>Ręczne wpisy stawek z datą obowiązywania — wypełniają lukę ogłoszenia taryfy: nowe stawki Tauron wchodzą 1 stycznia, ale faktura potwierdzająca nadchodzi dopiero w lutym. Ręczny override automatycznie ustępuje po wgraniu faktury za dany miesiąc.<br><strong>Priorytet:</strong> baseline (seed) &lt; faktura &lt; override (aktywny tylko gdy data wpisu jest nowsza niż najnowsza faktura).</p>
 <h3>⚡ RCE vs RCEm</h3>
@@ -3354,350 +3453,6 @@ async function runInvoiceDebug() {
   document.getElementById('ovMonth').max   = m;
 })();
 
-/* ===================== TARIFF COMPARISON TAB ===================== */
-function renderTariffTab(tc) {
-  if (!tc) return;
-  const s = tc.summary || {};
-  const cm = tc.current_month || {};
-  const c7d = tc.chart_7d || {};
-  const pv = tc.pv_context || {};
-
-  // Warning banner
-  const banner = document.getElementById('tariffWarning');
-  if (banner) banner.style.display = s.n_months_warning ? '' : 'none';
-
-  /* --- Sekcja 1: TERAZ — status bar --- */
-  const dynCheaper = cm.dyn_cheaper_now === 'on';
-  const dynSpike   = cm.dyn_spike_now   === 'on';
-  const clr  = dynCheaper ? '#27ae60' : '#e74c3c';
-  const ico  = dynCheaper ? '🟢' : '🔴';
-  const spikeBadge = dynSpike
-    ? '<span style="background:#e74c3c;color:#fff;padding:2px 10px;border-radius:4px;font-size:12px">⚡ KOLEC CENOWY</span>'
-    : '';
-  const pill = (label, val, c) =>
-    `<div style="background:#fff;border:2px solid ${c || '#ddd'};border-radius:6px;padding:6px 12px;font-size:13px">${label}: <strong>${val || '—'}</strong></div>`;
-  const statusEl = document.getElementById('tariffStatusBar');
-  if (statusEl) statusEl.innerHTML =
-    pill(ico + ' Dyn. tańsza teraz', dynCheaper ? 'TAK' : 'NIE', clr) +
-    pill('G12w teraz', price(cm.g12w_price_now), '#e74c3c') +
-    pill('Dynamiczna teraz', price(cm.dyn_price_now), '#2ecc71') +
-    pill('Różnica/kWh', (cm.diff_kwh_now > 0 ? '+' : '') + price(cm.diff_kwh_now), clr) +
-    spikeBadge;
-
-  /* --- Chart A: 7-day price --- */
-  const ctxA = document.getElementById('tariffPriceChart');
-  if (ctxA && c7d.labels && c7d.labels.length) {
-    if (_tariffPriceChart) { _tariffPriceChart.destroy(); _tariffPriceChart = null; }
-    // Reference lines — sourced from the latest parsed invoice when available
-    // (tc.summary.effective_peak_gross/effective_offpeak_gross), else the
-    // same 1.23/0.63 fallback this chart always used.
-    const effPeak    = (tc.summary && tc.summary.effective_peak_gross    != null) ? tc.summary.effective_peak_gross    : 1.23;
-    const effOffpeak = (tc.summary && tc.summary.effective_offpeak_gross != null) ? tc.summary.effective_offpeak_gross : 0.63;
-    const refPeak   = c7d.labels.map(() => effPeak);
-    const refOffpeak= c7d.labels.map(() => effOffpeak);
-    _tariffPriceChart = new Chart(ctxA, {
-      type: 'line',
-      data: { labels: c7d.labels, datasets: [
-        { label: 'G12w PLN/kWh', data: c7d.g12w, borderColor: '#e74c3c', backgroundColor: 'rgba(231,76,60,0.05)', borderWidth: 2, stepped: true, pointRadius: 0, fill: false },
-        { label: 'Dynamiczna PLN/kWh', data: c7d.dynamic, borderColor: '#2ecc71', backgroundColor: 'rgba(46,204,113,0.05)', borderWidth: 1.5, pointRadius: 0, fill: false },
-        { label: '— szczyt G12w (' + effPeak.toFixed(2) + ')',    data: refPeak,    borderColor: 'rgba(231,76,60,0.35)', borderWidth: 1, borderDash: [5,5], pointRadius: 0, fill: false },
-        { label: '— pozaszczyt (' + effOffpeak.toFixed(2) + ')',  data: refOffpeak, borderColor: 'rgba(243,156,18,0.35)', borderWidth: 1, borderDash: [5,5], pointRadius: 0, fill: false },
-      ]},
-      options: { responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { labels: { boxWidth: 10, font: { size: 11 } } } },
-        scales: {
-          x: { ticks: { maxTicksLimit: 7, font: { size: 10 }, maxRotation: 0 } },
-          y: { title: { display: true, text: 'PLN/kWh', font: { size: 11 } }, min: 0 }
-        }
-      }
-    });
-  }
-
-
-
-  /* --- KPI cards row 1 & 2 --- */
-  const recColor = s.recommendation === 'ZMIEŃ' ? '#27ae60' : s.recommendation === 'ZOSTAŃ' ? '#e74c3c' : '#777';
-  const kpiCards = [
-    { lbl: 'Śr. oszczędność/mies.', val: pln(s.avg_monthly_savings_pln, 0) + ' PLN', sub: 'zmienność ±' + pln(s.savings_stddev_pln, 0), cls: (s.avg_monthly_savings_pln || 0) > 0 ? 'c-green' : '' },
-    { lbl: 'Prognoza roczna', val: pln(s.projected_annual_pln, 0) + ' PLN', sub: `pesy ${pln(s.projected_annual_pessimistic,0)} / opty ${pln(s.projected_annual_optimistic,0)}` },
-    { lbl: 'Dyn. tańsza % czasu', val: pct(s.pct_dynamic_cheaper), sub: s.months_dynamic_cheaper + '/' + s.months_total + ' mies.' },
-    { lbl: 'Rekomendacja', val: s.recommendation || '—', sub: s.recommendation_reason, cls: s.recommendation === 'ZMIEŃ' ? 'c-green' : '' },
-    s.payback_impact_months != null ? { lbl: 'Skrócenie paybacku PV', val: (s.payback_impact_months > 0 ? '−' : '+') + Math.abs(s.payback_impact_months).toFixed(1) + ' mies.', cls: (s.payback_impact_months || 0) > 0 ? 'c-green' : '', sub: 'nowa data spłaty: ' + (s.new_payback_date || '—') } : null,
-    pv.avg_purchased_kwh ? { lbl: 'PV autokonsumpcja', val: pct(pv.pv_reduces_tariff_benefit_pct), sub: 'PV pochłania wartość zakupu', cls: '' } : null,
-  ].filter(Boolean);
-  const kpiEl = document.getElementById('tariffKpiCards');
-  if (kpiEl) kpiEl.innerHTML = kpiCards.map(c =>
-    `<div class="card ${c.cls || ''}" style="min-width:160px"><div class="card-lbl">${c.lbl}</div><div class="card-val">${c.val}</div>${c.sub ? '<div class="card-sub">' + c.sub + '</div>' : ''}</div>`
-  ).join('');
-
-  /* --- Chart 1: monthly comparison bars --- */
-  const months = tc.months || [];
-  const mLabels = months.map(m => m.month_label);
-  const g12wData = months.map(m => m.g12w_variable_pln);
-  const dynData  = months.map(m => m.dynamic_variable_pln);
-  const scData   = months.map(m => m.self_consumption_savings_pln);
-  const ctx1 = document.getElementById('tariffCompChart');
-  if (ctx1 && months.length) {
-    if (_tariffCompChart) { _tariffCompChart.destroy(); _tariffCompChart = null; }
-    _tariffCompChart = new Chart(ctx1, {
-      type: 'bar',
-      data: { labels: mLabels, datasets: [
-        { label: 'G12w zmienny PLN', data: g12wData, backgroundColor: 'rgba(52,152,219,0.75)', borderRadius: 3 },
-        { label: 'Dynamiczna zmienna PLN', data: dynData, backgroundColor: 'rgba(46,204,113,0.75)', borderRadius: 3 },
-        { label: 'Autokonsumpcja PV PLN', data: scData, type: 'line', borderColor: '#f39c12', backgroundColor: 'rgba(243,156,18,0.1)', borderWidth: 2, pointRadius: 3, fill: false, yAxisID: 'y' },
-      ]},
-      options: { responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { labels: { boxWidth: 10 } }, tooltip: {
-          callbacks: { afterBody: (items) => {
-            const i = items[0].dataIndex; const m = months[i];
-            return ['', `Różnica: ${m.diff_pln > 0 ? '+' : ''}${m.diff_pln} PLN`, `Zakup: ${m.purchased_kwh} kWh`, `Produkcja PV: ${m.produced_kwh} kWh`, `PV offset: ${m.pv_offset_pct}%`];
-          }}
-        }},
-        scales: { x: { ticks: { font: { size: 10 } } }, y: { title: { display: true, text: 'PLN', font: { size: 11 } } } }
-      }
-    });
-  }
-
-  /* --- Chart 2: cumulative savings with confidence --- */
-  const ctx2 = document.getElementById('tariffCumChart');
-  if (ctx2 && months.length) {
-    if (_tariffCumChart) { _tariffCumChart.destroy(); _tariffCumChart = null; }
-    let cum = 0, cumPesy = 0, cumOpty = 0;
-    const cumBase = [], cumP = [], cumO = [];
-    const stdDev = s.savings_stddev_pln || 0;
-    for (const m of months) {
-      cum += m.diff_pln; cumPesy += m.diff_pln - stdDev; cumOpty += m.diff_pln + stdDev;
-      cumBase.push(round2(cum)); cumP.push(round2(cumPesy)); cumO.push(round2(cumOpty));
-    }
-    _tariffCumChart = new Chart(ctx2, {
-      type: 'line',
-      data: { labels: mLabels, datasets: [
-        { label: 'Optimistyczny', data: cumO, borderColor: 'rgba(46,204,113,0.4)', backgroundColor: 'rgba(46,204,113,0.08)', borderWidth: 1, pointRadius: 0, fill: '+1' },
-        { label: 'Bazowy', data: cumBase, borderColor: '#2ecc71', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 3, fill: false },
-        { label: 'Pesymistyczny', data: cumP, borderColor: 'rgba(231,76,60,0.4)', backgroundColor: 'rgba(231,76,60,0.08)', borderWidth: 1, pointRadius: 0, fill: '-1' },
-      ]},
-      options: { responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { labels: { boxWidth: 10 } } },
-        scales: { x: { ticks: { font: { size: 10 } } }, y: { title: { display: true, text: 'PLN', font: { size: 11 } } } }
-      }
-    });
-  }
-
-  /* --- Chart 3: seasonal grouped bar --- */
-  const ctx3 = document.getElementById('tariffSeasonChart');
-  if (ctx3) {
-    if (_tariffSeasonChart) { _tariffSeasonChart.destroy(); _tariffSeasonChart = null; }
-    const sumMonths = months.filter(m => m.season === 'summer');
-    const winMonths = months.filter(m => m.season === 'winter');
-    const _savg = (arr, field) => arr.length ? arr.reduce((s, m) => s + m[field], 0) / arr.length : 0;
-    _tariffSeasonChart = new Chart(ctx3, {
-      type: 'bar',
-      data: {
-        labels: ['Lato (IV–IX)', 'Zima (X–III)'],
-        datasets: [
-          { label: 'G12w śr. (PLN)', data: [
-            _savg(sumMonths, 'g12w_variable_pln'), _savg(winMonths, 'g12w_variable_pln'),
-          ], backgroundColor: 'rgba(52,152,219,0.75)', borderRadius: 3 },
-          { label: 'Dyn. śr. (PLN)', data: [
-            _savg(sumMonths, 'dynamic_variable_pln'), _savg(winMonths, 'dynamic_variable_pln'),
-          ], backgroundColor: 'rgba(46,204,113,0.75)', borderRadius: 3 },
-        ]
-      },
-      options: { responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { labels: { boxWidth: 10 } } },
-        scales: { y: { title: { display: true, text: 'PLN (śr./mies.)', font: { size: 10 } } } }
-      }
-    });
-  }
-
-  /* --- Chart 4: histogram --- */
-  const ctx4 = document.getElementById('tariffHistChart');
-  const hist = s.histogram || [];
-  if (ctx4 && hist.length) {
-    if (_tariffHistChart) { _tariffHistChart.destroy(); _tariffHistChart = null; }
-    _tariffHistChart = new Chart(ctx4, {
-      type: 'bar',
-      data: { labels: hist.map(b => b.label), datasets: [{
-        label: 'Liczba miesięcy',
-        data: hist.map(b => b.count),
-        backgroundColor: hist.map(b => b.label.startsWith('<') || b.label.startsWith('−') ? 'rgba(231,76,60,0.7)' : 'rgba(46,204,113,0.7)'),
-        borderRadius: 3,
-      }]},
-      options: { responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { display: false } },
-        scales: {
-          x: { title: { display: true, text: 'Różnica G12w − Dynamiczna (PLN)', font: { size: 10 } }, ticks: { font: { size: 10 } } },
-          y: { ticks: { stepSize: 1 }, title: { display: true, text: 'Miesięcy', font: { size: 10 } } }
-        }
-      }
-    });
-  }
-
-  /* --- Prediction section --- */
-  const predEl = document.getElementById('tariffPredCards');
-  if (predEl) {
-    const cards = [
-      { lbl: 'Pesymistyczny', val: pln(s.projected_annual_pessimistic, 0) + ' PLN/rok', cls: (s.projected_annual_pessimistic || 0) < 0 ? 'c-red' : '' },
-      { lbl: 'Bazowy', val: pln(s.projected_annual_pln, 0) + ' PLN/rok', cls: (s.projected_annual_pln || 0) > 0 ? 'c-green' : '' },
-      { lbl: 'Optymistyczny', val: pln(s.projected_annual_optimistic, 0) + ' PLN/rok', cls: '' },
-    ];
-    predEl.innerHTML = cards.map(c =>
-      `<div class="card ${c.cls||''}" style="flex:1;min-width:120px"><div class="card-lbl" style="font-size:11px">${c.lbl}</div><div class="card-val">${c.val}</div></div>`
-    ).join('');
-  }
-  const sensiTbl = document.getElementById('tariffSensiTbl');
-  if (sensiTbl) {
-    const sensi = tc.sensitivity_g12w || [];
-    sensiTbl.innerHTML = '<tr><th style="text-align:left;padding:3px 6px;border-bottom:1px solid #ddd">Scenariusz G12w</th><th style="text-align:right;padding:3px 6px;border-bottom:1px solid #ddd">Prognoza roczna PLN</th></tr>' +
-      sensi.map(r => `<tr><td style="padding:3px 6px">${r.label}</td><td style="text-align:right;padding:3px 6px;color:${r.projected_annual > 0 ? '#27ae60' : '#e74c3c'}">${r.projected_annual > 0 ? '+' : ''}${pln(r.projected_annual, 0)}</td></tr>`).join('');
-  }
-
-  /* --- Monthly table --- */
-  const tbl = document.getElementById('tariffMonthTbl');
-  if (tbl) {
-    const hdr = '<tr style="background:#f0f0f0"><th>Miesiąc</th><th>kWh zakup</th><th>kWh prod.</th><th>G12w PLN</th><th>Dyn PLN</th><th>Różnica</th><th>PV offset%</th></tr>';
-    const rows = months.map(m => {
-      const diffClr = m.diff_pln > 0 ? 'rgba(46,204,113,0.12)' : (m.diff_pln < 0 ? 'rgba(231,76,60,0.10)' : '');
-      return `<tr style="background:${diffClr}"><td style="padding:4px 8px">${m.month_label}${m.is_current ? ' ●' : ''}</td><td style="text-align:right;padding:4px 8px">${kwh(m.purchased_kwh)}</td><td style="text-align:right;padding:4px 8px">${kwh(m.produced_kwh)}</td><td style="text-align:right;padding:4px 8px">${pln(m.g12w_variable_pln, 2)}</td><td style="text-align:right;padding:4px 8px">${pln(m.dynamic_variable_pln, 2)}</td><td style="text-align:right;padding:4px 8px;font-weight:600;color:${m.diff_pln > 0 ? '#27ae60' : '#e74c3c'}">${m.diff_pln > 0 ? '+' : ''}${pln(m.diff_pln, 2)}</td><td style="text-align:right;padding:4px 8px">${pct(m.pv_offset_pct)}</td></tr>`;
-    }).join('');
-    tbl.innerHTML = hdr + rows;
-  }
-
-  /* --- Context text --- */
-  const ctxTxt = document.getElementById('tariffContextText');
-  if (ctxTxt) {
-    ctxTxt.innerHTML = `<p><strong>Skąd pochodzi koszt dynamiczny?</strong><br>
-      Koszty dynamicznej akumulowane są co 15 minut przez automatyzację HA: <em>calkowity_koszt_1_kwh_dynamiczna × zużycie_kwartalnie</em>.
-      Cena godzinowa pochodzi z integracji <code>rce_pse</code> (PSE/TGE) + składnik handlowy + dystrybucja zmienna WSD + opłaty.</p>
-      <p><strong>RCEm ≠ cena zakupu</strong><br>
-      RCEm (Rynkowa Cena Energii Miesięczna) to cena, po której prosument sprzedaje nadwyżki PV do sieci (net-billing).
-      NIE jest to cena zakupu energii na taryfie dynamicznej. Tutaj RCEm nie jest używany.</p>
-      <p>${pv.note || ''}</p>
-      <p><em>Dane historyczne: od XII 2024 (kiedy uruchomiono liczniki HA). G12w: z rejestrów add-ona. Dynamiczna: z HA Statistics API.</em></p>`;
-  }
-}
-
-function round2(v) { return Math.round(v * 100) / 100; }
-
-/* ===================== INTERACTIVE RANGE ANALYSIS ===================== */
-
-let _rangeChart = null;
-let _rangeData  = null;  // last fetched {kpis, series}
-
-(function initRangeControls() {
-  const today = new Date().toISOString().slice(0, 10);
-  const from  = new Date(Date.now() - 365 * 86400000).toISOString().slice(0, 10);
-  document.getElementById('tariffTo').value   = today;
-  document.getElementById('tariffFrom').value = from;
-})();
-
-async function fetchTariffRange() {
-  const fromEl   = document.getElementById('tariffFrom');
-  const toEl     = document.getElementById('tariffTo');
-  const statusEl = document.getElementById('tariffRangeStatus');
-  const period   = document.querySelector('input[name=tariffPeriod]:checked')?.value || 'day';
-  if (!fromEl || !fromEl.value) return;
-  if (statusEl) statusEl.textContent = 'Pobieranie…';
-  try {
-    const url = `api/tariff_stats?from=${fromEl.value}&period=${period}`;
-    const r   = await fetch(url);
-    if (!r.ok) { if (statusEl) statusEl.textContent = 'Błąd: ' + r.status; return; }
-    _rangeData = await r.json();
-    renderRangeKpis(_rangeData.kpis || {}, period);
-    renderRangeChart(_rangeData.series || {});
-    if (statusEl) {
-      const n = (_rangeData.kpis || {}).n_periods || 0;
-      statusEl.textContent = `${n} ${period === 'day' ? 'dni' : 'mies.'}`;
-    }
-  } catch (e) {
-    if (statusEl) statusEl.textContent = 'Błąd: ' + e.message;
-  }
-}
-
-function renderRangeKpis(k, period) {
-  const el = document.getElementById('tariffRangeKpis');
-  if (!el) return;
-  const pStr = period === 'day' ? 'dni' : 'mies.';
-  const fmtDiff = v => v == null ? '—' : (v > 0 ? '+' : '') + pln(v, 2) + ' PLN';
-  const cards = [
-    { lbl: '% czasu Dyn. tańsza',  val: k.pct_dyn_cheaper != null ? pct(k.pct_dyn_cheaper) : '—',
-      sub: `${k.n_dyn_cheaper}/${k.n_periods} ${pStr}`, cls: (k.pct_dyn_cheaper||0) >= 50 ? 'c-green' : '' },
-    { lbl: 'Śr. różnica/' + pStr,  val: fmtDiff(k.avg_diff_pln),
-      sub: 'mediana ' + fmtDiff(k.median_diff_pln),
-      cls: (k.avg_diff_pln||0) > 0 ? 'c-green' : '' },
-    { lbl: 'Skumulowane oszcz.',   val: fmtDiff(k.cumulative_savings_pln),
-      sub: `G12w ${pln(k.g12w_total_pln,0)} vs Dyn ${pln(k.dyn_total_pln,0)} PLN`,
-      cls: (k.cumulative_savings_pln||0) > 0 ? 'c-green' : '' },
-    k.best_period  ? { lbl: '&#127942; Najlepszy dzień',  val: fmtDiff(k.best_period.diff_pln),  sub: k.best_period.date,  cls: 'c-green' } : null,
-    k.worst_period ? { lbl: '&#128308; Najgorszy dzień',  val: fmtDiff(k.worst_period.diff_pln), sub: k.worst_period.date, cls: '' } : null,
-    k.longest_dyn_streak > 0 ? { lbl: 'Najdłuższa passa', val: k.longest_dyn_streak + ' ' + pStr,
-      sub: 'Dyn. tańsza z rzędu', cls: 'c-green' } : null,
-  ].filter(Boolean);
-  el.innerHTML = cards.map(c =>
-    `<div class="card ${c.cls||''}" style="min-width:140px"><div class="card-lbl">${c.lbl}</div>` +
-    `<div class="card-val">${c.val}</div>${c.sub ? '<div class="card-sub">' + c.sub + '</div>' : ''}</div>`
-  ).join('');
-}
-
-function redrawRangeChart() {
-  if (_rangeData) renderRangeChart(_rangeData.series || {});
-}
-
-function renderRangeChart(s) {
-  const ctx = document.getElementById('tariffRangeChart');
-  if (!ctx || !s.labels || !s.labels.length) return;
-  if (_rangeChart) { _rangeChart.destroy(); _rangeChart = null; }
-
-  const showG12w = document.getElementById('chkRangeG12w')?.checked;
-  const showDyn  = document.getElementById('chkRangeDyn')?.checked;
-  const showDiff = document.getElementById('chkRangeDiff')?.checked;
-  const showCum  = document.getElementById('chkRangeCum')?.checked;
-
-  const datasets = [];
-  if (showG12w) datasets.push({
-    label: 'G12w PLN', data: s.g12w,
-    type: 'line', borderColor: '#3498db', backgroundColor: 'rgba(52,152,219,0.05)',
-    borderWidth: 1.5, pointRadius: 0, fill: false, order: 2,
-  });
-  if (showDyn) datasets.push({
-    label: 'Dynamiczna PLN', data: s.dynamic,
-    type: 'line', borderColor: '#27ae60', backgroundColor: 'rgba(39,174,96,0.05)',
-    borderWidth: 1.5, pointRadius: 0, fill: false, order: 2,
-  });
-  if (showDiff) datasets.push({
-    label: 'Różnica (G12w−Dyn) PLN', data: s.diff,
-    type: 'bar', backgroundColor: s.diff.map(v => v >= 0 ? 'rgba(39,174,96,0.6)' : 'rgba(231,76,60,0.5)'),
-    borderWidth: 0, order: 1,
-  });
-  if (showCum) datasets.push({
-    label: 'Skumulowana PLN', data: s.cumulative,
-    type: 'line', borderColor: '#9b59b6', backgroundColor: 'transparent',
-    borderWidth: 2, pointRadius: 0, fill: false, yAxisID: 'yCum', order: 2,
-  });
-
-  const hasCum   = showCum && s.cumulative && s.cumulative.length > 0;
-  const maxTicks = s.labels.length > 60 ? 12 : (s.labels.length > 14 ? 8 : s.labels.length);
-
-  _rangeChart = new Chart(ctx, {
-    data: { labels: s.labels, datasets },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: {
-        legend: { labels: { boxWidth: 10, font: { size: 11 } } },
-        tooltip: { mode: 'index', intersect: false },
-      },
-      scales: {
-        x: { ticks: { maxTicksLimit: maxTicks, font: { size: 10 }, maxRotation: 0 } },
-        y: { title: { display: true, text: 'PLN', font: { size: 11 } } },
-        ...(hasCum ? { yCum: {
-          position: 'right', grid: { drawOnChartArea: false },
-          title: { display: true, text: 'Skum. PLN', font: { size: 10 } },
-        }} : {}),
-      },
-    },
-  });
-}
-
 /* ===================================================================== */
 /* -- Taryfa tab -------------------------------------------------------- */
 
@@ -3719,13 +3474,292 @@ async function loadTaryfaTab() {
     const d = await rCfg.json();
     const dd = rDer.ok ? await rDer.json() : {changes: [], existing_effective_from: []};
     _renderTaryfaBadge(d);
-    _renderTaryfaTimeline(d.tariffs || [], dd.changes || [], d);
+    _renderTaryfaTimeline(d.tariffs || [], dd.changes || [], d, true);
   } catch(e) {
     document.getElementById('taryfaBadge').textContent = 'Błąd ładowania: ' + e.message;
   }
+  // Pozostałe bloki są niezależne — błąd jednego nie blokuje reszty.
+  _loadTaryfaCatalog();
+  _loadTaryfaWeek();
 }
 
-function _renderTaryfaTimeline(tariffs, derived, status) {
+/* -- Taryfa: stawki G12w, skład ceny, cennik (z /api/tariff_catalog) -- */
+let _taryfaCatalog = null, _taryfaWeekChart = null;
+
+function _tfZl(v, dp) {
+  return v == null ? '—' : Number(v).toLocaleString('pl-PL', {minimumFractionDigits: dp ?? 4, maximumFractionDigits: dp ?? 4});
+}
+
+// Data lokalna YYYY-MM-DD (toISOString dałoby UTC i przesunięcie doby w nocy).
+function _tfIso(dt) { return dt.toLocaleDateString('sv-SE'); }
+
+function _tfPeriodForToday(periods) {
+  const today = _tfIso(new Date());
+  return periods.find(p => p.valid_from <= today && today <= p.valid_to) || periods[periods.length - 1] || null;
+}
+
+// Stawki brutto zł/kWh dla taryfy/strefy w okresie: energia, dystrybucja zm., opłaty zm. (netto × VAT).
+function _tfRates(tariff, period, zone, vat) {
+  const e = period.energy_net && period.energy_net[tariff] ? period.energy_net[tariff][zone] : null;
+  const d = period.dist_var_net && period.dist_var_net[tariff] ? period.dist_var_net[tariff][zone] : null;
+  const f = ['quality_net', 'oze_net', 'cogeneration_net', 'excise_net']
+    .map(k => period[k]).reduce((a, v) => (a == null || v == null) ? null : a + Number(v), 0);
+  if (e == null || d == null || f == null) return { energy: null, dist: null, fees: null, total: null };
+  return { energy: e * vat, dist: d * vat, fees: f * vat, total: (e + d + f) * vat };
+}
+
+function _tfHours(h) {
+  return (h || []).map(x => String(x[0]).padStart(2, '0') + '–' + String(x[1]).padStart(2, '0')).join(', ');
+}
+
+function _tfZoneDesc(tariff, zone, z) {
+  if (!z) return '';
+  if (tariff === 'G11') return 'cała doba';
+  if (tariff === 'G13') {
+    const w = z.winter, su = z.summer;
+    if (!w || !su) return '';
+    const rng = a => a ? String(a[0]).padStart(2, '0') + '–' + String(a[1]).padStart(2, '0') : '';
+    if (zone === 'morning_peak') return 'szczyt przedpołudniowy ' + rng(su.morning_peak);
+    if (zone === 'evening_peak') return 'szczyt popołudniowy: lato ' + rng(su.evening_peak) + ', zima ' + rng(w.evening_peak);
+    return 'pozostałe godziny; weekendy i święta';
+  }
+  const def = z[zone];
+  if (!def || !def.hours) return '';
+  return _tfHours(def.hours) + (def.weekends_holidays ? ' (dni robocze; weekendy i święta: cała doba)' : '');
+}
+
+async function _loadTaryfaCatalog() {
+  const rates = document.getElementById('taryfaRates');
+  try {
+    const r = await fetch('api/tariff_catalog');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error || 'błąd API');
+    _taryfaCatalog = d;
+    _renderTaryfaRates();
+    _fillTaryfaCennik();
+  } catch (e) {
+    if (rates) rates.innerHTML = '<p class="tf-muted">Stawki niedostępne: ' + _esc(e.message) + '</p>';
+  }
+}
+
+function _renderTaryfaRates() {
+  const d = _taryfaCatalog;
+  const wrap = document.getElementById('taryfaRates');
+  if (!d || !wrap) return;
+  const vat = Number((d.meta || {}).vat) || 1.23;
+  const p = _tfPeriodForToday(d.periods || []);
+  if (!p) { wrap.innerHTML = '<p class="tf-muted">Brak okresu cennika.</p>'; return; }
+  const zones = [['peak', 'Szczyt'], ['offpeak', 'Poza szczytem']];
+  const rows = zones.map(([z, name]) => {
+    const r = _tfRates('G12w', p, z, vat);
+    return '<tr><td class="l">' + name + '</td><td class="num">' + _tfZl(r.energy) + '</td><td class="num">' + _tfZl(r.dist) +
+      '</td><td class="num">' + _tfZl(r.fees) + '</td><td class="num"><b>' + _tfZl(r.total) + '</b></td></tr>';
+  }).join('');
+  wrap.innerHTML = '<table><thead><tr><th>Strefa</th><th class="num">Energia</th><th class="num">Dystrybucja zm.</th>' +
+    '<th class="num">Opłaty zm.</th><th class="num">Razem brutto</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+    '<div class="tf-muted tf-gap">Stawki brutto (zł/kWh, VAT ' + Math.round((vat - 1) * 100) + '%) wg okresu ' +
+    _esc(p.valid_from) + '…' + _esc(p.valid_to) + (p.confirmed ? '' : ' (niepotwierdzone fakturą)') + '.</div>';
+
+  const g = (d.zones || {}).G12w;
+  const hz = document.getElementById('taryfaZoneHours');
+  if (hz) hz.innerHTML = g
+    ? '<b>Godziny stref:</b> szczyt ' + _tfHours((g.peak || {}).hours) + ' w dni robocze; poza szczytem ' +
+      _tfHours((g.offpeak || {}).hours) + ' oraz cała doba w weekendy i święta.'
+    : '';
+
+  // Skład ceny: słupek skumulowany (energia / dystrybucja / opłaty) dla każdej strefy
+  const comp = document.getElementById('taryfaComposition');
+  if (comp) {
+    comp.innerHTML = zones.map(([z, name]) => {
+      const r = _tfRates('G12w', p, z, vat);
+      if (r.total == null) return '';
+      const pc = v => (v / r.total * 100).toFixed(1);
+      return '<div class="tf-comp"><div class="tf-comp-lbl">' + name + ' — ' + _tfZl(r.total) + ' zł/kWh</div>' +
+        '<div class="tf-bar" role="img" aria-label="Skład ceny ' + name + '">' +
+        '<span class="tf-seg tf-seg-e" style="width:' + pc(r.energy) + '%" title="Energia ' + _tfZl(r.energy) + '"></span>' +
+        '<span class="tf-seg tf-seg-d" style="width:' + pc(r.dist) + '%" title="Dystrybucja zm. ' + _tfZl(r.dist) + '"></span>' +
+        '<span class="tf-seg tf-seg-f" style="width:' + pc(r.fees) + '%" title="Opłaty zm. ' + _tfZl(r.fees) + '"></span></div></div>';
+    }).join('') + '<div class="tf-legend"><span><i class="tf-seg-e"></i>Energia</span><span><i class="tf-seg-d"></i>Dystrybucja zm.</span><span><i class="tf-seg-f"></i>Opłaty zm.</span></div>';
+  }
+}
+
+function _fillTaryfaCennik() {
+  const d = _taryfaCatalog, sel = document.getElementById('taryfaCennikPeriod');
+  if (!d || !sel) return;
+  const cur = _tfPeriodForToday(d.periods || []);
+  const prev = sel.value;
+  sel.innerHTML = (d.periods || []).map(p =>
+    '<option value="' + _esc(p.valid_from) + '">' + _esc(p.valid_from) + ' … ' + _esc(p.valid_to) + '</option>').join('');
+  sel.value = prev && [...sel.options].some(o => o.value === prev) ? prev : (cur ? cur.valid_from : '');
+  _renderTaryfaCennik();
+}
+
+function _renderTaryfaCennik() {
+  const d = _taryfaCatalog, sel = document.getElementById('taryfaCennikPeriod');
+  const tbl = document.getElementById('taryfaCennikTbl'), note = document.getElementById('taryfaCennikNote');
+  if (!d || !sel || !tbl) return;
+  const p = (d.periods || []).find(x => x.valid_from === sel.value);
+  if (!p) { tbl.innerHTML = ''; return; }
+  const vat = Number((d.meta || {}).vat) || 1.23;
+  const ZN = { all: 'cała doba', peak: 'szczyt', offpeak: 'poza szczytem', day: 'dzień', night: 'noc',
+               morning_peak: 'szczyt przedpołudniowy', evening_peak: 'szczyt popołudniowy', other: 'pozostałe' };
+  let rows = '';
+  ['G11', 'G12', 'G12w', 'G13'].forEach(t => {
+    const zs = Object.keys((p.energy_net || {})[t] || {});
+    zs.forEach((z, i) => {
+      const r = _tfRates(t, p, z, vat);
+      rows += '<tr>' + (i === 0 ? '<td rowspan="' + zs.length + '"><b>' + t + '</b></td>' : '') +
+        '<td class="l">' + (ZN[z] || _esc(z)) + '</td><td class="l">' + _esc(_tfZoneDesc(t, z, (d.zones || {})[t])) + '</td>' +
+        '<td class="num">' + _tfZl(r.energy) + '</td><td class="num">' + _tfZl(r.dist) + '</td><td class="num">' +
+        _tfZl(r.fees) + '</td><td class="num"><b>' + _tfZl(r.total) + '</b></td></tr>';
+    });
+  });
+  tbl.innerHTML = '<table><thead><tr><th>Taryfa</th><th class="l">Strefa</th><th class="l">Godziny</th><th class="num">Energia</th>' +
+    '<th class="num">Dystr. zm.</th><th class="num">Opłaty zm.</th><th class="num">Razem brutto</th></tr></thead><tbody>' +
+    rows + '</tbody></table>';
+  if (note) note.textContent = 'Stawki brutto zł/kWh (VAT ' + Math.round((vat - 1) * 100) + '%)' +
+    (p.confirmed ? '' : ' — okres niepotwierdzony fakturą') + '. Opłaty stałe pomijamy; źródło: katalog taryf Tauron.';
+}
+
+/* -- Pasek podsumowania sekcji „Taryfy i energia” -- */
+let _tsumTimer = null;
+
+function _toggleTaryfySummary(show) {
+  const el = document.getElementById('taryfySummary');
+  if (!el) return;
+  el.style.display = show ? '' : 'none';
+  if (show) {
+    renderTaryfySummary();
+    if (!_tsumTimer) _tsumTimer = setInterval(renderTaryfySummary, 5 * 60 * 1000);
+  } else if (_tsumTimer) {
+    clearInterval(_tsumTimer);
+    _tsumTimer = null;
+  }
+}
+
+async function _tsumJson(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+}
+
+// Jedno zdanie rekomendacji z /api/tariff_sim — te same dane co #tsimReco (_tsim z modułu Symulacji).
+function _tsumRecoText(sim) {
+  const rec = sim && sim.recommendation;
+  if (!rec || (!rec.A && !rec.B)) return 'Rekomendacja niedostępna (za mało danych).';
+  const r = (rec.A && rec.A.switch) ? rec.A : ((rec.B && rec.B.switch) ? rec.B : null);
+  if (r) return 'Warto rozważyć ' + r.best + ': oszczędność ok. ' + _tsimZl(r.saving_pln) + '/rok.';
+  return 'Zostań przy G12w.';
+}
+
+async function renderTaryfySummary() {
+  const el = document.getElementById('taryfySummary');
+  if (!el || el.style.display === 'none') return;
+  const [now, pay, sim] = await Promise.allSettled([
+    _tsumJson('api/tariff_now'),
+    _tsumJson('api/ebok/payment-status'),
+    (_tsim && _tsim.ok) ? Promise.resolve(_tsim) : _tsumJson('api/tariff_sim'),
+  ]);
+  const tile = (lbl, val, sub, cls) => '<div class="tsum-tile' + (cls ? ' ' + cls : '') + '"><div class="tsum-lbl">' + lbl +
+    '</div><div class="tsum-val">' + val + '</div>' + (sub ? '<div class="tsum-sub">' + sub + '</div>' : '') + '</div>';
+  const ZN = { peak: 'szczyt', offpeak: 'poza szczytem' };
+
+  // Teraz + cena
+  const n = now.status === 'fulfilled' && now.value && now.value.ok ? now.value : null;
+  let t1, t2;
+  if (n) {
+    const nc = n.next_change;
+    const until = nc ? 'do ' + _esc(String(nc.at).slice(11, 13)) + ':00 → ' + _esc(ZN[nc.zone] || nc.zone) : '';
+    t1 = tile('Teraz', _esc(ZN[n.zone] || n.zone), _esc(n.tariff) + (until ? ' · ' + until : ''));
+    t2 = tile('Cena kWh teraz', n.gross_per_kwh != null ? Number(n.gross_per_kwh).toFixed(4) + ' zł' : '—', 'brutto');
+  } else {
+    t1 = tile('Teraz', '—', 'brak danych'); t2 = tile('Cena kWh teraz', '—', '');
+  }
+
+  // Ostatnia faktura + status płatności
+  const inv = [..._lastInvoices].filter(i => i.month).sort((a, b) => b.month.localeCompare(a.month))[0] || null;
+  let t3;
+  if (inv) {
+    const a = pay.status === 'fulfilled' && pay.value ? pay.value.active : null;
+    const st = pay.status !== 'fulfilled' ? ''
+      : a ? 'do zapłaty do ' + String(a.due_date).split('-').reverse().slice(0, 2).join('.')
+          : 'opłacona / brak zaległości';
+    t3 = tile('Ostatnia faktura', inv.amount_due != null ? Number(inv.amount_due).toFixed(2) + ' zł' : '—',
+      _esc(inv.month) + (st ? ' · ' + st : ''), a ? 'tsum-warn' : '');
+  } else {
+    t3 = tile('Ostatnia faktura', '—', 'brak faktur');
+  }
+
+  // Rekomendacja
+  const simOk = sim.status === 'fulfilled' && sim.value && sim.value.ok;
+  const t4 = tile('Rekomendacja', '', '', 'tsum-reco').replace('<div class="tsum-val"></div>',
+    '<div class="tsum-reco-txt">' + _esc(simOk ? _tsumRecoText(sim.value) : '—') + '</div>');
+  el.innerHTML = t1 + t2 + t3 + t4;
+}
+
+/* -- Kafel „Saldo depozytu” w karcie głównej PV ROI (idempotentny) -- */
+function renderDepositTile(dep) {
+  const wrap = document.getElementById('cards');
+  if (!wrap) return;
+  const old = document.getElementById('depositTile');
+  if (old) old.remove();
+  if (!dep) return;
+  const bal = dep.balance_estimate != null ? dep.balance_estimate : dep.balance_model;
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.id = 'depositTile';
+  card.innerHTML = '<div class="lbl">Saldo depozytu</div><div class="val">' + pln(bal, 2) + '</div>' +
+    '<div class="sub">traci ważność za 3 mies.: ' + pln(dep.expiring_3m, 2) + '</div>';
+  const ref = wrap.children[4];   // po czterech pierwszych kartach (ROI…Pozostało)
+  if (ref) wrap.insertBefore(card, ref); else wrap.appendChild(card);
+}
+
+/* Wykresy w zwiniętych <details> mają zerowy rozmiar — po otwarciu przelicz */
+document.addEventListener('toggle', e => {
+  const t = e.target;
+  if (!t || !t.open) return;
+  if (t.id === 'invDepositDet' && _depositChart) _depositChart.resize();
+}, true);
+
+/* -- Taryfa: wykres ceny brutto z 7 dni (krok schodkowy) -- */
+async function _loadTaryfaWeek() {
+  const note = document.getElementById('taryfaWeekNote');
+  const cv = document.getElementById('taryfaWeekChart');
+  if (!cv) return;
+  try {
+    const iso = _tfIso;
+    const to = new Date(), from = new Date(Date.now() - 6 * 86400000);
+    const r = await fetch('api/tariff_hourly?from=' + iso(from) + '&to=' + iso(to) + '&tariffs=G12w');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    const rows = d.ok && d.hours && d.hours.G12w ? d.hours.G12w : null;
+    if (!rows || !rows.length) throw new Error(d.error || 'brak danych godzinowych');
+    const labels = rows.map(x => x.key);
+    const data = rows.map(x => x.gross_per_kwh);
+    if (_taryfaWeekChart) _taryfaWeekChart.destroy();
+    _taryfaWeekChart = new Chart(cv, {
+      type: 'line',
+      data: { labels, datasets: [{ label: 'G12w brutto', data, stepped: true, borderColor: '#2563eb',
+        backgroundColor: 'rgba(37,99,235,.08)', fill: true, pointRadius: 0, borderWidth: 2 }] },
+      options: { responsive: true, maintainAspectRatio: false, animation: false,
+        plugins: { legend: { display: false },
+          tooltip: { callbacks: {
+            title: items => { const k = items[0].label; return k.slice(8, 10) + '.' + k.slice(5, 7) + ' ' + k.slice(11) + ':00'; },
+            label: c => (c.parsed.y == null ? '—' : c.parsed.y.toFixed(4)) + ' zł/kWh' } } },
+        scales: {
+          x: { ticks: { autoSkip: false, maxRotation: 0, font: { size: 10 },
+            callback: function (v) { const k = this.getLabelForValue(v); return k.endsWith('T00') ? k.slice(8, 10) + '.' + k.slice(5, 7) : ''; } } },
+          y: { ticks: { callback: v => v.toFixed(2) + ' zł', font: { size: 10 } } } } },
+    });
+    if (note) note.textContent = '';
+  } catch (e) {
+    if (_taryfaWeekChart) { _taryfaWeekChart.destroy(); _taryfaWeekChart = null; }
+    if (note) note.textContent = 'Wykres niedostępny: ' + e.message;
+  }
+}
+
+function _renderTaryfaTimeline(tariffs, derived, status, readonly) {
   const el = document.getElementById('taryfaList');
 
   // Build lookup maps
@@ -3802,7 +3836,7 @@ function _renderTaryfaTimeline(tariffs, derived, status) {
       : '';
 
     // Action buttons (manual entries only)
-    const btns = hasManual
+    const btns = (hasManual && !readonly)
       ? `<button class="btn" onclick="editTaryfaEntry(${_esc(JSON.stringify(manual))})"
            style="font-size:11px;padding:2px 10px;margin-left:auto">Edytuj</button>
          <button class="btn" onclick="deleteTaryfaEntry('${_esc(key)}')"
@@ -3852,6 +3886,7 @@ function editTaryfaEntry(t) {
     if (el) el.value = (t.rates && t.rates[k] != null) ? t.rates[k] : '';
   });
   document.getElementById('taryfaFormTitle').textContent = 'Edytuj wpis: ' + (t.effective_from || '');
+  showTab('settings');
   document.getElementById('taryfaForm').scrollIntoView({behavior:'smooth'});
 }
 
@@ -3915,6 +3950,7 @@ setInterval(loadData, 60000);
 let _tsim = null;              // ostatnia odpowiedź /api/tariff_sim
 let _tsimVariant = 'A';
 let _tsimChart = null;
+let _tsimPriceChart = null, _tsimZoneCostChart = null, _tsimDiffChart = null;
 const _TSIM_COLORS = { G11: '#718096', G12: '#a0aec0', G12w: '#2563eb', G13: '#7c3aed',
                        dyn_a: '#16a34a', dyn_b: '#b45309' };
 const _TSIM_BRACKETS = { lt500: 'do 500 kWh/rok', '500_1200': '500–1200 kWh/rok',
@@ -3946,10 +3982,445 @@ async function loadTsimTab() {
     waiting.style.display = 'none';
     document.getElementById('tsimContent').style.display = '';
     _renderTsim();
+    if (_parseHash().panel === 'tsim') { _tsimInitCtl(); _tsimSyncHash(); _tsimLoadHourly(); }
   } catch (e) {
     waiting.style.display = '';
     waiting.textContent = 'Błąd ładowania symulacji taryf: ' + e.message;
   }
+}
+
+/* -- Symulacja: pasek sterowania + wykresy godzinowe (E4) --------------- */
+const _TSIM_ALL = ['G11', 'G12', 'G12w', 'G13', 'dyn_a', 'dyn_b'];
+const _TSIM_PERIODS = [['today', 'Dziś'], ['yesterday', 'Wczoraj'], ['7d', '7 dni'], ['14d', '14 dni'],
+                       ['month', 'Ten miesiąc'], ['12m', '12 mies.'], ['tomorrow', 'Jutro'], ['custom', 'Własny']];
+let _tsimCtl = { t: ['G12w'], p: '7d', pair: [], from: '', to: '' };
+let _tsimCtlReady = false, _tsimReqId = 0, _tsimDebounce = null;
+let _tsimHourly = null, _tsimHourlyErr = '', _tsimHourlyInfo = [], _tsimHourlyTariffs = [];
+
+function _tsimIso(d) {
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+function _tsimAddDays(d, n) { const x = new Date(d.getFullYear(), d.getMonth(), d.getDate() + n); return x; }
+function _tsimValidDate(s) { return /^\d{4}-\d{2}-\d{2}$/.test(s || '') && !isNaN(Date.parse(s)); }
+
+function _tsimRange() {
+  const now = new Date(), c = _tsimCtl;
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  let a = today, b = today;
+  switch (c.p) {
+    case 'yesterday': a = b = _tsimAddDays(today, -1); break;
+    case '7d': a = _tsimAddDays(today, -6); break;
+    case '14d': a = _tsimAddDays(today, -13); break;
+    case 'month': a = new Date(today.getFullYear(), today.getMonth(), 1); break;
+    case '12m': a = _tsimAddDays(today, -364); break;
+    case 'tomorrow': a = b = _tsimAddDays(today, 1); break;
+    case 'custom': return { from: c.from, to: c.to };
+  }
+  return { from: _tsimIso(a), to: _tsimIso(b) };
+}
+
+function _tsimAvailTariffs() {
+  const l = ((_tsim && _tsim.data && _tsim.data.tariffs) || []).filter(t => _TSIM_ALL.includes(t));
+  return l.length ? l : _TSIM_ALL.slice();
+}
+
+function _tsimNormalizeCtl() {
+  const c = _tsimCtl, av = _tsimAvailTariffs();
+  c.t = c.t.filter(t => av.includes(t));
+  if (!c.t.length) c.t = [av.includes('G12w') ? 'G12w' : av[0]];
+  if (c.pair.length !== 2 || !c.pair.every(t => c.t.includes(t)) || c.pair[0] === c.pair[1]) {
+    c.pair = c.t.length >= 2 ? [c.t[0], c.t[1]] : [];
+  }
+}
+
+// Odczyt z hasha; nieznane/błędne wartości → domyślne.
+function _tsimParseCtl() {
+  const av = _tsimAvailTariffs();
+  const def = { t: (av.includes('dyn_a') ? ['G12w', 'dyn_a'] : [av.includes('G12w') ? 'G12w' : av[0]]), p: '7d', pair: [], from: '', to: '' };
+  let q;
+  try { q = new URLSearchParams(_parseHash().query); } catch (e) { q = new URLSearchParams(''); }
+  const t = (q.get('t') || '').split(',').filter((x, i, a) => av.includes(x) && a.indexOf(x) === i);
+  const c = { ...def, t: t.length ? t : def.t };
+  const p = q.get('p');
+  if (_TSIM_PERIODS.some(x => x[0] === p)) c.p = p;
+  const pair = (q.get('pair') || '').split(',');
+  if (pair.length === 2) c.pair = pair;
+  if (c.p === 'custom') {
+    if (_tsimValidDate(q.get('from')) && _tsimValidDate(q.get('to'))) { c.from = q.get('from'); c.to = q.get('to'); }
+    else c.p = '7d';
+  }
+  if (q.get('v') === 'B' && _tsimHasB()) _tsimVariant = 'B';
+  return c;
+}
+
+function _tsimSyncHash() {
+  if (!_tsimCtlReady || _parseHash().panel !== 'tsim') return;
+  const c = _tsimCtl;
+  const q = new URLSearchParams();
+  q.set('t', c.t.join(','));
+  q.set('p', c.p);
+  q.set('v', _tsimVariant);
+  if (c.pair.length === 2) q.set('pair', c.pair.join(','));
+  if (c.p === 'custom') { q.set('from', c.from); q.set('to', c.to); }
+  const hash = '#taryfy/symulacja?' + q.toString().replace(/%2C/g, ',');
+  if (location.hash !== hash) history.replaceState(null, '', hash);
+  _appliedHash = hash;
+}
+
+function tsimToggleCtl() {
+  const b = document.getElementById('tsimCtlToggle');
+  const open = b.getAttribute('aria-expanded') !== 'true';
+  b.setAttribute('aria-expanded', String(open));
+  document.getElementById('tsimCtlPanel').classList.toggle('open', open);
+}
+
+function _tsimInitCtl() {
+  if (_tsimCtlReady) return;
+  _tsimCtl = _tsimParseCtl();
+  if (_tsimCtl.p === 'custom') {
+    document.getElementById('tsimFrom').value = _tsimCtl.from;
+    document.getElementById('tsimTo').value = _tsimCtl.to;
+  }
+  _tsimNormalizeCtl();
+  _tsimCtlReady = true;
+  _renderTsimVariant();
+  const box = document.getElementById('tsimTariffs');
+  box.innerHTML = _tsimAvailTariffs().map(t =>
+    '<label class="tsim-chk" style="--tc:' + (_TSIM_COLORS[t] || '#444') + '"><input type="checkbox" value="' + _esc(t) +
+    '" onchange="tsimCtlChanged(\'t\')"><i></i>' + _esc(t) + '</label>').join('');
+  document.getElementById('tsimPeriod').innerHTML = _TSIM_PERIODS.map(x =>
+    '<button type="button" data-p="' + x[0] + '" aria-pressed="false" onclick="tsimSetPeriod(\'' + x[0] + '\')">' + x[1] + '</button>').join('');
+  _tsimApplyCtlUI();
+}
+
+function _tsimApplyCtlUI() {
+  const c = _tsimCtl;
+  document.querySelectorAll('#tsimTariffs input').forEach(i => { i.checked = c.t.includes(i.value); });
+  document.querySelectorAll('#tsimPeriod button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.p === c.p)));
+  document.getElementById('tsimCustom').style.display = c.p === 'custom' ? '' : 'none';
+  const opts = c.t.map(t => '<option value="' + _esc(t) + '">' + _esc(t) + '</option>').join('');
+  ['tsimPair1', 'tsimPair2'].forEach((id, i) => {
+    const sel = document.getElementById(id);
+    sel.innerHTML = opts;
+    sel.value = c.pair[i] || '';
+    sel.disabled = c.t.length < 2;
+  });
+  document.getElementById('tsimBtnB').disabled = c.p === 'tomorrow';
+}
+
+function tsimSetPeriod(p) {
+  _tsimCtl.p = p;
+  if (p === 'custom') {
+    if (!_tsimValidDate(_tsimCtl.from) || !_tsimValidDate(_tsimCtl.to)) {
+      const today = new Date(); _tsimCtl.to = _tsimIso(today); _tsimCtl.from = _tsimIso(_tsimAddDays(today, -6));
+    }
+    document.getElementById('tsimFrom').value = _tsimCtl.from;
+    document.getElementById('tsimTo').value = _tsimCtl.to;
+  }
+  tsimCtlChanged('p');
+}
+
+function tsimCtlChanged(what) {
+  const c = _tsimCtl;
+  if (what === 't') {
+    const chk = Array.from(document.querySelectorAll('#tsimTariffs input')).filter(i => i.checked).map(i => i.value);
+    c.t = chk.length ? chk : c.t;           // ostatniej nie da się odznaczyć
+    c.pair = [];
+  } else if (what === 'pair') {
+    c.pair = [document.getElementById('tsimPair1').value, document.getElementById('tsimPair2').value];
+  } else if (c.p === 'custom') {
+    const f = document.getElementById('tsimFrom').value, t = document.getElementById('tsimTo').value;
+    if (_tsimValidDate(f)) c.from = f;
+    if (_tsimValidDate(t)) c.to = t;
+  }
+  _tsimNormalizeCtl();
+  _tsimApplyCtlUI();
+  _tsimSyncHash();
+  clearTimeout(_tsimDebounce);
+  _tsimDebounce = setTimeout(_tsimLoadHourly, 150);
+}
+
+function _tsimUpdateMsg() {
+  const parts = [];
+  if (_tsimHourlyErr) parts.push(_tsimHourlyErr);
+  else parts.push(..._tsimHourlyInfo);
+  if (_tsimVariant === 'B') parts.push('Wykresy godzinowe liczą wariant A (B to miesięczna korekta bez godzin).');
+  if (_tsimCtl.p === 'tomorrow') parts.push('Wariant B niedostępny dla okresu „Jutro”.');
+  document.getElementById('tsimHourlyMsg').textContent = parts.join(' ');
+}
+
+function _tsimClearHourlyCharts() {
+  if (_tsimPriceChart) { _tsimPriceChart.destroy(); _tsimPriceChart = null; }
+  if (_tsimZoneCostChart) { _tsimZoneCostChart.destroy(); _tsimZoneCostChart = null; }
+  if (_tsimDiffChart) { _tsimDiffChart.destroy(); _tsimDiffChart = null; }
+  document.getElementById('tsimZoneMap').innerHTML = '';
+  document.getElementById('tsimZoneLegend').innerHTML = '';
+}
+
+async function _tsimLoadHourly() {
+  if (!_tsimCtlReady) return;
+  const id = ++_tsimReqId;
+  const rg = _tsimRange();
+  const c = _tsimCtl;
+  const order = c.pair.length === 2 ? c.pair.concat(c.t.filter(t => !c.pair.includes(t))) : c.t.slice();
+  _tsimHourlyInfo = [];
+  try {
+    if (!_tsimValidDate(rg.from) || !_tsimValidDate(rg.to)) throw new Error('niepoprawny zakres dat');
+    const r = await fetch('api/tariff_hourly?from=' + rg.from + '&to=' + rg.to + '&tariffs=' + encodeURIComponent(order.join(',')));
+    let d = null;
+    try { d = await r.json(); } catch (e) { /* brak JSON */ }
+    if (id !== _tsimReqId) return;           // stara odpowiedź
+    if (!r.ok || !d || !d.ok) throw new Error((d && d.error) || ('HTTP ' + r.status));
+    _tsimHourly = d; _tsimHourlyTariffs = order; _tsimHourlyErr = '';
+  } catch (e) {
+    if (id !== _tsimReqId) return;
+    _tsimHourly = null; _tsimHourlyErr = 'Błąd wykresów godzinowych: ' + e.message;
+    _tsimClearHourlyCharts();
+    ['tsimPriceMsg', 'tsimZoneCostMsg', 'tsimDiffMsg'].forEach(m => { document.getElementById(m).textContent = ''; });
+    _tsimUpdateMsg();
+    return;
+  }
+  _tsimRenderHourly();
+}
+
+function _tsimRenderHourly() {
+  const d = _tsimHourly;
+  _tsimClearHourlyCharts();
+  const tomorrow = _tsimCtl.p === 'tomorrow';
+  if (tomorrow && d.tomorrow) {
+    if (d.tomorrow.reason) _tsimHourlyInfo.push(d.tomorrow.reason);
+    else if (d.tomorrow.rdn_available === false) _tsimHourlyInfo.push('Brak cen RDN na jutro.');
+    if (d.tomorrow.eurpln_fallback) _tsimHourlyInfo.push('Kurs EUR/PLN z ostatniego znanego dnia.');
+  }
+  _tsimUpdateMsg();
+  _tsimRenderZoneMap();
+  _tsimRenderPrice();
+  _tsimRenderZoneCost();
+  _tsimRenderDiff();
+}
+
+function _tsimSetBox(boxId, msgId, canvasId, show, msg) {
+  const box = document.getElementById(boxId), m = document.getElementById(msgId), cv = document.getElementById(canvasId);
+  cv.style.display = show ? '' : 'none';
+  m.textContent = msg || '';
+  m.classList.toggle('empty', !show);
+  box.style.display = (!show && !msg) ? 'none' : '';
+}
+
+function _tsimNum(v, dg) { return v == null ? '–' : v.toFixed(dg).replace('.', ','); }
+
+// Skala koloru ceny: niska = zielony, wysoka = czerwony (wspólna dla wszystkich taryf).
+function _tsimScaleColor(v, lo, hi) {
+  if (v == null) return '#cbd5e0';
+  const x = hi > lo ? (v - lo) / (hi - lo) : 0.5;
+  const hue = 130 - 130 * Math.min(1, Math.max(0, x));
+  return 'hsl(' + hue.toFixed(0) + ',65%,52%)';
+}
+const _TSIM_ZONE_MARK = ['#1a202c', '#ffffff', '#2563eb', '#7c3aed', '#b45309', '#0e7490'];
+
+function _tsimRenderZoneMap() {
+  const host = document.getElementById('tsimZoneMap');
+  const legend = document.getElementById('tsimZoneLegend');
+  host.innerHTML = ''; legend.innerHTML = '';
+  const d = _tsimHourly;
+  if (!d) return;
+  const mobile = window.matchMedia('(max-width: 640px)').matches;
+  const names = _tsimHourlyTariffs.filter(t => d.zone_map[t]);
+  const sel = document.getElementById('tsimMapTariff');
+  if (sel.options.length !== names.length || names.some((t, i) => sel.options[i].value !== t)) {
+    const prev = sel.value;
+    sel.innerHTML = names.map(t => '<option value="' + _esc(t) + '">' + _esc(t) + '</option>').join('');
+    sel.value = names.includes(prev) ? prev : names[0];
+  }
+  document.getElementById('tsimMapTariffLbl').style.display = mobile ? '' : 'none';
+  const shown = mobile ? names.filter(t => t === sel.value) : names;
+  let lo = Infinity, hi = -Infinity;
+  names.forEach(t => {
+    const z = d.zone_map[t];
+    z.days.forEach(day => z.cells[day].forEach(c => {
+      if (c && c.gross_per_kwh != null) { lo = Math.min(lo, c.gross_per_kwh); hi = Math.max(hi, c.gross_per_kwh); }
+    }));
+  });
+  const zoneIdx = {};
+  const CW = 16, LM = 54, TM = 14;
+  shown.forEach(t => {
+    const z = d.zone_map[t];
+    const block = document.createElement('div');
+    block.className = 'tsim-map-block';
+    const h = document.createElement('div');
+    h.className = 'tsim-map-h';
+    h.style.color = _TSIM_COLORS[t] || '#444';
+    if (!z.days.length) {
+      h.textContent = t + ' – niedostępna w tym zakresie (brak cennika lub cen dla tych dni)';
+      h.classList.add('tsim-na');
+      block.appendChild(h); host.appendChild(block);
+      return;
+    }
+    h.textContent = t;
+    const days = z.days, RH = days.length > 62 ? 3 : (days.length > 31 ? 6 : 14);
+    const cv = document.createElement('canvas');
+    cv.width = LM + 24 * CW; cv.height = TM + days.length * RH;
+    cv.className = 'tsim-map-cv';
+    cv.setAttribute('role', 'img');
+    cv.setAttribute('aria-label', 'Mapa stref i cen ' + t);
+    const g = cv.getContext('2d');
+    g.font = '10px system-ui, sans-serif'; g.fillStyle = '#718096'; g.textBaseline = 'middle';
+    for (let hr = 0; hr < 24; hr += 3) g.fillText(String(hr), LM + hr * CW + 2, 7);
+    days.forEach((day, r) => {
+      const y = TM + r * RH;
+      if (RH >= 10 || day.slice(8) === '01') {
+        g.fillStyle = '#718096'; g.fillText(RH >= 10 ? day.slice(5) : day.slice(2, 7), 2, y + Math.min(RH, 10) / 2);
+      }
+      z.cells[day].forEach((c, hr) => {
+        g.fillStyle = _tsimScaleColor(c ? c.gross_per_kwh : null, lo, hi);
+        g.fillRect(LM + hr * CW, y, CW - 1, Math.max(RH - 1, 2));
+        if (c && c.zone) {
+          if (!(c.zone in zoneIdx)) zoneIdx[c.zone] = Object.keys(zoneIdx).length;
+          g.fillStyle = _TSIM_ZONE_MARK[zoneIdx[c.zone] % _TSIM_ZONE_MARK.length];
+          g.fillRect(LM + hr * CW, y, 3, Math.max(RH - 1, 2));
+        }
+      });
+    });
+    cv.addEventListener('mousemove', ev => {
+      const rect = cv.getBoundingClientRect(), k = cv.width / rect.width;
+      const x = (ev.clientX - rect.left) * k - LM, y = (ev.clientY - rect.top) * k - TM;
+      const hr = Math.floor(x / CW), r = Math.floor(y / RH);
+      const c = hr >= 0 && hr < 24 && r >= 0 && r < days.length ? z.cells[days[r]][hr] : null;
+      cv.title = c ? (t + ' · ' + days[r] + ' ' + String(hr).padStart(2, '0') + ':00 · ' + (c.zone || '–') + ' · ' +
+        (c.gross_per_kwh == null ? 'brak ceny' : _tsimNum(c.gross_per_kwh, 4) + ' zł/kWh')) : '';
+    });
+    block.appendChild(h); block.appendChild(cv); host.appendChild(block);
+  });
+  if (isFinite(lo)) {
+    const zl = Object.keys(zoneIdx).map(zn => '<span class="tsim-zl"><i style="background:' +
+      _TSIM_ZONE_MARK[zoneIdx[zn] % _TSIM_ZONE_MARK.length] + '"></i>' + _esc(zn) + '</span>').join('');
+    legend.innerHTML = '<span>' + _tsimNum(lo, 2) + ' zł/kWh</span><span class="tsim-scale"></span><span>' +
+      _tsimNum(hi, 2) + ' zł/kWh</span><span class="tsim-zl-sep">znacznik strefy:</span>' + zl;
+  } else {
+    legend.textContent = 'Brak cen w wybranym zakresie.';
+  }
+}
+
+
+function _tsimRenderPrice() {
+  const d = _tsimHourly;
+  const tomorrow = _tsimCtl.p === 'tomorrow';
+  if (!d.hours) {
+    _tsimSetBox('tsimPriceBox', 'tsimPriceMsg', 'tsimPriceChart', false, 'Wykres godzinowy dla zakresów do 31 dni.');
+    return;
+  }
+  const names = _tsimHourlyTariffs.filter(t => (d.hours[t] || []).length);
+  if (!names.length) {
+    _tsimSetBox('tsimPriceBox', 'tsimPriceMsg', 'tsimPriceChart', false, 'Brak danych godzinowych dla wybranych taryf.');
+    return;
+  }
+  _tsimSetBox('tsimPriceBox', 'tsimPriceMsg', 'tsimPriceChart', true, '');
+  const first = d.hours[names[0]];
+  const labels = first.map(r => r.key.slice(5, 10) + ' ' + r.key.slice(11) + ':00');
+  const datasets = names.map(t => ({
+    type: 'line', label: t, yAxisID: 'y', stepped: true, spanGaps: false, pointRadius: 0, borderWidth: t === 'G12w' ? 2.5 : 1.5,
+    borderColor: _TSIM_COLORS[t] || '#444', backgroundColor: _TSIM_COLORS[t] || '#444',
+    data: d.hours[t].map(r => r.gross_per_kwh), order: 1,
+  }));
+  if (!tomorrow) datasets.push({
+    type: 'bar', label: 'Pobór (kWh)', yAxisID: 'y2', data: first.map(r => r.kwh),
+    backgroundColor: 'rgba(113,128,150,.35)', borderWidth: 0, order: 2,
+  });
+  _tsimPriceChart = new Chart(document.getElementById('tsimPriceChart'), {
+    data: { labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { position: 'bottom' } },
+      scales: {
+        x: { ticks: { maxTicksLimit: 12, autoSkip: true } },
+        y: { title: { display: true, text: 'zł/kWh brutto' } },
+        y2: { position: 'right', display: !tomorrow, grid: { drawOnChartArea: false }, title: { display: true, text: 'kWh' } },
+      },
+    },
+  });
+}
+
+function _tsimRenderZoneCost() {
+  const d = _tsimHourly;
+  if (_tsimCtl.p === 'tomorrow') {
+    _tsimSetBox('tsimZoneCostBox', 'tsimZoneCostMsg', 'tsimZoneCost', false, 'Koszty dla jutra niedostępne (brak poboru).');
+    return;
+  }
+  const names = _tsimHourlyTariffs.filter(t => d.cost_by_zone && d.cost_by_zone[t]);
+  if (!names.length) {
+    _tsimSetBox('tsimZoneCostBox', 'tsimZoneCostMsg', 'tsimZoneCost', false, 'Brak kosztów dla wybranych taryf w tym zakresie.');
+    return;
+  }
+  const notes = [];
+  names.forEach(t => {
+    const m = d.cost_by_zone[t].missing_kwh;
+    if (m > 0) notes.push(t + ': ' + _tsimNum(m, 1) + ' kWh bez ceny (pominięte).');
+  });
+  if (names.includes('dyn_a')) notes.push('dyn_a: koszt godzinowy bez miesięcznej podłogi średniej.');
+  _tsimSetBox('tsimZoneCostBox', 'tsimZoneCostMsg', 'tsimZoneCost', true, notes.join(' '));
+  const zones = [];
+  names.forEach(t => Object.keys(d.cost_by_zone[t].zones).forEach(z => { if (!zones.includes(z)) zones.push(z); }));
+  const PAL = ['#2563eb', '#16a34a', '#b45309', '#7c3aed', '#0e7490', '#dc2626'];
+  const datasets = zones.map((z, i) => ({
+    label: z, backgroundColor: PAL[i % PAL.length],
+    data: names.map(t => { const e = d.cost_by_zone[t].zones[z]; return e ? e.cost_gross : 0; }),
+    _kwh: names.map(t => { const e = d.cost_by_zone[t].zones[z]; return e ? e.kwh : 0; }),
+  }));
+  datasets.push({ label: 'Opłaty stałe', backgroundColor: '#a0aec0',
+    data: names.map(t => d.cost_by_zone[t].fixed_gross), _kwh: names.map(() => null) });
+  _tsimZoneCostChart = new Chart(document.getElementById('tsimZoneCost'), {
+    type: 'bar',
+    data: { labels: names, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      plugins: {
+        legend: { position: 'bottom' },
+        tooltip: { callbacks: {
+          label: ctx => {
+            const k = ctx.dataset._kwh[ctx.dataIndex];
+            return ctx.dataset.label + ': ' + _tsimNum(ctx.parsed.y, 2) + ' zł' + (k == null ? '' : ' · ' + _tsimNum(k, 1) + ' kWh');
+          },
+          footer: items => 'Razem: ' + _tsimNum(d.cost_by_zone[names[items[0].dataIndex]].total_gross, 2) + ' zł',
+        } },
+      },
+      scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true, title: { display: true, text: 'zł brutto' } } },
+    },
+  });
+}
+
+function _tsimRenderDiff() {
+  const d = _tsimHourly, c = _tsimCtl;
+  const title = document.getElementById('tsimDiffTitle');
+  if (c.p === 'tomorrow') {
+    title.textContent = 'Różnica narastająco';
+    _tsimSetBox('tsimDiffBox', 'tsimDiffMsg', 'tsimDiffChart', false, 'Różnica kosztów dla jutra niedostępna (brak poboru).');
+    return;
+  }
+  if (c.pair.length !== 2) {
+    title.textContent = 'Różnica narastająco';
+    _tsimSetBox('tsimDiffBox', 'tsimDiffMsg', 'tsimDiffChart', false, 'Zaznacz co najmniej 2 taryfy.');
+    return;
+  }
+  const cd = d.cumulative_diff;
+  const t1 = c.pair[0], t2 = c.pair[1];
+  title.textContent = t1 + ' − ' + t2 + ' narastająco (zł brutto, bez opłat stałych)';
+  if (!cd || !cd.days.length) {
+    _tsimSetBox('tsimDiffBox', 'tsimDiffMsg', 'tsimDiffChart', false, 'Brak danych do porównania tej pary w wybranym zakresie.');
+    return;
+  }
+  _tsimSetBox('tsimDiffBox', 'tsimDiffMsg', 'tsimDiffChart', true,
+    cd.skipped_kwh > 0 ? 'Pominięto ' + _tsimNum(cd.skipped_kwh, 1) + ' kWh z godzin bez ceny.' : '');
+  _tsimDiffChart = new Chart(document.getElementById('tsimDiffChart'), {
+    type: 'line',
+    data: { labels: cd.days, datasets: [{ label: t1 + ' − ' + t2, data: cd.diff_gross, borderColor: _TSIM_COLORS[t1] || '#444',
+      backgroundColor: 'rgba(37,99,235,.08)', fill: true, pointRadius: cd.days.length > 40 ? 0 : 2, tension: 0.15 }] },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      plugins: { legend: { display: false } },
+      scales: { y: { title: { display: true, text: 'zł brutto (>0: ' + t1 + ' droższa)' } }, x: { ticks: { maxTicksLimit: 12 } } },
+    },
+  });
 }
 
 function _tsimHasB() {
@@ -3960,6 +4431,8 @@ function _tsimHasB() {
 function tsimSetVariant(v) {
   _tsimVariant = v;
   _renderTsimVariant();
+  _tsimUpdateMsg();
+  _tsimSyncHash();
 }
 
 function _renderTsim() {
@@ -4003,6 +4476,7 @@ function _renderTsimVariant() {
   const hasB = _tsimHasB();
   document.getElementById('tsimBtnA').setAttribute('aria-pressed', String(_tsimVariant === 'A'));
   document.getElementById('tsimBtnB').setAttribute('aria-pressed', String(_tsimVariant === 'B'));
+  document.getElementById('tsimBtnB').disabled = _tsimCtl.p === 'tomorrow';
   document.getElementById('tsimVariantNote').textContent = _tsimVariant === 'B' && hasB
     ? (_tsim.data.variant_b_note || 'Wariant B: z modułem magazynu.')
     : 'Wariant A: ten sam pobór z sieci wyceniony w każdej taryfie.';

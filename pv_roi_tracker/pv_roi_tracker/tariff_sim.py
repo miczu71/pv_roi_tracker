@@ -12,6 +12,7 @@ poza symulacją.
 """
 from __future__ import annotations
 
+import calendar
 import logging
 from datetime import date, datetime, timedelta
 from typing import Optional
@@ -186,3 +187,162 @@ def simulate_range(from_ym: str, to_ym: str, import_by_hour: dict, catalog: dict
     """`{ym: simulate_month(...)}` dla miesięcy od `from_ym` do `to_ym` włącznie."""
     return {ym: simulate_month(ym, import_by_hour, catalog, settings, rdn, kompas, overrides)
             for ym in _month_range(from_ym, to_ym)}
+
+
+# ── seria godzinowa (E1: widok „Strefy i ceny”) ──────────────────────────────
+
+def hourly_series(from_date: date, to_date: date, import_by_hour: dict, catalog: dict,
+                  tariffs=ALL_TARIFFS, settings: Optional[TariffSettings] = None,
+                  rdn: Optional[dict] = None, kompas: Optional[dict] = None,
+                  overrides: Optional[dict] = None) -> dict:
+    """Wiersz na KAŻDĄ godzinę doby od `from_date` do `to_date` (także bez poboru, kWh = 0).
+
+    `{taryfa: {'available', 'reason', 'hours': [wiersz, ...]}}`, wiersz:
+    `{key, zone, net_per_kwh, gross_per_kwh, kwh, cost_net, cost_gross, fallback}`.
+    DST jak w `simulate_month`: klucz `YYYY-MM-DDTHH`, jeden wiersz na klucz.
+
+    Różnice względem `simulate_month`: dyn_a liczy cenę każdej godziny osobno (RDN/1000 + marża
+    + dystrybucja G12w + opłaty) — BEZ miesięcznej podłogi średniej; brak RDN → ta sama godzina
+    tydzień wcześniej (`fallback: True`), nadal brak → ceny i koszty `None` (zone podana).
+    Taryfa dynamiczna jest niedostępna (`available: False`, `hours: []`), gdy cały zakres leży
+    przed jej `valid_from`; dni przed `valid_from` w szerszym zakresie mają ceny `None`.
+    Brak wartości w katalogu → ValueError, nigdy cichy zero.
+    """
+    rdn = rdn or {}
+    kompas = kompas or {}
+    vat = float(catalog['_meta']['vat'])
+    sales = catalog.get('dynamic_sales', {})
+    a_from = sales.get('valid_from')
+    b_from = (catalog.get('dynamic_sales_b') or {}).get('valid_from')
+    out: dict = {}
+    for n in tariffs:
+        if n == 'dyn_a' and a_from and to_date.isoformat() < a_from:
+            out[n] = {'available': False, 'reason': 'cennik dynamiczny od 2026-04-01; wcześniejsze wersje nieustalone',
+                      'hours': []}
+            continue
+        if n == 'dyn_b' and b_from and to_date.isoformat() < b_from:
+            out[n] = {'available': False, 'reason': f'oferta od {b_from}', 'hours': []}
+            continue
+        out[n] = {'available': True, 'reason': None, 'hours': []}
+
+    margin = _required(sales, 'margin_net_per_kwh') if out.get('dyn_a', {}).get('available') else 0.0
+    d = from_date
+    while d <= to_date:
+        iso = d.isoformat()
+        p = period_for(catalog, d, overrides)
+        for h in range(24):
+            key = f'{iso}T{h:02d}'
+            dt = datetime(d.year, d.month, d.day, h)
+            kwh = float(import_by_hour.get(key) or 0.0)
+            for n in tariffs:
+                if not out[n]['available']:
+                    continue
+                fallback = False
+                net: Optional[float]
+                if n in STATIC_TARIFFS:
+                    zone = zone_for(n, dt, catalog)
+                    r = rates_per_kwh(n, p, zone)
+                    net = r['energy'] + r['dist'] + r['fees']
+                elif n == 'dyn_a':
+                    zone = zone_for('G12w', dt, catalog)
+                    net = None
+                    if not (a_from and iso < a_from):
+                        price = rdn.get(key)
+                        if price is None:
+                            price = rdn.get((dt - timedelta(days=7)).strftime('%Y-%m-%dT%H'))
+                            fallback = price is not None
+                        if price is not None:
+                            g12w = rates_per_kwh('G12w', p, zone)
+                            net = price / 1000.0 + margin + g12w['dist'] + g12w['fees']
+                else:   # dyn_b
+                    zone = kompas.get(key)
+                    net = None
+                    s_rate = (p.get('dynamic_dist_var_net') or {}).get(zone) if zone else None
+                    if s_rate is not None and not (b_from and iso < b_from):
+                        fees = rates_per_kwh('G12w', p, zone_for('G12w', dt, catalog))['fees']
+                        net = _dyn_b_price(catalog, overrides) + float(s_rate) + fees
+                gross = net * vat if net is not None else None
+                out[n]['hours'].append({
+                    'key': key, 'zone': zone, 'net_per_kwh': net, 'gross_per_kwh': gross,
+                    'kwh': kwh,
+                    'cost_net': kwh * net if net is not None else None,
+                    'cost_gross': kwh * gross if gross is not None else None,
+                    'fallback': fallback,
+                })
+        d += timedelta(days=1)
+    return out
+
+
+def zone_map(series: dict) -> dict:
+    """`{taryfa: {'days': [...], 'cells': {dzień: [24 × {zone, net_per_kwh, gross_per_kwh}]}}}`."""
+    out: dict = {}
+    for n, s in series.items():
+        cells: dict = {}
+        for r in s.get('hours', []):
+            day, h = r['key'][:10], int(r['key'][11:13])
+            row = cells.setdefault(day, [None] * 24)
+            row[h] = {'zone': r['zone'], 'net_per_kwh': r['net_per_kwh'],
+                      'gross_per_kwh': r['gross_per_kwh']}     # DST: ostatni zapis klucza wygrywa
+        out[n] = {'days': sorted(cells), 'cells': cells}
+    return out
+
+
+def cost_by_zone(series: dict, catalog: dict, settings: Optional[TariffSettings] = None,
+                 overrides: Optional[dict] = None) -> dict:
+    """Koszt per strefa + opłaty stałe (proporcjonalnie do dni) + `missing_kwh` (godziny bez ceny)."""
+    settings = settings or TariffSettings()
+    vat = float(catalog['_meta']['vat'])
+    out: dict = {}
+    for n, s in series.items():
+        if not s.get('available'):
+            continue
+        zones: dict = {}
+        missing = 0.0
+        days = set()
+        for r in s['hours']:
+            days.add(r['key'][:10])
+            if r['cost_net'] is None:
+                missing += r['kwh']
+                continue
+            z = zones.setdefault(r['zone'], {'kwh': 0.0, 'cost_net': 0.0, 'cost_gross': 0.0})
+            z['kwh'] += r['kwh']
+            z['cost_net'] += r['cost_net']
+            z['cost_gross'] += r['cost_gross']
+        fixed_net = 0.0
+        for iso in days:
+            d = date.fromisoformat(iso)
+            monthly = sum(fixed_monthly(period_for(catalog, d, overrides), settings).values())
+            fixed_net += monthly / calendar.monthrange(d.year, d.month)[1]
+        fixed_gross = fixed_net * vat
+        out[n] = {'zones': zones, 'fixed_net': fixed_net, 'fixed_gross': fixed_gross,
+                  'missing_kwh': missing,
+                  'total_gross': sum(z['cost_gross'] for z in zones.values()) + fixed_gross}
+    return out
+
+
+def cumulative_diff(series: dict, a: str, b: str) -> dict:
+    """Narastająca suma dziennych `cost_gross[a] − cost_gross[b]` (bez opłat stałych).
+
+    Godziny, w których cena którejś taryfy jest `None`, są pomijane i liczone w `skipped_kwh`.
+    """
+    sa, sb = series.get(a), series.get(b)
+    if not sa or not sb or not sa.get('available') or not sb.get('available'):
+        return {'days': [], 'diff_gross': [], 'skipped_kwh': 0.0}
+    by_b = {r['key']: r for r in sb['hours']}
+    daily: dict = {}
+    skipped = 0.0
+    for r in sa['hours']:
+        day = r['key'][:10]
+        daily.setdefault(day, 0.0)
+        rb = by_b.get(r['key'])
+        if rb is None or r['cost_gross'] is None or rb['cost_gross'] is None:
+            skipped += r['kwh']
+            continue
+        daily[day] += r['cost_gross'] - rb['cost_gross']
+    days = sorted(daily)
+    acc = 0.0
+    cum = []
+    for day in days:
+        acc += daily[day]
+        cum.append(acc)
+    return {'days': days, 'diff_gross': cum, 'skipped_kwh': skipped}
