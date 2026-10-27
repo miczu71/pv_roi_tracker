@@ -687,3 +687,10 @@ def test_list_payments_status_not_ok_raises_layout_changed():
     session.when('GetPayments', _FakeResponse(text=json.dumps({'Status': 'Error'})))
     with pytest.raises(EbokLayoutChanged):
         client.list_payments(date(2025, 10, 1), date(2026, 10, 27))
+
+
+def test_list_payments_missing_documents_list_raises_layout_changed():
+    client, session = _payments_client()
+    session.when('GetPayments', _FakeResponse(text=json.dumps({'Status': 'OK', 'TotalNumber': 0})))
+    with pytest.raises(EbokLayoutChanged):
+        client.list_payments(date(2025, 10, 1), date(2026, 10, 27))

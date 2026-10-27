@@ -256,7 +256,9 @@ class EbokClient:
                 raise EbokError(f'Pobranie listy wpłat nie powiodło się (status {r.status_code})')
             data = _json_or_layout_error(r, 'lista wpłat')
             rows = data.get('Documents')
-            received += len(rows) if isinstance(rows, list) else 0
+            if not isinstance(rows, list):
+                raise EbokLayoutChanged('lista wpłat: brak listy Documents w odpowiedzi')
+            received += len(rows)
             batch = parse_payments_json(data)
             payments.extend(batch)
             total = data.get('TotalNumber')
