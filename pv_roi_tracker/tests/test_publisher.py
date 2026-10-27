@@ -63,16 +63,16 @@ _SIM = {
     'baseline_tariff': 'G13s',
     'current_month': {'ym': '2026-10', 'gross': {'G12w': 55.5, 'G13s': 44.4, 'dyn_a': None}},
     'last12': {'gross': {'G12w': 1234.5678, 'G13s': 999.5, 'dyn_a': None}, 'cheapest': 'G12w',
-               'saving_vs_g12w': 0.0, 'saving_vs_baseline': 0.0,
+               'saving_vs_baseline': 0.0,
                'gross_c': {'G12w': 1000.0, 'G13s': 900.5, 'G11': None}},
     'best_year': {'best': {'tariff': 'G13s', 'variant': 'C', 'gross': 900.5,
                            'saving_pln': 334.0678, 'confirmed': False}},
 }
 
 
-def test_tariffsim_ma_28_sensory_monetary_bez_state_class():
+def test_tariffsim_ma_27_sensory_monetary_bez_state_class():
     sims = [s for s in _SENSORS if s.slug.startswith('tariffsim_')]
-    assert len(sims) == 28
+    assert len(sims) == 27
     for s in sims:
         assert s.state_class is None
         if s.slug not in ('tariffsim_cheapest', 'tariffsim_best_variant', 'tariffsim_baseline_tariff'):
@@ -86,7 +86,7 @@ def test_render_tariffsim(result):
     assert _render_value(_sensor('tariffsim_12m_g12w'), result, tariff_sim=_SIM) == '1234.5678'
     assert _render_value(_sensor('tariffsim_month_g12w'), result, tariff_sim=_SIM) == '55.5'
     assert _render_value(_sensor('tariffsim_cheapest'), result, tariff_sim=_SIM) == 'G12w'
-    assert _render_value(_sensor('tariffsim_saving_vs_g12w'), result, tariff_sim=_SIM) == '0.0'
+    assert _render_value(_sensor('tariffsim_saving_vs_baseline'), result, tariff_sim=_SIM) == '0.0'
 
 
 def test_render_tariffsim_c_i_best(result):
@@ -112,7 +112,7 @@ def test_render_tariffsim_unknown(result):
     assert _render_value(_sensor('tariffsim_cheapest'), result, tariff_sim={}) == 'unknown'
 
 
-def test_publish_roi_publikuje_28_tematow_tariffsim(result):
+def test_publish_roi_publikuje_27_tematow_tariffsim(result):
     from unittest.mock import MagicMock
     from pv_roi_tracker.publisher import MQTTPublisher
     pub = MQTTPublisher('localhost', 1883, '', '')
@@ -121,7 +121,7 @@ def test_publish_roi_publikuje_28_tematow_tariffsim(result):
     result = dataclasses.replace(result, roi_pct=1.0)
     pub.publish_roi(result, tariff_sim=_SIM)
     topics = [c.args[0] for c in pub._client.publish.call_args_list]
-    assert sum('/tariffsim_' in t for t in topics) == 28
+    assert sum('/tariffsim_' in t for t in topics) == 27
 
 
 # ── bieżąca taryfa (current_tariff) ──────────────────────────────────────────
@@ -154,9 +154,8 @@ def test_render_tariffsim_baza_e3(result):
     assert _render_value(_sensor('tariffsim_month_baseline'), result, tariff_sim=_SIM) == '44.4'
     assert _render_value(_sensor('tariffsim_12m_baseline'), result, tariff_sim=_SIM) == '999.5'
     assert _render_value(_sensor('tariffsim_12m_c_baseline'), result, tariff_sim=_SIM) == '900.5'
-    sim = {**_SIM, 'last12': {**_SIM['last12'], 'saving_vs_baseline': 12.5, 'saving_vs_g12w': 12.5}}
+    sim = {**_SIM, 'last12': {**_SIM['last12'], 'saving_vs_baseline': 12.5}}
     assert _render_value(_sensor('tariffsim_saving_vs_baseline'), result, tariff_sim=sim) == '12.5'
-    assert _render_value(_sensor('tariffsim_saving_vs_g12w'), result, tariff_sim=sim) == '12.5'
 
 
 def test_render_tariffsim_baza_brak_danych(result):
@@ -167,6 +166,54 @@ def test_render_tariffsim_baza_brak_danych(result):
     # stary payload bez baseline_tariff -> baza G12w
     old = {'current_month': {'gross': {'G12w': 7.0}}}
     assert _render_value(_sensor('tariffsim_month_baseline'), result, tariff_sim=old) == '7.0'
-    # alias stary czyta saving_vs_baseline, gdy jest
-    assert _render_value(_sensor('tariffsim_saving_vs_g12w'), result,
+    assert _render_value(_sensor('tariffsim_saving_vs_baseline'), result,
                          tariff_sim={'last12': {'saving_vs_baseline': 3.0}}) == '3.0'
+
+
+# ── harmonogram mostów JIT (E6a) ─────────────────────────────────────────────
+
+def _pub_connected():
+    from unittest.mock import MagicMock
+    from pv_roi_tracker.publisher import MQTTPublisher
+    pub = MQTTPublisher('localhost', 1883, '', '')
+    pub._client = MagicMock()
+    pub._connected = True
+    return pub
+
+
+def test_discovery_jit_schedule_ma_json_attributes_topic():
+    import json
+    pub = _pub_connected()
+    pub._publish_discovery()
+    published = {c.args[0]: c.args[1] for c in pub._client.publish.call_args_list}
+    topic = next(t for t in published if t.endswith('/jit_schedule/config'))
+    payload = json.loads(published[topic])
+    assert payload['name'] == 'PV JIT Schedule'
+    assert payload['icon'] == 'mdi:battery-clock'
+    assert payload['json_attributes_topic'].endswith('/jit_schedule/attributes')
+
+
+def test_discovery_tombstone_saving_vs_g12w():
+    pub = _pub_connected()
+    pub._publish_discovery()
+    published = {c.args[0]: c.args[1] for c in pub._client.publish.call_args_list}
+    topic = next(t for t in published if t.endswith('/tariffsim_saving_vs_g12w/config'))
+    assert published[topic] == ''
+    assert not any(s.slug == 'tariffsim_saving_vs_g12w' for s in _SENSORS)
+
+
+def test_publish_jit_schedule_stan_i_atrybuty():
+    import json
+    pub = _pub_connected()
+    pub.publish_jit_schedule('G13', {'schedules': {'G13': {}}, 'nota': 'zażółć'})
+    published = {c.args[0]: c.args[1] for c in pub._client.publish.call_args_list}
+    assert published[next(t for t in published if t.endswith('/jit_schedule/state'))] == 'G13'
+    raw = published[next(t for t in published if t.endswith('/jit_schedule/attributes'))]
+    assert 'zażółć' in raw and json.loads(raw)['schedules'] == {'G13': {}}
+
+
+def test_publish_jit_schedule_bez_polaczenia_nie_rzuca():
+    pub = _pub_connected()
+    pub._connected = False
+    pub.publish_jit_schedule('unknown', {})
+    pub._client.publish.assert_not_called()

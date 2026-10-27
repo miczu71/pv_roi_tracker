@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.52.0] — w przygotowaniu
+
+Harmonogram mostów JIT dla taryf strefowych — dane dla automatyzacji ładowania baterii w HA.
+
+- **Czujnik `sensor.pv_roi_tracker_pv_jit_schedule`:** stan = bieżąca taryfa (albo `unknown`), atrybuty = harmonogram dla G12w, G13 i G13s na dziś i jutro: szczyty (`peaks`) oraz mosty (`bridges`) — tanie okno ładowania przed szczytem (`charge_start`, `charge_end`, `gap_end`), najniższa cena okna, średnia cena szczytu, marża na kWh (po sprawności cyklu i koszcie degradacji z konfiguracji magazynu) i flaga `profitable`. Czasy w ISO ze strefą Europe/Warsaw. Ile ładować, liczy automatyzacja w HA.
+- **Zadanie `jit_schedule`:** publikacja w każdym cyklu poll, w osobnym bloku; błąd harmonogramu jest zapisany w zdrowiu add-onu i nie zatrzymuje reszty publikacji.
+- **Usunięto przestarzały alias:** `saving_vs_g12w`, `saving_vs_g12w_b`, `saving_vs_g12w_c` w payloadzie symulacji taryf oraz czujnik `tariffsim_saving_vs_g12w` (zastępuje go `tariffsim_saving_vs_baseline`; retained discovery starego czujnika jest czyszczone). Czujniki `*_g12w` (koszt taryfy G12w) zostają.
+
 ## [0.51.0] — 2026-10-27
 
 Baza porównań symulacji taryf = bieżąca taryfa (zamiast sztywnego G12w). Koszty faktyczne z faktur zostają w taryfie okresu faktury.

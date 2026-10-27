@@ -74,7 +74,7 @@ def test_last12_pelne_miesiace_i_ranking(monkeypatch, cat):
     assert p["last12"]["gross"]["G12w"] == pytest.approx(12 * 100.0)
     assert p["last12"]["net"]["G12w"] == pytest.approx(12 * 100.0 / 1.23)
     assert p["last12"]["cheapest"] == "G12w"
-    assert p["last12"]["saving_vs_g12w"] == 0.0
+    assert p["last12"]["saving_vs_baseline"] == 0.0
 
 
 def test_najtansza_i_oszczednosc(monkeypatch, cat):
@@ -82,7 +82,7 @@ def test_najtansza_i_oszczednosc(monkeypatch, cat):
     l12 = run(cat)["last12"]
     # dyn_a (90) i dyn_b (95) są wiarygodne i dostępne, ale G12 (80) jest tańsza
     assert l12["cheapest"] == "G12"
-    assert l12["saving_vs_g12w"] == pytest.approx(12 * 20.0)
+    assert l12["saving_vs_baseline"] == pytest.approx(12 * 20.0)
 
 
 def test_niedostepna_taryfa_w_ktoryms_miesiacu_poza_rankingiem(monkeypatch, cat):
@@ -278,7 +278,7 @@ def test_wariant_b_najtansza_i_oszczednosc(monkeypatch, cat):
     l12 = run_b(cat)["last12"]
     assert l12["cheapest"] == "dyn_a"
     assert l12["cheapest_b"] == "G13"
-    assert l12["saving_vs_g12w_b"] == pytest.approx(12 * (99.0 - 80.0))
+    assert l12["saving_vs_baseline_b"] == pytest.approx(12 * (99.0 - 80.0))
 
 
 def test_wariant_b_niedostepna_taryfa_none(monkeypatch, cat):
@@ -299,7 +299,7 @@ def test_wariant_b_brak_wyniku_miesiaca_none(monkeypatch, cat):
     p = run_b(cat)
     assert p["months"]["2026-02"]["G12w"]["b"] is None
     assert p["last12"]["gross_b"]["G12w"] is None
-    assert p["last12"]["cheapest_b"] is None and p["last12"]["saving_vs_g12w_b"] is None
+    assert p["last12"]["cheapest_b"] is None and p["last12"]["saving_vs_baseline_b"] is None
 
 
 # ── recommend (E4) ───────────────────────────────────────────────────────────
@@ -414,7 +414,7 @@ def test_wariant_c_w_months_i_last12(monkeypatch, cat):
     assert l12["gross_c"]["G12w"] == pytest.approx(12 * 92.0)
     assert l12["gross_c"]["G13s"] == pytest.approx(12 * 97.0)
     assert l12["cheapest_c"] == "G12w"
-    assert l12["saving_vs_g12w_c"] == 0.0
+    assert l12["saving_vs_baseline_c"] == 0.0
     assert p["current_month"]["gross_c"]["G12w"] == pytest.approx(92.0)
     assert "G12w" in p["plans"] and p["variant_c_note"]
     assert "16%" in p["variant_b_note"]
@@ -522,7 +522,7 @@ def test_baza_domyslna_g12w_i_aliasy(monkeypatch, cat):
     p = run(cat)
     assert p["baseline_tariff"] == "G12w"
     l12 = p["last12"]
-    assert l12["saving_vs_baseline"] == l12["saving_vs_g12w"] == pytest.approx(240.0)
+    assert l12["saving_vs_baseline"] == pytest.approx(240.0)
     assert p["best_year"]["baseline"]["tariff"] == "G12w"
 
 
@@ -533,7 +533,7 @@ def test_baza_g13_ranking_i_oszczednosc(monkeypatch, cat):
     l12 = p["last12"]
     # najtańsza dyn_a (90*12=1080)? nie: G13 = 960 < dyn_a 1080 -> oszczędność 0
     assert l12["cheapest"] == "G13"
-    assert l12["saving_vs_baseline"] == l12["saving_vs_g12w"] == 0.0
+    assert l12["saving_vs_baseline"] == 0.0
     assert p["best_year"]["baseline"] == {"tariff": "G13", "variant": "A", "gross": pytest.approx(960.0)}
     assert p["best_year"]["warnings"] == []   # najlepsza = baza, brak ostrzeżenia o zmianie grupy
 
@@ -542,7 +542,7 @@ def test_baza_g13_oszczednosc_dodatnia(monkeypatch, cat):
     _patch_range(monkeypatch, _base(g12w=50.0, g13=100.0))
     p = tj.compute_payload({}, cat, TariffSettings(), {}, {}, {}, TODAY, baseline="G13")
     assert p["last12"]["cheapest"] == "G12w"
-    assert p["last12"]["saving_vs_baseline"] == p["last12"]["saving_vs_g12w"] == pytest.approx(600.0)
+    assert p["last12"]["saving_vs_baseline"] == pytest.approx(600.0)
     assert p["best_year"]["best"]["saving_pln"] == pytest.approx(600.0)
 
 

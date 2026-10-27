@@ -234,7 +234,7 @@ def compute_payload(import_by_hour: dict, catalog: dict, settings: Optional[Tari
         if cheapest_b is not None and gross_b.get(baseline) is not None:
             saving_b = max(0.0, gross_b[baseline] - ranked_b[cheapest_b])
         l12_extra = {'gross_b': gross_b, 'cheapest_b': cheapest_b,
-                     'saving_vs_baseline_b': saving_b, 'saving_vs_g12w_b': saving_b}
+                     'saving_vs_baseline_b': saving_b}
         gross_c = {t: _sum12_variant(months, t, yms, 'c') for t in TARIFFS}
         ranked_c = {t: g for t, g in gross_c.items() if g is not None}
         cheapest_c = min(ranked_c, key=ranked_c.get) if ranked_c else None
@@ -242,7 +242,7 @@ def compute_payload(import_by_hour: dict, catalog: dict, settings: Optional[Tari
         if cheapest_c is not None and gross_c.get(baseline) is not None:
             saving_c = max(0.0, gross_c[baseline] - ranked_c[cheapest_c])
         l12_extra.update({'gross_c': gross_c, 'cheapest_c': cheapest_c,
-                          'saving_vs_baseline_c': saving_c, 'saving_vs_g12w_c': saving_c})
+                          'saving_vs_baseline_c': saving_c})
         current_c = {t: (cur[t]['c']['gross'] if _usable(cur.get(t), False) and cur[t].get('c')
                          else None) for t in TARIFFS}
         current_b = {t: (cur[t]['b']['gross'] if _usable(cur.get(t), False) and cur[t].get('b')
@@ -260,7 +260,7 @@ def compute_payload(import_by_hour: dict, catalog: dict, settings: Optional[Tari
         'current_month': {'ym': to_ym, 'gross': current},
         'last12': {'from': l12_from, 'to': l12_to, 'gross': gross, 'net': net,
                    'cheapest': cheapest, 'saving_vs_baseline': saving,
-                   'saving_vs_g12w': saving, **l12_extra},
+                   **l12_extra},
         'reconciliation': recon,
         'reconciliation_summary': {
             'months': len(confirmed),

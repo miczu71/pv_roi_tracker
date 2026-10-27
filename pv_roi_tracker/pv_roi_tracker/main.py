@@ -1214,6 +1214,17 @@ def main() -> None:
                             battery_expansion=_battery_state['summary'],
                             tariff_sim=_tariff_state['payload'],
                             current_tariff=_current_tariff)
+
+            # --- Harmonogram mostów JIT (sensor jit_schedule; błąd nie zatrzymuje reszty) ---
+            try:
+                from . import jit_schedule
+                _jit = jit_schedule.build_schedule(
+                    date.today(), _tcat.load_catalog(), battery_store.load_config(BATTERY_CONFIG_PATH))
+                pub.publish_jit_schedule(_current_tariff or 'unknown', _jit)
+                _record_job('jit_schedule', True)
+            except Exception:
+                logger.exception('JIT schedule failed — continuing')
+                _record_job('jit_schedule', False, 'harmonogram JIT nie powiódł się')
             _web.update_state(result, all_records, rcem_price, month_closed=month_closed,
                               rcem_scrape_status=scrape_status)
             _web.update_deposit(deposit_result)

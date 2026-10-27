@@ -109,7 +109,6 @@ _SENSORS: list[_Sensor] = [
     _Sensor('tariffsim_12m_baseline', 'PV Tariff Sim 12M Baseline', None, 'PLN', 'monetary', None, 'mdi:calendar-range'),
     _Sensor('tariffsim_12m_c_baseline', 'PV Tariff Sim 12M C Baseline', None, 'PLN', 'monetary', None, 'mdi:calendar-range'),
     _Sensor('tariffsim_saving_vs_baseline', 'PV Tariff Sim Saving vs Baseline', None, 'PLN', 'monetary', None, 'mdi:piggy-bank-outline'),
-    _Sensor('tariffsim_saving_vs_g12w', 'PV Tariff Sim Saving vs G12w', None, 'PLN', 'monetary', None, 'mdi:piggy-bank-outline'),
     _Sensor('current_tariff', 'PV Current Tariff', None, None, None, None, 'mdi:flash'),
     # Latest-invoice rates (v0.20.0) — single source of truth for energy_simulation.yaml
     # and the tariff UI; values come from invoice_rates (see _render_value), not RoiResult.
@@ -150,10 +149,13 @@ _INVOICE_RATE_SENSORS: dict[str, str] = {
 }
 
 # Sensors removed in previous versions — clear their retained discovery messages on connect.
-_TOMBSTONED_SLUGS: list[str] = ['rcem_current_month']
+_TOMBSTONED_SLUGS: list[str] = ['rcem_current_month', 'tariffsim_saving_vs_g12w']
 
 # Health sensor — publikowany osobno (stan + atrybuty JSON z detalami zadań).
 _HEALTH_SLUG = 'health'
+
+# Harmonogram mostów JIT (taryfy strefowe) — stan = bieżąca taryfa, atrybuty = JSON.
+_JIT_SLUG = 'jit_schedule'
 
 
 def _state_topic(slug: str) -> str:
@@ -172,10 +174,8 @@ def _tariff_sim_value(slug: str, tariff_sim: Optional[dict]) -> Any:
     baseline = sim.get('baseline_tariff') or 'G12w'
     if slug == 'tariffsim_baseline_tariff':
         return sim.get('baseline_tariff')
-    if slug in ('tariffsim_saving_vs_baseline', 'tariffsim_saving_vs_g12w'):
-        l12 = sim.get('last12') or {}
-        v = l12.get('saving_vs_baseline')
-        return v if v is not None else l12.get('saving_vs_g12w')
+    if slug == 'tariffsim_saving_vs_baseline':
+        return (sim.get('last12') or {}).get('saving_vs_baseline')
     if slug.startswith('tariffsim_best_'):
         best = (sim.get('best_year') or {}).get('best') or {}
         if slug == 'tariffsim_best_variant':
@@ -321,9 +321,19 @@ class MQTTPublisher:
             'icon':                  'mdi:heart-pulse',
         }
         self._client.publish(_disc_topic(_HEALTH_SLUG), json.dumps(health_payload), retain=True)
+        jit_payload = {
+            'name':                  'PV JIT Schedule',
+            'unique_id':             f'{_DEVICE_ID}_{_JIT_SLUG}',
+            'state_topic':           _state_topic(_JIT_SLUG),
+            'json_attributes_topic': f'{_STATE_PREFIX}/{_JIT_SLUG}/attributes',
+            'availability_topic':    _AVAIL_TOPIC,
+            'device':                device,
+            'icon':                  'mdi:battery-clock',
+        }
+        self._client.publish(_disc_topic(_JIT_SLUG), json.dumps(jit_payload), retain=True)
         for slug in _TOMBSTONED_SLUGS:
             self._client.publish(_disc_topic(slug), '', retain=True)
-        logger.info('MQTT discovery published for %d sensors', len(_SENSORS) + 1)
+        logger.info('MQTT discovery published for %d sensors', len(_SENSORS) + 2)
 
     # ── State publishing ──────────────────────────────────────────────────────
 
@@ -355,4 +365,12 @@ class MQTTPublisher:
             return
         self._client.publish(_state_topic(_HEALTH_SLUG), state, retain=True)
         self._client.publish(f'{_STATE_PREFIX}/{_HEALTH_SLUG}/attributes',
+                             json.dumps(attributes, ensure_ascii=False), retain=True)
+
+    def publish_jit_schedule(self, state: str, attributes: dict) -> None:
+        """Publikuje harmonogram mostów JIT: stan = bieżąca taryfa lub 'unknown' + atrybuty JSON."""
+        if not self._connected:
+            return
+        self._client.publish(_state_topic(_JIT_SLUG), state, retain=True)
+        self._client.publish(f'{_STATE_PREFIX}/{_JIT_SLUG}/attributes',
                              json.dumps(attributes, ensure_ascii=False), retain=True)
