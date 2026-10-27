@@ -31,7 +31,7 @@ import json
 import logging
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from html import unescape
 from typing import Callable, Optional
@@ -84,6 +84,20 @@ class EbokDocument:
     pdf_url: Optional[str] = None           # absolute URL of GetDocumentImage
     status: str = ''                        # raw Status ("Opłacona", "Rozliczono", ...)
     doc_type: str = ''                      # DocType: FV / FK / NB
+
+
+@dataclass
+class EbokPayment:
+    """One row of the payments history (GetPayments); format known only from the E0 probe."""
+    date: Optional[date]
+    amount: Optional[float]
+    type: str                               # "Wpłata" / "Zwrot" / "Odpisanie"
+    doc_number: str = ''
+    # (DocSignature, PaymentAmount = brutto faktury, PaymentSettlementAmount = rozliczone tą wpłatą)
+    settlements: list = field(default_factory=list)
+
+
+PAYMENT_TYPES = ('Wpłata', 'Zwrot', 'Odpisanie')
 
 
 class EbokClient:
@@ -213,6 +227,48 @@ class EbokClient:
         else:
             logger.warning('eBOK: lista dokumentów obcięta do %d stron (%d dok.)', MAX_PAGES, len(docs))
         return docs
+
+    def list_payments(self, date_from: date, date_to: date) -> list[EbokPayment]:
+        """Payments history between the dates for the selected payer. The payments page
+        has its own client checksum (different from the documents archive one)."""
+        if not self._payer_id:
+            raise EbokError('Nie wybrano płatnika (select_payer)')
+        page_html = self._get(f'{SERVICE}/Home/Pages/lista-wplat', REQUEST_TIMEOUT)
+        if page_html.status_code != 200:
+            raise EbokError(f'Pobranie listy wpłat nie powiodło się (status {page_html.status_code})')
+        checksum = parse_client_checksum(page_html.text, self._payer_id)
+        if checksum is None:
+            raise EbokError('Płatnik nie znaleziony na stronie wpłat')
+        payments: list[EbokPayment] = []
+        received = 0
+        for page in range(MAX_PAGES):
+            range_from = page * PAGE_SIZE + 1
+            query = urlencode({
+                'rangeFrom': range_from, 'rangeTo': range_from + PAGE_SIZE - 1,
+                'clientNumber': self._payer_id, 'clientNumberCheckSum': checksum,
+                'system': SYSTEM, 'from': date_from.strftime('%d.%m.%Y'),
+                'to': date_to.strftime('%d.%m.%Y'), 'docKind': 'All',
+                'paymentFrom': '', 'paymentTo': '',
+            })
+            r = self._get(f'{SERVICE}/api/sitecore/EbokPaymentsHistory/GetPayments?{query}',
+                          ARCHIVE_TIMEOUT)
+            if r.status_code != 200:
+                raise EbokError(f'Pobranie listy wpłat nie powiodło się (status {r.status_code})')
+            data = _json_or_layout_error(r, 'lista wpłat')
+            rows = data.get('Documents')
+            received += len(rows) if isinstance(rows, list) else 0
+            batch = parse_payments_json(data)
+            payments.extend(batch)
+            total = data.get('TotalNumber')
+            if not isinstance(total, int) or received >= total:
+                break
+            if not batch:
+                logger.warning('eBOK: pusta strona listy wpłat przy %d z %d — lista może być niepełna',
+                               received, total)
+                break
+        else:
+            logger.warning('eBOK: lista wpłat obcięta do %d stron (%d wpłat)', MAX_PAGES, len(payments))
+        return payments
 
     def download_pdf(self, pdf_url: str) -> bytes:
         r = self._get(pdf_url, REQUEST_TIMEOUT)
@@ -391,6 +447,42 @@ def parse_documents_json(data: dict) -> list:
     for status in sorted(unknown):
         logger.info('eBOK: status dokumentu poza PAID_STATUSES: %r', status)
     return docs
+
+
+def parse_payments_json(data) -> list:
+    """Map the GetPayments payload to EbokPayment objects. Tolerant: anything malformed is
+    skipped or left None, never raises. Types outside PAYMENT_TYPES are logged once."""
+    payments = []
+    unknown: set = set()
+    rows = data.get('Documents') if isinstance(data, dict) else None
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        ptype = row.get('Type')
+        ptype = ptype.strip() if isinstance(ptype, str) else ''
+        if ptype not in PAYMENT_TYPES:
+            unknown.add(ptype)
+        settlements = []
+        details = row.get('Details')
+        for det in details if isinstance(details, list) else []:
+            if not isinstance(det, dict):
+                continue
+            sig = det.get('DocSignature')
+            sig = sig.strip() if isinstance(sig, str) else ''
+            if sig:
+                settlements.append((sig, _to_float(det.get('PaymentAmount')),
+                                    _to_float(det.get('PaymentSettlementAmount'))))
+        doc_number = row.get('DocNumber')
+        payments.append(EbokPayment(
+            date=_parse_date(row.get('Date')),
+            amount=_to_float(row.get('Amount')),
+            type=ptype,
+            doc_number=doc_number.strip() if isinstance(doc_number, str) else '',
+            settlements=settlements,
+        ))
+    for ptype in sorted(unknown):
+        logger.info('eBOK: typ wpłaty poza PAYMENT_TYPES: %r', ptype)
+    return payments
 
 
 def normalize_signature(text: str) -> str:

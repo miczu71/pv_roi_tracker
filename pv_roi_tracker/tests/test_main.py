@@ -279,3 +279,81 @@ def test_periods_peak_fn_callable_with_periods(tmp_path, monkeypatch):
     _periods_file(tmp_path, monkeypatch, [{'tariff': 'G11', 'from': None}])
     fn = _periods_peak_fn()
     assert fn(datetime(2026, 11, 3, 3)) is True  # G11: jedna strefa = szczyt
+
+
+# ── _refresh_payments (E7: wpłaty nie psują jobu płatności) ──────────────────
+
+class _PayDoc:
+    def __init__(self, signature, paid=True, gross=80.0):
+        self.signature, self.paid, self.amount_gross_pln, self.due_date = signature, paid, gross, None
+
+
+def _patch_pay_env(monkeypatch, tmp_path):
+    from pv_roi_tracker import main as m
+    monkeypatch.setattr(m, 'EBOK_PAYMENT_STATE_PATH', tmp_path / 'pay_state.json')
+    monkeypatch.setattr(m, 'INVOICE_PATH', tmp_path / 'invoices.json')
+    sent, jobs = [], []
+    monkeypatch.setattr(m, '_notify_ha', lambda title, msg, target='family': sent.append((title, msg, target)))
+    monkeypatch.setattr(m, '_record_job', lambda name, ok, detail='': jobs.append((name, ok, detail)))
+    return m, sent, jobs
+
+
+class _PayClient:
+    def __init__(self, payments=None, exc=None):
+        self._payments, self._exc, self.calls = payments or [], exc, []
+
+    def list_payments(self, date_from, date_to):
+        self.calls.append((date_from, date_to))
+        if self._exc:
+            raise self._exc
+        return self._payments
+
+
+def test_refresh_payments_error_is_swallowed_and_state_untouched(monkeypatch, tmp_path):
+    m, sent, jobs = _patch_pay_env(monkeypatch, tmp_path)
+    m._refresh_payments(_PayClient(exc=RuntimeError('boom')), [_PayDoc('S/1')], date(2026, 10, 27))
+    assert not m.EBOK_PAYMENT_STATE_PATH.exists() and sent == []
+    assert jobs == [('ebok_payment', False, 'odczyt wpłat nie powiódł się')]
+
+
+def test_refresh_payments_login_blocked_propagates(monkeypatch, tmp_path):
+    import pytest
+    from pv_roi_tracker.ebok_client import EbokLoginBlocked
+    m, _, _ = _patch_pay_env(monkeypatch, tmp_path)
+    with pytest.raises(EbokLoginBlocked):
+        m._refresh_payments(_PayClient(exc=EbokLoginBlocked('x')), [], date(2026, 10, 27))
+
+
+def test_refresh_payments_window_is_13_months(monkeypatch, tmp_path):
+    m, _, _ = _patch_pay_env(monkeypatch, tmp_path)
+    client = _PayClient()
+    m._refresh_payments(client, [], date(2026, 10, 27))
+    assert client.calls == [(date(2025, 9, 27), date(2026, 10, 27))]
+    m._refresh_payments(client, [], date(2026, 3, 31))
+    assert client.calls[1] == (date(2025, 2, 28), date(2026, 3, 31))
+
+
+def test_refresh_payments_result_reaches_payment_status_and_mismatch_pushes_once(monkeypatch, tmp_path):
+    from pv_roi_tracker import invoice_store
+    from pv_roi_tracker.ebok_client import EbokPayment
+    m, sent, jobs = _patch_pay_env(monkeypatch, tmp_path)
+    sig = 'T/K1/BN111111/0015/26'
+    pay = EbokPayment(date=date(2026, 8, 15), amount=60.5, type='Wpłata', doc_number='X',
+                      settlements=[(sig, 100.5, 60.5)])
+    monkeypatch.setattr(invoice_store, 'load',
+                        lambda path: {'k': {'invoice_number': sig, 'amount_due_pln': 100.5}})
+    client = _PayClient([pay])
+    docs = [_PayDoc(sig, True, 100.5)]
+    m._refresh_payments(client, docs, date(2026, 10, 27))
+    m._refresh_payments(client, docs, date(2026, 10, 28))
+    assert len(sent) == 1 and sent[0][0] == 'PV ROI Tracker — wpłaty' and sent[0][2] == 'kacper'
+    status = m._payment_status_payload(date(2026, 10, 28))
+    assert status['last_payment']['date'] == '2026-08-15'
+    assert status['mismatches'][0]['signature'] == sig
+    assert status['active'] is None and jobs == []
+
+
+def test_payment_status_payload_without_payments_block(monkeypatch, tmp_path):
+    m, _, _ = _patch_pay_env(monkeypatch, tmp_path)
+    assert m._payment_status_payload(date(2026, 10, 27)) == {
+        'active': None, 'last_payment': None, 'mismatches': []}

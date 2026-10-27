@@ -31,12 +31,14 @@ from pv_roi_tracker.ebok_client import (
     parse_client_checksum,
     parse_documents_json,
     parse_home_contract,
+    parse_payments_json,
     parse_point_details,
 )
 
 _FIX = Path(__file__).parent / 'fixtures'
 _ARCHIWUM_HTML = (_FIX / 'ebok_archiwum.html').read_text(encoding='utf-8')
 _DOCS_JSON = json.loads((_FIX / 'ebok_documents.json').read_text(encoding='utf-8'))
+_PAYMENTS_JSON = json.loads((_FIX / 'ebok_payments.json').read_text(encoding='utf-8'))
 _PDF_JSON = (_FIX / 'ebok_pdf.json').read_text(encoding='utf-8')
 _HOME_HTML = (_FIX / 'ebok_home.html').read_text(encoding='utf-8')
 _PUNKT_HTML = (_FIX / 'ebok_punkt.html').read_text(encoding='utf-8')
@@ -584,3 +586,104 @@ def test_read_contract_without_taryfa_anywhere_raises_layout_changed():
     client, _ = _contract_client(umowa_html='<p>brak linku</p>', home_html='<p>pusto</p>')
     with pytest.raises(EbokLayoutChanged, match='taryfy'):
         client.read_contract()
+
+
+# ── parse_payments_json() / list_payments() ─────────────────────────────────
+
+def test_parse_payments_json_maps_fields():
+    payments = parse_payments_json(_PAYMENTS_JSON)
+    assert len(payments) == 5
+    p = payments[1]
+    assert (p.date, p.amount, p.type, p.doc_number) == (date(2026, 8, 15), 60.5, 'Wpłata', 'WPL/0002/26')
+    assert p.settlements == [('T/K1/BN111111/0015/26', 100.5, 60.5)]
+    assert len(payments[3].settlements) == 2
+    assert payments[2].type == 'Zwrot'
+
+
+def test_parse_payments_json_row_without_details_has_no_settlements():
+    assert parse_payments_json(_PAYMENTS_JSON)[4].settlements == []
+
+
+def test_parse_payments_json_unknown_type_logged_once_and_kept(caplog):
+    data = {'Documents': [
+        {'Amount': 1, 'Date': '01.01.2026', 'Type': 'Korekta', 'DocNumber': 'A'},
+        {'Amount': 2, 'Date': '02.01.2026', 'Type': 'Korekta', 'DocNumber': 'B'},
+        {'Amount': 3, 'Date': '03.01.2026', 'Type': 'Wpłata', 'DocNumber': 'C'},
+    ]}
+    with caplog.at_level('INFO'):
+        payments = parse_payments_json(data)
+    assert len(payments) == 3
+    assert caplog.text.count('Korekta') == 1
+    assert 'Wpłata' not in caplog.text
+
+
+def test_parse_payments_json_garbage_gives_empty_list():
+    for junk in (None, {}, [], 'x', {'Documents': None}, {'Documents': 'x'}, {'Documents': [None, 5, 'a']}):
+        assert parse_payments_json(junk) == []
+
+
+def test_parse_payments_json_tolerates_bad_fields():
+    data = {'Documents': [{'Type': 'Wpłata', 'Date': 'nie data', 'Amount': 'abc',
+                           'Details': [{'PaymentAmount': 5}, 'x', {'DocSignature': 'S/1'}]}]}
+    (p,) = parse_payments_json(data)
+    assert p.date is None and p.amount is None
+    assert p.settlements == [('S/1', None, None)]
+
+
+_PAY_CHECKSUM = 'c' * 64
+_LISTA_WPLAT_HTML = (f'<div class="client" data-client-number="{_PAYER}" '
+                     f'data-client-checksum="{_PAY_CHECKSUM}" data-system="T18">Miasto A</div>')
+
+
+def _payments_client():
+    client, session = _selected_client()
+    session.when('/lista-wplat', _FakeResponse(text=_LISTA_WPLAT_HTML))
+    return client, session
+
+
+def test_list_payments_uses_own_checksum_and_url():
+    client, session = _payments_client()
+    session.when('GetPayments', _FakeResponse(text=json.dumps(_PAYMENTS_JSON)))
+    payments = client.list_payments(date(2025, 10, 1), date(2026, 10, 27))
+    assert len(payments) == 5
+    url = [c[1] for c in session.calls if 'GetPayments' in c[1]][0]
+    for part in ('https://moj.tauron.pl/api/sitecore/EbokPaymentsHistory/GetPayments',
+                 'rangeFrom=1', 'rangeTo=100', f'clientNumber={_PAYER}',
+                 f'clientNumberCheckSum={_PAY_CHECKSUM}', 'system=T18',
+                 'from=01.10.2025', 'to=27.10.2026', 'docKind=All', 'paymentFrom=', 'paymentTo='):
+        assert part in url
+    assert _CHECKSUM not in url
+
+
+def test_list_payments_paginates_until_total():
+    client, session = _payments_client()
+
+    def page(first, last, total):
+        return json.dumps({'Status': 'OK', 'TotalNumber': total, 'Documents': [
+            {'Amount': 1, 'Date': '01.01.2026', 'Type': 'Wpłata', 'DocNumber': str(i)}
+            for i in range(first, last + 1)]})
+
+    session.when('rangeFrom=1&', _FakeResponse(text=page(1, 100, 150)))
+    session.when('rangeFrom=101&', _FakeResponse(text=page(101, 150, 150)))
+    assert len(client.list_payments(date(2025, 10, 1), date(2026, 10, 27))) == 150
+    assert len([c for c in session.calls if 'GetPayments' in c[1]]) == 2
+
+
+def test_list_payments_without_payer_raises():
+    client, _ = _client_with_successful_login()
+    with pytest.raises(EbokError):
+        client.list_payments(date(2025, 10, 1), date(2026, 10, 27))
+
+
+def test_list_payments_payer_missing_on_page_raises():
+    client, session = _selected_client()
+    session.when('/lista-wplat', _FakeResponse(text='<div>pusto</div>'))
+    with pytest.raises(EbokError):
+        client.list_payments(date(2025, 10, 1), date(2026, 10, 27))
+
+
+def test_list_payments_status_not_ok_raises_layout_changed():
+    client, session = _payments_client()
+    session.when('GetPayments', _FakeResponse(text=json.dumps({'Status': 'Error'})))
+    with pytest.raises(EbokLayoutChanged):
+        client.list_payments(date(2025, 10, 1), date(2026, 10, 27))

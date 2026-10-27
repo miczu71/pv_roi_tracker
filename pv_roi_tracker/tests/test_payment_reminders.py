@@ -7,10 +7,13 @@ from __future__ import annotations
 
 from datetime import date
 
+from pv_roi_tracker.ebok_client import EbokPayment
 from pv_roi_tracker.payment_reminders import (
+    apply_reconciliation,
     build_reminder_notifications,
     decide_reminders,
     load_payment_state,
+    reconcile_payments,
     refresh_payment_state,
     save_payment_state,
     select_active_payment,
@@ -273,3 +276,153 @@ def test_save_payment_state_leaves_no_temp_file(tmp_path):
     save_payment_state(path, {'SIG/1': {'paid': False}})
     assert load_payment_state(path) == {'SIG/1': {'paid': False}}
     assert [p.name for p in tmp_path.iterdir()] == ['payment_state.json']
+
+
+# ── reconcile_payments / apply_reconciliation (E7) ───────────────────────────
+
+S14, S15, S17, S18 = (f'T/K1/BN111111/{n:04d}/26' for n in (14, 15, 17, 18))
+
+
+def _pay(d, amount, typ, *settlements):
+    return EbokPayment(date=d, amount=amount, type=typ, doc_number='X', settlements=list(settlements))
+
+
+def test_reconcile_sums_settlements_and_refund_subtracts():
+    docs = [_Doc(S14, date(2026, 8, 1), True, 50.0)]
+    pays = [_pay(date(2026, 7, 20), 50.0, 'Wpłata', (S14, 50.0, 50.0)),
+            _pay(date(2026, 9, 1), 10.0, 'Zwrot', (S14, 50.0, 10.0))]
+    res = reconcile_payments(docs, pays, [])
+    assert res['settled'][S14] == 40.0
+
+
+def test_reconcile_odpisanie_counts_like_payment():
+    pays = [_pay(date(2026, 7, 20), 5.0, 'Odpisanie', (S14, 50.0, 5.0)),
+            _pay(date(2026, 7, 21), 45.0, 'Wpłata', (S14, 50.0, 45.0))]
+    assert reconcile_payments([], pays, [])['settled'][S14] == 50.0
+
+
+def test_reconcile_unknown_type_ignored():
+    pays = [_pay(date(2026, 7, 20), 5.0, 'Korekta', (S14, 50.0, 5.0))]
+    res = reconcile_payments([], pays, [])
+    assert res['settled'] == {} and res['last_payment'] is None
+
+
+def test_reconcile_rescues_unpaid_doc_fully_settled():
+    docs = [_Doc(S17, date(2026, 10, 20), False, 80.0), _Doc(S18, date(2026, 10, 20), False, 70.0)]
+    pays = [_pay(date(2026, 10, 10), 149.95, 'Wpłata', (S17, 80.0, 79.95), (S18, 70.0, 50.0))]
+    res = reconcile_payments(docs, pays, [])
+    assert res['rescued'] == [S17]          # 79,95 >= 80 - 0,10; 50 < 70 - 0,10
+
+
+def test_reconcile_does_not_rescue_doc_without_settlements_or_correction():
+    docs = [_Doc(S17, date(2026, 10, 20), False, 80.0), _Doc(S18, None, False, -12.0)]
+    res = reconcile_payments(docs, [_pay(date(2026, 10, 10), 1.0, 'Wpłata', ('INNA/1', 1.0, 1.0))], [])
+    assert res['rescued'] == []
+
+
+def test_reconcile_matches_signatures_after_normalisation():
+    docs = [_Doc(S17, date(2026, 10, 20), False, 80.0)]
+    pays = [_pay(date(2026, 10, 10), 80.0, 'Wpłata', ('T-K1-BN111111-0017-26', 80.0, 80.0))]
+    assert reconcile_payments(docs, pays, [])['rescued'] == [S17]
+
+
+def test_reconcile_mismatch_for_paid_invoice():
+    docs = [_Doc(S15, date(2026, 8, 19), True, 100.5)]
+    pays = [_pay(date(2026, 8, 15), 60.5, 'Wpłata', (S15, 100.5, 60.5))]
+    recs = [{'invoice_number': S15, 'amount_due_pln': 100.5}]
+    (m,) = reconcile_payments(docs, pays, recs)['mismatches']
+    assert m == {'signature': S15, 'settled': 60.5, 'amount_due': 100.5, 'diff': -40.0}
+
+
+def test_reconcile_no_mismatch_within_tolerance_or_when_unpaid_or_without_amount_due():
+    docs = [_Doc(S15, date(2026, 8, 19), True, 100.5), _Doc(S17, date(2026, 8, 19), False, 80.0),
+            _Doc(S18, date(2026, 8, 19), True, 70.0)]
+    pays = [_pay(date(2026, 8, 15), 100.45, 'Wpłata', (S15, 100.5, 100.45)),
+            _pay(date(2026, 8, 15), 10.0, 'Wpłata', (S17, 80.0, 10.0), (S18, 70.0, 5.0))]
+    recs = [{'invoice_number': S15, 'amount_due_pln': 100.5},
+            {'invoice_number': S17, 'amount_due_pln': 80.0},
+            {'invoice_number': S18}, {'invoice_number': S18, 'amount_due_pln': None}]
+    assert reconcile_payments(docs, pays, recs)['mismatches'] == []
+
+
+def test_reconcile_mismatch_for_rescued_doc_and_unlisted_doc_ignored():
+    docs = [_Doc(S17, date(2026, 10, 20), False, 80.0)]
+    pays = [_pay(date(2026, 10, 10), 80.0, 'Wpłata', (S17, 80.0, 80.0), (S18, 70.0, 70.0))]
+    recs = [{'invoice_number': S17, 'amount_due_pln': 30.0}, {'invoice_number': S18, 'amount_due_pln': 1.0}]
+    res = reconcile_payments(docs, pays, recs)
+    assert [m['signature'] for m in res['mismatches']] == [S17]
+
+
+def test_reconcile_last_payment_and_deposit_covered():
+    docs = [_Doc(S15, date(2026, 8, 19), True, 100.5), _Doc(S17, date(2026, 10, 20), True, 80.0)]
+    pays = [_pay(date(2026, 10, 10), 100.0, 'Wpłata', (S17, 80.0, 80.0), (S15, 100.5, 20.0)),
+            _pay(date(2026, 8, 15), 60.5, 'Wpłata', (S15, 100.5, 60.5)),
+            _pay(date(2026, 10, 12), 9.0, 'Zwrot', (S18, 70.0, 9.0))]
+    lp = reconcile_payments(docs, pays, [])['last_payment']
+    assert lp['date'] == '2026-10-10' and lp['amount'] == 100.0
+    assert lp['signatures'] == [S17, S15]
+    assert lp['deposit_covered'] == {S15: 20.0}    # 100,5 - (60,5 + 20)
+
+
+def test_reconcile_last_payment_none_without_payments():
+    res = reconcile_payments([], [], [])
+    assert res == {'last_payment': None, 'mismatches': [], 'rescued': [], 'settled': {}}
+
+
+def _result(mismatches=(), rescued=(), last_payment=None):
+    return {'last_payment': last_payment, 'mismatches': list(mismatches), 'rescued': list(rescued),
+            'settled': {}}
+
+
+def _mm(sig):
+    return {'signature': sig, 'settled': 60.5, 'amount_due': 100.5, 'diff': -40.0}
+
+
+def test_apply_reconciliation_pushes_once(tmp_path):
+    path = tmp_path / 'state.json'
+    msgs = apply_reconciliation(path, _result([_mm(S15)]), date(2026, 10, 27))
+    assert len(msgs) == 1 and S15 in msgs[0]
+    assert apply_reconciliation(path, _result([_mm(S15)]), date(2026, 10, 28)) == []
+    block = load_payment_state(path)['_payments']
+    assert block['mismatches'] == [_mm(S15)] and block['checked_at'] == '2026-10-28'
+    assert block['notified'] == [S15]
+
+
+def test_apply_reconciliation_disappeared_mismatch_clears_notified(tmp_path):
+    path = tmp_path / 'state.json'
+    apply_reconciliation(path, _result([_mm(S15)]), date(2026, 10, 27))
+    apply_reconciliation(path, _result([]), date(2026, 10, 28))
+    assert load_payment_state(path)['_payments']['notified'] == []
+    assert len(apply_reconciliation(path, _result([_mm(S15)]), date(2026, 10, 29))) == 1
+
+
+def test_apply_reconciliation_rescued_sets_paid_only_for_existing_entry(tmp_path):
+    path = tmp_path / 'state.json'
+    save_payment_state(path, {S17: {'due_date': '2026-10-20', 'paid': False, 'amount_gross_pln': 80.0}})
+    apply_reconciliation(path, _result(rescued=[S17, S18]), date(2026, 10, 27))
+    state = load_payment_state(path)
+    assert state[S17]['paid'] is True and S18 not in state
+
+
+def test_apply_reconciliation_keeps_last_payment_and_other_entries(tmp_path):
+    path = tmp_path / 'state.json'
+    save_payment_state(path, {S17: {'due_date': '2026-10-20', 'paid': False}})
+    lp = {'date': '2026-10-10', 'amount': 100.0, 'signatures': [S17], 'deposit_covered': {}}
+    apply_reconciliation(path, _result(last_payment=lp), date(2026, 10, 27))
+    state = load_payment_state(path)
+    assert state['_payments']['last_payment'] == lp and state[S17]['due_date'] == '2026-10-20'
+
+
+def test_select_active_payment_skips_payments_key():
+    state = {'_payments': {'last_payment': None, 'mismatches': [], 'checked_at': '2026-10-27',
+                           'notified': []}}
+    assert select_active_payment(state, date(2026, 10, 27)) is None
+    state[S17] = {'due_date': '2026-10-28', 'paid': False, 'amount_gross_pln': 80.0}
+    assert select_active_payment(state, date(2026, 10, 27))['signature'] == S17
+
+
+def test_build_reminder_notifications_survives_payments_key():
+    state = {'_payments': {'last_payment': None, 'mismatches': [], 'notified': []}}
+    notes, new_state = build_reminder_notifications(
+        [_Doc(S17, date(2026, 10, 28), False, 80.0)], state, date(2026, 10, 27))
+    assert len(notes) == 1 and new_state['_payments'] == state['_payments']

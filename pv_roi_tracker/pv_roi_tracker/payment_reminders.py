@@ -77,6 +77,96 @@ def apply_refresh(docs, state_path: Path, today: date) -> list:
     return notifications
 
 
+_TOLERANCE = 0.10
+_CREDIT_TYPES = ('Wpłata', 'Odpisanie')
+
+
+def reconcile_payments(docs, payments, invoice_records) -> dict:
+    """Pure: match eBOK payments (EbokPayment) against documents and imported invoices.
+    `settled` = Σ settlement per signature (Wpłata/Odpisanie minus Zwrot); `rescued` = unpaid
+    documents fully settled by payments; `mismatches` = paid documents whose settled sum differs
+    from the invoice's amount_due_pln (only signatures that appear in any payment, so invoices
+    older than the payments window never look like mismatches); `last_payment` = newest Wpłata."""
+    from .ebok_client import normalize_signature as norm
+
+    settled_n: dict = {}
+    display: dict = {}
+    for pay in payments:
+        sign = 1.0 if pay.type in _CREDIT_TYPES else (-1.0 if pay.type == 'Zwrot' else 0.0)
+        if not sign:
+            continue
+        for sig, _gross, amount in pay.settlements:
+            key = norm(sig)
+            display.setdefault(key, sig)
+            settled_n[key] = settled_n.get(key, 0.0) + sign * (amount or 0.0)
+
+    rescued, paid_keys = [], set()
+    for doc in docs:
+        key = norm(doc.signature)
+        if doc.paid:
+            paid_keys.add(key)
+        elif (key in settled_n and doc.amount_gross_pln is not None and doc.amount_gross_pln > 0
+              and settled_n[key] >= doc.amount_gross_pln - _TOLERANCE):
+            rescued.append(doc.signature)
+            paid_keys.add(key)
+
+    mismatches, seen = [], set()
+    for rec in invoice_records:
+        number = rec.get('invoice_number')
+        due = rec.get('amount_due_pln')
+        if not number or due is None:
+            continue
+        key = norm(number)
+        if key in seen or key not in paid_keys or key not in settled_n:
+            continue
+        seen.add(key)
+        settled = settled_n[key]
+        if abs(settled - due) > _TOLERANCE:
+            mismatches.append({'signature': display[key], 'settled': round(settled, 2),
+                               'amount_due': due, 'diff': round(settled - due, 2)})
+
+    last_payment = None
+    credits = [p for p in payments if p.type == 'Wpłata' and p.date is not None]
+    if credits:
+        last = max(credits, key=lambda p: p.date)     # remis: późniejszy na liście wygrywa
+        for p in credits:
+            if p.date == last.date:
+                last = p
+        covered = {}
+        for sig, gross, _amount in last.settlements:
+            if gross is not None and gross - settled_n.get(norm(sig), 0.0) > 0.01:
+                covered[sig] = round(gross - settled_n.get(norm(sig), 0.0), 2)
+        last_payment = {'date': last.date.isoformat(), 'amount': last.amount,
+                        'signatures': [s[0] for s in last.settlements], 'deposit_covered': covered}
+
+    return {'last_payment': last_payment, 'mismatches': mismatches, 'rescued': rescued,
+            'settled': {display[k]: round(v, 2) for k, v in settled_n.items()}}
+
+
+def apply_reconciliation(state_path: Path, result: dict, today: date) -> list:
+    """Persist reconcile_payments() output under state['_payments'] and return push messages
+    for mismatches not yet notified (notified drops signatures whose mismatch is gone)."""
+    with _refresh_lock:
+        state = load_payment_state(state_path)
+        already = set((state.get('_payments') or {}).get('notified') or [])
+        current = [m['signature'] for m in result['mismatches']]
+        messages = [
+            'Wpłaty: faktura {} — rozliczono {} zł, na fakturze {} zł.'.format(
+                m['signature'], _pl(m['settled']), _pl(m['amount_due']))
+            for m in result['mismatches'] if m['signature'] not in already]
+        state['_payments'] = {'last_payment': result['last_payment'], 'mismatches': result['mismatches'],
+                              'checked_at': today.isoformat(), 'notified': current}
+        for sig in result['rescued']:
+            if isinstance(state.get(sig), dict):
+                state[sig]['paid'] = True
+        save_payment_state(state_path, state)
+    return messages
+
+
+def _pl(value) -> str:
+    return f'{value:.2f}'.replace('.', ',')
+
+
 def _new_entry() -> dict:
     return {'reminded_before': False, 'reminded_due': False}
 

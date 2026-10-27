@@ -2478,12 +2478,32 @@ async function tariffPeriodsSave() {
 }
 
 /* -- Pasek statusu platnosci (docs/ROADMAP_EBOK_PAYMENT_STATUS.md Etap 3) -- */
+function _plMoney(v) { return Number(v).toFixed(2).replace('.', ',') + ' zł'; }
+
+function _renderLastPayment(lp, mismatches) {
+  const line = document.getElementById('lastPaymentLine');
+  if (!line) return;
+  if (!lp) { line.style.display = 'none'; return; }
+  const dd = lp.date.split('-');
+  let text = 'Ostatnia wpłata ' + _plMoney(lp.amount) + ' (' + dd[2] + '.' + dd[1] + ') → ' + lp.signatures.join(', ');
+  const cov = Object.values(lp.deposit_covered || {}).reduce((a, b) => a + b, 0);
+  if (cov > 0) text += ' · depozyt pokrył ' + _plMoney(cov);
+  (mismatches || []).forEach(m => {
+    text += '\n⚠ Rozbieżność wpłat: ' + m.signature + ' rozliczono ' + _plMoney(m.settled) +
+      ', na fakturze ' + _plMoney(m.amount_due);
+  });
+  line.textContent = text;
+  line.style.whiteSpace = 'pre-line';
+  line.style.display = '';
+}
+
 async function _refreshPaymentBar() {
   const bar = document.getElementById('paymentBar');
   if (!bar) return;
   try {
     const r = await fetch('api/ebok/payment-status');
     const d = await r.json();
+    _renderLastPayment(d.last_payment, d.mismatches);
     const a = d.active;
     if (!a) { bar.style.display = 'none'; return; }
     const amount = a.amount_gross_pln != null ? a.amount_gross_pln.toFixed(2).replace('.', ',') + ' zl' : '';

@@ -285,6 +285,41 @@ def _ebok_missing_documents(docs, known: set) -> tuple:
     return missing, len(missing) > MAX_NEW_PER_SYNC
 
 
+def _payments_window_start(today: date) -> date:
+    """Początek okna wpłat: 13 miesięcy wstecz (dzień przycięty do długości miesiąca)."""
+    import calendar
+    year, month = today.year - 1, today.month - 1
+    if month == 0:
+        year, month = year - 1, 12
+    return date(year, month, min(today.day, calendar.monthrange(year, month)[1]))
+
+
+def _refresh_payments(client, docs, today: date) -> None:
+    """Wpłaty z eBOK (ta sama sesja) → rozliczenie z dokumentami i fakturami → `_payments` w stanie
+    płatności + push przy nowej rozbieżności. Błąd odczytu nie psuje joba (poza blokadą logowania)."""
+    from . import ebok_client as _ec, invoice_store
+    from . import payment_reminders as _pr
+    try:
+        payments = client.list_payments(max(EBOK_DATE_FROM, _payments_window_start(today)), today)
+        result = _pr.reconcile_payments(docs, payments, invoice_store.load(INVOICE_PATH).values())
+        for msg in _pr.apply_reconciliation(EBOK_PAYMENT_STATE_PATH, result, today):
+            _notify_ha('PV ROI Tracker — wpłaty', msg, target='kacper')
+    except _ec.EbokLoginBlocked:
+        raise
+    except Exception:
+        logger.exception('eBOK: odczyt wpłat nie powiódł się')
+        _record_job('ebok_payment', False, 'odczyt wpłat nie powiódł się')
+
+
+def _payment_status_payload(today: date) -> dict:
+    from . import payment_reminders as _pr
+    state = _pr.load_payment_state(EBOK_PAYMENT_STATE_PATH)
+    block = state.get('_payments') or {}
+    return {'active': _pr.select_active_payment(state, today),
+            'last_payment': block.get('last_payment'),
+            'mismatches': block.get('mismatches') or []}
+
+
 def _load_ebok_state() -> dict:
     import json
     if not EBOK_STATE_PATH.exists():
@@ -662,6 +697,8 @@ def main() -> None:
             logger.info('eBOK: %d dok., brakujących %d', len(docs), len(missing))
 
             refresh_payment_bar(docs)
+            from datetime import date as _date
+            _refresh_payments(client, docs, _date.today())
             if over_limit:
                 signatures = sorted(d.signature for d in missing)
                 _record_job('ebok', False, f'{len(signatures)} brakujących dokumentów — import wstrzymany')
@@ -741,6 +778,7 @@ def main() -> None:
             from . import ebok_client as _ec
             notifications = _pr.apply_refresh(docs, EBOK_PAYMENT_STATE_PATH, _date.today())
             _send_payment_notes(notifications)
+            _refresh_payments(client, docs, _date.today())
 
             # Taryfa z portalu → stan umowy + historia taryf (błąd odczytu nie psuje joba).
             try:
@@ -812,10 +850,8 @@ def main() -> None:
     def _ebok_payment_status() -> dict:
         """Cached (job-refreshed) payment status for the status bar — never hits
         eBOK live, just reads the last ebok_payment_check() snapshot."""
-        from . import payment_reminders as _pr
         from datetime import date as _date
-        state = _pr.load_payment_state(EBOK_PAYMENT_STATE_PATH)
-        return {'active': _pr.select_active_payment(state, _date.today())}
+        return _payment_status_payload(_date.today())
 
     if EBOK_USERNAME and EBOK_PASSWORD:
         _web.set_ebok_sync_callback(ebok_sync)

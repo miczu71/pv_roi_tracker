@@ -1,0 +1,51 @@
+{
+ "Status": "OK",
+ "TotalNumber": 5,
+ "RangeFrom": 1,
+ "RangeTo": 100,
+ "Documents": [
+  {
+   "Amount": 50.0,
+   "Date": "20.07.2026",
+   "Type": "Wpłata",
+   "DocNumber": "WPL/0001/26",
+   "Details": [
+    {"DocSignature": "T/K1/BN111111/0014/26", "PaymentAmount": 50.0, "PaymentSettlementAmount": 50.0}
+   ]
+  },
+  {
+   "Amount": 60.5,
+   "Date": "15.08.2026",
+   "Type": "Wpłata",
+   "DocNumber": "WPL/0002/26",
+   "Details": [
+    {"DocSignature": "T/K1/BN111111/0015/26", "PaymentAmount": 100.5, "PaymentSettlementAmount": 60.5}
+   ]
+  },
+  {
+   "Amount": 10.0,
+   "Date": "01.09.2026",
+   "Type": "Zwrot",
+   "DocNumber": "ZWR/0001/26",
+   "Details": [
+    {"DocSignature": "T/K1/BN111111/0014/26", "PaymentAmount": 50.0, "PaymentSettlementAmount": 10.0}
+   ]
+  },
+  {
+   "Amount": 150.0,
+   "Date": "10.10.2026",
+   "Type": "Wpłata",
+   "DocNumber": "WPL/0003/26",
+   "Details": [
+    {"DocSignature": "T/K1/BN111111/0017/26", "PaymentAmount": 80.0, "PaymentSettlementAmount": 80.0},
+    {"DocSignature": "T/K1/BN111111/0018/26", "PaymentAmount": 70.0, "PaymentSettlementAmount": 70.0}
+   ]
+  },
+  {
+   "Amount": 1.0,
+   "Date": "12.10.2026",
+   "Type": "Korekta",
+   "DocNumber": "KOR/0001/26"
+  }
+ ]
+}
