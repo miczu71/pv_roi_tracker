@@ -15,7 +15,7 @@ from typing import Callable, Optional
 
 from . import battery_sim
 from .tariff_catalog import period_for, rates_per_kwh, zone_for
-from .tariff_zones import PEAK_ZONES
+from .tariff_zones import is_peak_zone
 from .tariff_sim import ALL_TARIFFS as TARIFFS, STATIC_TARIFFS, _dyn_b_price, _g13s_from, _required
 
 PriceFn = Callable[[str], Optional[tuple]]
@@ -51,7 +51,7 @@ def make_price_fn(tariff: str, catalog: dict, rdn: Optional[dict], kompas: Optio
         if tariff in STATIC_TARIFFS:
             zone = zone_for(tariff, dt, catalog)
             r = rates_per_kwh(tariff, p, zone)
-            return (r['energy'] + r['dist'] + r['fees']) * vat, zone in PEAK_ZONES
+            return (r['energy'] + r['dist'] + r['fees']) * vat, is_peak_zone(tariff, zone)
         g12w = rates_per_kwh(dist_tariff, p, zone_for(dist_tariff, dt, catalog))
         if tariff == 'dyn_a':
             price = rdn.get(key)

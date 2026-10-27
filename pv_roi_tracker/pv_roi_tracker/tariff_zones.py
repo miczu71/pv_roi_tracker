@@ -21,6 +21,11 @@ _G12_PEAK = 'day'
 _ZONE_TARIFFS = ('G12', 'G13', 'G13s')
 
 
+def is_peak_zone(tariff: str, zone: str) -> bool:
+    """Jedno źródło prawdy: strefa jest szczytem (G12: strefa dzienna `day` też jest szczytem)."""
+    return zone in PEAK_ZONES or (tariff == 'G12' and zone == _G12_PEAK)
+
+
 def peak_fn(periods: list, catalog: dict, default: str = 'G12w') -> Callable[[datetime], bool]:
     """`dt -> czy szczyt` wg taryfy z `periods` w dniu `dt` (brak okresu → `default`)."""
     def is_peak(dt: datetime) -> bool:
@@ -29,6 +34,6 @@ def peak_fn(periods: list, catalog: dict, default: str = 'G12w') -> Callable[[da
             return True
         if t in _ZONE_TARIFFS:
             zone = zone_for(t, dt, catalog)
-            return zone in PEAK_ZONES or (t == 'G12' and zone == _G12_PEAK)
+            return is_peak_zone(t, zone)
         return battery_sim.is_peak(dt)
     return is_peak

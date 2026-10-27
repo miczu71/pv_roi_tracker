@@ -367,10 +367,12 @@ class MQTTPublisher:
         self._client.publish(f'{_STATE_PREFIX}/{_HEALTH_SLUG}/attributes',
                              json.dumps(attributes, ensure_ascii=False), retain=True)
 
-    def publish_jit_schedule(self, state: str, attributes: dict) -> None:
-        """Publikuje harmonogram mostów JIT: stan = bieżąca taryfa lub 'unknown' + atrybuty JSON."""
+    def publish_jit_schedule(self, state: str, attributes: dict) -> bool:
+        """Publikuje harmonogram mostów JIT: stan = bieżąca taryfa lub 'unknown' + atrybuty JSON.
+        Zwraca False, gdy klient jest rozłączony (nic nie publikuje), True po publikacji."""
         if not self._connected:
-            return
+            return False
         self._client.publish(_state_topic(_JIT_SLUG), state, retain=True)
         self._client.publish(f'{_STATE_PREFIX}/{_JIT_SLUG}/attributes',
                              json.dumps(attributes, ensure_ascii=False), retain=True)
+        return True

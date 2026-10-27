@@ -217,3 +217,12 @@ def test_publish_jit_schedule_bez_polaczenia_nie_rzuca():
     pub._connected = False
     pub.publish_jit_schedule('unknown', {})
     pub._client.publish.assert_not_called()
+
+
+def test_publish_jit_schedule_zwraca_bool():
+    pub = _pub_connected()
+    assert pub.publish_jit_schedule('G13', {}) is True
+    pub._connected = False
+    pub._client.publish.reset_mock()
+    assert pub.publish_jit_schedule('unknown', {}) is False
+    pub._client.publish.assert_not_called()

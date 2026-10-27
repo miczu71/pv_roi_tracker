@@ -159,6 +159,8 @@ def test_dist_tariff_g13_zmienia_ceny_dyn_a_i_dyn_b(cat):
     assert b12 == pytest.approx(b13)    # opłaty (fees) nie zależą od strefy w katalogu
 
 
-def test_g12_flaga_szczytu_bez_zmian(cat):
+def test_g12_strefa_dzienna_to_szczyt_w_symulacji(cat):
     fn = tb.make_price_fn("G12", cat, {}, {})
-    assert fn(f"{MON}T10")[1] is False and fn(f"{MON}T14")[1] is False
+    assert fn(f"{MON}T10")[1] is True      # day: szczyt (jak w peak_fn)
+    assert fn(f"{MON}T02")[1] is False     # night
+

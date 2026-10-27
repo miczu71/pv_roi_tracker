@@ -230,3 +230,34 @@ def test_koniec_katalogu_nie_psuje_harmonogramu(cat):
     today_sched = res['schedules']['G13'][day.isoformat()]
     assert today_sched['peaks']                      # dziś nadal policzone
     assert res['schedules']['G13'][(day + timedelta(days=1)).isoformat()]['peaks'] == []
+
+
+def test_cheap_to_srednia_z_K_najtanszych_nie_min(cat, monkeypatch):
+    # Szczyt 18:00 (1 h), okno 12:00-17:00 (6 h), domyślny BatteryConfig: K = 5/2.5 = 2.
+    # Najtańsze 2 w oknie: 0.3 i 0.5 → średnia 0.4 (nie min 0.3).
+    def fake_make_price_fn(tariff, catalog, rdn, kompas, overrides=None):
+        def f(key):
+            if key[:10] != '2026-06-06':
+                return None
+            hour = int(key[11:13])
+            if hour < 12:
+                return (0.2, True)           # ściana: zamyka okno
+            if hour == 18:
+                return (1.0, True)           # szczyt
+            prices = {12: 0.5, 13: 0.9, 14: 0.3, 15: 0.7, 16: 0.8, 17: 0.6}
+            return (prices.get(hour, 0.5), False)
+        return f
+    monkeypatch.setattr(js, 'make_price_fn', fake_make_price_fn)
+    res = js.bridges('G13s', date(2026, 6, 6), cat, CFG)
+    assert len(res['bridges']) == 1
+    b = res['bridges'][0]
+    assert b['charge_start'] == dt(2026, 6, 6, 12) and b['charge_end'] == dt(2026, 6, 6, 18)
+    assert b['cheap_pln_kwh'] == pytest.approx(0.4)
+
+
+def test_zdegradowane_power_kw_rowne_usable_daje_min(cat):
+    cfg = dataclasses.replace(CFG, power_kw=CFG.usable_kwh)   # K = 1
+    res = js.bridges('G13', date(2026, 12, 2), cat, cfg)
+    b1 = res['bridges'][0]
+    _, cheap1 = _avg('G13', cat, dt(2026, 12, 1, 21), dt(2026, 12, 2, 7))
+    assert b1['cheap_pln_kwh'] == pytest.approx(cheap1)

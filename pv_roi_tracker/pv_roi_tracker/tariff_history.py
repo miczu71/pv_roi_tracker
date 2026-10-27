@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 from datetime import date
 from pathlib import Path
 from typing import Optional
@@ -72,24 +73,44 @@ def validate_periods(raw) -> list:
     return out
 
 
-def load(path) -> list:
-    """Okresy z pliku; brak pliku albo uszkodzona zawartość → []."""
+def _quarantine(path) -> None:
+    """Kopia uszkodzonego pliku do `<plik>.corrupt` — tylko gdy kopii jeszcze nie ma (nie nadpisuje)."""
+    corrupt = Path(str(path) + '.corrupt')
+    if corrupt.exists():
+        return
+    try:
+        shutil.copy2(path, corrupt)
+    except Exception:
+        logger.error('tariff_history: nie można skopiować uszkodzonego %s do %s', path, corrupt, exc_info=True)
+
+
+def load_status(path) -> tuple:
+    """(okresy, uszkodzony). Brak pliku → ([], False). Każda inna wada (nie JSON, nie lista,
+    niepoprawny wpis) → ([], True) i kopia pliku do `.corrupt`."""
     try:
         with open(path, encoding='utf-8') as f:
             doc = json.load(f)
     except FileNotFoundError:
-        return []
+        return [], False
     except Exception:
-        logger.warning('tariff_history: nie można wczytać %s — historia pusta', path, exc_info=True)
-        return []
+        logger.error('tariff_history: nie można wczytać %s — historia pusta', path, exc_info=True)
+        _quarantine(path)
+        return [], True
     if not isinstance(doc, list):
-        logger.warning('tariff_history: %s nie jest listą — historia pusta', path)
-        return []
+        logger.error('tariff_history: %s nie jest listą — historia pusta', path)
+        _quarantine(path)
+        return [], True
     periods = [_valid(item) for item in doc]
     if any(p is None for p in periods):
-        logger.warning('tariff_history: niepoprawny wpis w %s — historia pusta', path)
-        return []
-    return periods
+        logger.error('tariff_history: niepoprawny wpis w %s — historia pusta', path)
+        _quarantine(path)
+        return [], True
+    return periods, False
+
+
+def load(path) -> list:
+    """Okresy z pliku; brak pliku albo uszkodzona zawartość → []."""
+    return load_status(path)[0]
 
 
 def save(periods: list, path) -> None:
@@ -130,3 +151,17 @@ def record_detection(periods: list, detected, today: date) -> tuple:
         return periods, None
     new = [*periods, {'tariff': name, 'from': today.isoformat()}]
     return new, (last, name)
+
+
+def with_override(periods: list, override, today: date) -> list:
+    """Historia z ręcznym override z opcji add-onu. Poprawny override różny od taryfy ostatniego
+    okresu → dopisuje okres od `today` (baza: `periods`, a pusta historia → [G12w od zawsze]).
+    Brak/niepoprawny override albo ten sam co ostatni okres → `periods` bez zmian."""
+    forced = normalize(override)
+    if forced is None:
+        return periods
+    last = normalize(periods[-1].get('tariff')) if periods else None
+    if forced == last:
+        return periods
+    base = list(periods) if periods else [{'tariff': 'G12w', 'from': None}]
+    return [*base, {'tariff': forced, 'from': today.isoformat()}]

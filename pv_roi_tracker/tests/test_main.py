@@ -357,3 +357,20 @@ def test_payment_status_payload_without_payments_block(monkeypatch, tmp_path):
     m, _, _ = _patch_pay_env(monkeypatch, tmp_path)
     assert m._payment_status_payload(date(2026, 10, 27)) == {
         'active': None, 'last_payment': None, 'mismatches': []}
+
+
+def test_periods_peak_fn_override_g13_traktuje_szczyt_jak_szczyt(tmp_path, monkeypatch):
+    from datetime import datetime
+    from pv_roi_tracker import main as m
+
+    class _FakeDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 10, 27)
+
+    monkeypatch.setattr(m, 'date', _FakeDate)
+    _periods_file(tmp_path, monkeypatch, [], override='G13')   # historia pusta + override G13 od dziś
+    fn = _periods_peak_fn()
+    assert fn is not None
+    assert fn(datetime(2026, 11, 3, 8)) is True    # wtorek, zimowy szczyt poranny G13
+    assert fn(datetime(2026, 11, 3, 14)) is False  # wtorek, pozasz. G13

@@ -121,3 +121,81 @@ def test_validate_periods_jeden_wpis_z_data():
 def test_validate_periods_zle_wejscia(raw):
     with pytest.raises(ValueError):
         th.validate_periods(raw)
+
+
+def test_load_status_corrupt_json_flags_and_copies_original(tmp_path):
+    p = tmp_path / 'tariff_periods.json'
+    p.write_text('{nie json', encoding='utf-8')
+    assert th.load_status(p) == ([], True)
+    corrupt = tmp_path / 'tariff_periods.json.corrupt'
+    assert corrupt.read_text(encoding='utf-8') == '{nie json'
+
+
+def test_load_status_second_corrupt_read_keeps_first_copy(tmp_path):
+    p = tmp_path / 'tariff_periods.json'
+    p.write_text('{pierwsza', encoding='utf-8')
+    th.load_status(p)
+    p.write_text('{druga', encoding='utf-8')
+    assert th.load_status(p) == ([], True)
+    corrupt = tmp_path / 'tariff_periods.json.corrupt'
+    assert corrupt.read_text(encoding='utf-8') == '{pierwsza'
+
+
+def test_load_status_invalid_entry_is_corrupt(tmp_path):
+    p = tmp_path / 'tariff_periods.json'
+    p.write_text(json.dumps([{'tariff': 'G14', 'from': None}]), encoding='utf-8')
+    assert th.load_status(p) == ([], True)
+    assert (tmp_path / 'tariff_periods.json.corrupt').exists()
+
+
+def test_load_status_missing_file_is_not_corrupt(tmp_path):
+    assert th.load_status(tmp_path / 'brak.json') == ([], False)
+    assert not (tmp_path / 'brak.json.corrupt').exists()
+
+
+def test_load_status_valid_file_is_not_corrupt(tmp_path):
+    p = tmp_path / 'tariff_periods.json'
+    periods = [{'tariff': 'G12w', 'from': None}]
+    th.save(periods, p)
+    assert th.load_status(p) == (periods, False)
+    assert not (tmp_path / 'tariff_periods.json.corrupt').exists()
+
+
+def test_load_status_copy_failure_is_logged_not_raised(tmp_path, monkeypatch, caplog):
+    p = tmp_path / 'tariff_periods.json'
+    p.write_text('{nie json', encoding='utf-8')
+
+    def boom(*a, **k):
+        raise OSError('brak miejsca')
+    monkeypatch.setattr(th.shutil, 'copy2', boom)
+    with caplog.at_level(logging.ERROR):
+        assert th.load_status(p) == ([], True)
+    assert 'nie można skopiować' in caplog.text
+
+
+def test_with_override_change_appends_dated_period():
+    base = [{'tariff': 'G12w', 'from': None}]
+    out = th.with_override(base, 'G13', date(2026, 10, 27))
+    assert out == [{'tariff': 'G12w', 'from': None}, {'tariff': 'G13', 'from': '2026-10-27'}]
+    assert base == [{'tariff': 'G12w', 'from': None}]
+
+
+def test_with_override_empty_history_uses_g12w_base():
+    out = th.with_override([], 'G13', date(2026, 10, 27))
+    assert out == [{'tariff': 'G12w', 'from': None}, {'tariff': 'G13', 'from': '2026-10-27'}]
+
+
+def test_with_override_same_as_last_returns_periods_unchanged():
+    base = [{'tariff': 'G12w', 'from': None}]
+    assert th.with_override(base, 'g12W', date(2026, 10, 27)) == base
+
+
+def test_with_override_invalid_returns_periods_unchanged():
+    base = [{'tariff': 'G12w', 'from': None}]
+    assert th.with_override(base, 'G14', date(2026, 10, 27)) == base
+    assert th.with_override(base, None, date(2026, 10, 27)) == base
+
+
+def test_with_override_empty_without_override_stays_empty():
+    assert th.with_override([], None, date(2026, 10, 27)) == []
+    assert th.with_override([], 'G14', date(2026, 10, 27)) == []

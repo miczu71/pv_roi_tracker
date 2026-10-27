@@ -61,3 +61,15 @@ def test_blad_katalogu_nie_jest_polykany():
     fn = tariff_zones.peak_fn([{'from': None, 'tariff': 'G13'}], {'zones': {'G13': {}}})
     with pytest.raises((ValueError, KeyError)):
         fn(_dt(1, 8))
+
+
+def test_is_peak_zone_g12_day_tak_night_nie():
+    assert tariff_zones.is_peak_zone('G12', 'day') is True
+    assert tariff_zones.is_peak_zone('G12', 'night') is False
+
+
+def test_is_peak_zone_strefy_szczytu_i_pozostale():
+    assert tariff_zones.is_peak_zone('G13', 'peak') is True
+    assert tariff_zones.is_peak_zone('G13', 'morning_peak') is True
+    assert tariff_zones.is_peak_zone('G13', 'other') is False
+    assert tariff_zones.is_peak_zone('G12w', 'day') is False

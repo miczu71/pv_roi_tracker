@@ -232,7 +232,7 @@ def _baseline_tariff() -> str:
 def _periods_peak_fn():
     """Funkcja szczytu wg okresów taryfy; None gdy brak okresów (symulacje zostają przy G12w)."""
     from . import tariff_catalog as _tcat, tariff_history as _th, tariff_zones as _tz
-    periods = _th.load(TARIFF_PERIODS_PATH)
+    periods = _th.with_override(_th.load(TARIFF_PERIODS_PATH), CURRENT_TARIFF_OVERRIDE, date.today())
     return _tz.peak_fn(periods, _tcat.load_catalog()) if periods else None
 
 
@@ -781,14 +781,22 @@ def main() -> None:
             _refresh_payments(client, docs, _date.today())
 
             # Taryfa z portalu → stan umowy + historia taryf (błąd odczytu nie psuje joba).
+            tariff_note = ''
             try:
                 contract = client.read_contract()
                 state['contract'] = {**contract, 'checked_at': _dt.now().isoformat()}
                 _save_ebok_state(state)
-                periods, change = _th.record_detection(_th.load(TARIFF_PERIODS_PATH),
-                                                       _th.normalize(contract.get('taryfa')),
-                                                       _date.today())
-                _th.save(periods, TARIFF_PERIODS_PATH)
+                periods, corrupt = _th.load_status(TARIFF_PERIODS_PATH)
+                change = None
+                if corrupt:
+                    # Nie nadpisujemy uszkodzonej historii — kopia `.corrupt` zostaje do ręcznej naprawy.
+                    logger.error('eBOK: %s uszkodzony — historia taryf nie zmieniona', TARIFF_PERIODS_PATH)
+                    tariff_note = '; uszkodzony tariff_periods.json — historia taryf nietknięta'
+                else:
+                    periods, change = _th.record_detection(periods,
+                                                           _th.normalize(contract.get('taryfa')),
+                                                           _date.today())
+                    _th.save(periods, TARIFF_PERIODS_PATH)
                 if contract.get('taryfa') and _th.normalize(contract['taryfa']) is None:
                     logger.warning('eBOK: taryfa z portalu spoza katalogu (%s) — baza porównań bez zmian',
                                    contract['taryfa'])
@@ -797,12 +805,13 @@ def main() -> None:
                                f'Wykryto zmianę taryfy: {change[0]} → {change[1]}. '
                                'Porównania w add-onie przejdą na nową bazę.',
                                target='kacper')
+                    _threading.Thread(target=tariff_sim_job, daemon=True, name='tariff-sim-change').start()
             except _ec.EbokLoginBlocked:
                 raise  # blokada konta musi dojść do _ebok_run (blocked_until), nie być połknięta
             except Exception:
                 logger.exception('eBOK: odczyt taryfy z umowy nie powiódł się')
 
-            _record_job('ebok_payment', True, f'wysłano {len(notifications)} przypomnień')
+            _record_job('ebok_payment', True, f'wysłano {len(notifications)} przypomnień{tariff_note}')
             return {'ok': True, 'sent': len(notifications)}
 
         return _ebok_run('ebok_payment', 'Sprawdzenie terminu płatności',
@@ -1256,8 +1265,8 @@ def main() -> None:
                 from . import jit_schedule
                 _jit = jit_schedule.build_schedule(
                     date.today(), _tcat.load_catalog(), battery_store.load_config(BATTERY_CONFIG_PATH))
-                pub.publish_jit_schedule(_current_tariff or 'unknown', _jit)
-                _record_job('jit_schedule', True)
+                ok = pub.publish_jit_schedule(_current_tariff or 'unknown', _jit)
+                _record_job('jit_schedule', bool(ok), '' if ok else 'MQTT rozłączony — harmonogram nie opublikowany')
             except Exception:
                 logger.exception('JIT schedule failed — continuing')
                 _record_job('jit_schedule', False, 'harmonogram JIT nie powiódł się')

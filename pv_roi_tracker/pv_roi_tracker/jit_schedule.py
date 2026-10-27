@@ -8,6 +8,7 @@ Oś czasu godzinowa, naiwna lokalna (bez DST); konwersja na ISO z TZ w `build_sc
 """
 from __future__ import annotations
 
+import math
 from datetime import date, datetime, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -26,6 +27,14 @@ _HOUR = timedelta(hours=1)
 
 def _key(dt: datetime) -> str:
     return dt.strftime('%Y-%m-%dT%H')
+
+
+def _cheap_avg(window: list, cfg: BatteryConfig) -> float:
+    """Średnia z K najtańszych godzin okna: bateria nie naładuje się szybciej niż `power_kw`,
+    więc K = ceil(usable_kwh / power_kw), w zakresie 1..len(window)."""
+    k = math.ceil(cfg.usable_kwh / cfg.power_kw) if cfg.power_kw > 0 else 1
+    k = max(1, min(k, len(window)))
+    return sum(sorted(window)[:k]) / k
 
 
 def bridges(tariff: str, day: date, catalog: dict, cfg: BatteryConfig,
@@ -84,7 +93,7 @@ def bridges(tariff: str, day: date, catalog: dict, cfg: BatteryConfig,
         if not ok or not window:
             continue
         charge_start = start - _HOUR * len(window)
-        cheap = min(window)
+        cheap = _cheap_avg(window, cfg)
         margin = peak_avg - (cheap / cfg.roundtrip_eff + per_kwh_cost)
         out.append({'charge_start': charge_start, 'charge_end': start, 'gap_end': end,
                     'cheap_pln_kwh': cheap, 'peak_pln_kwh': peak_avg,
