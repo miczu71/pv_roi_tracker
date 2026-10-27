@@ -2,10 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.51.0] — w przygotowaniu
+## [0.51.0] — 2026-10-27
 
 Baza porównań symulacji taryf = bieżąca taryfa (zamiast sztywnego G12w). Koszty faktyczne z faktur zostają w taryfie okresu faktury.
 
+- **Wykrywanie taryfy:** job 07:00 czyta umowę z „Mój TAURON” (taryfa, moc umowna, rozliczenie), dopisuje zmianę do historii okresów (`/data/tariff_periods.json`, data zmiany = dzień wykrycia) i wysyła powiadomienie. Nowa opcja `current_tariff_override` (awaryjnie, gdy wykrywanie zawiedzie), czujnik `current_tariff`. Blokada logowania w odczycie umowy nie jest już połykana.
 - **Baza = bieżąca taryfa:** `tariff_history.current` (okresy z portalu albo override), brak historii = G12w (jak dotąd). Payload ma `baseline_tariff` oraz `last12.saving_vs_baseline[_b|_c]`; stare `saving_vs_g12w[_b|_c]` zostają z tą samą wartością (przestarzałe). Rekomendacje i teksty (np. „względem G13 A”) używają nazwy bazy.
 - **Rozjazd symulacji z fakturą:** taryfa symulacji wg historii w 1. dniu miesiąca; miesiąc ze zmianą taryfy w środku jest pomijany.
 - **API:** `GET/PUT /api/tariff_periods` (edycja historii taryf z walidacją, zapis przelicza symulację w tle); `/api/tariff_now` liczy strefę bieżącej taryfy.
