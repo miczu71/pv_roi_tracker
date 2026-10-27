@@ -85,4 +85,15 @@ playwright-ha do `/config/playwright/` + `browser_console_messages` bez błędó
   Backend: `simulate_variant_c` zwraca tylko `monthly`, stare pola `plans` (głosowanie godzin) usunięte, `payload['plans']` = wynik `suggest_plans`.
   UI: komórki „Ładuj z sieci HH–HH do N%” + rozładowanie + zysk/rok albo „Nie ładuj z sieci — zysk ok. X zł/rok”, linia pułapu C,
   legenda A/B/C przy przełączniku, guard null `r.gross`. pytest 968 passed/27 skipped. Weryfikacja UI na żywo — po wydaniu 0.49.0.
-- Następny: wydanie 0.49.0 (simplify → code-review + silent-failure-hunter + pr-test-analyzer + security → release → weryfikacja na żywo).
+- 2026-10-27: **Wydanie 0.49.0** opublikowane (tag v0.49.0, pubguard 0 oflagowanych). simplify: usunięty osierocony `_season`.
+  Recenzje (code-review, silent-failure-hunter, pr-test-analyzer, security): brak blokujących. Drobne poprawki: komentarz remisu, „cała doba”.
+  **Do raportu (nieblokujące, długi):** (1) `_simulate_schedule` przenosi SoC z sieci między grupami (piątek→sobota), przybliżenie;
+  (2) brak minimalnej próby dni w `suggest_plans` (grupa z kilkoma dobami → duży mnożnik); (3) brak rozróżnienia „brak danych / brak zysku”
+  (`reason`); (4) okno oceny sugestii obejmuje bieżący, niepełny miesiąc, a pułap C liczy L12 bez niego; (5) w `simulate_variant_c` łańcuch SoC
+  DP liczony niezależnie od tego, czy miesiąc wybrał B; (6) luki testów: przenoszenie SoC między dobami, `_window_runs`/`_shift_ym`, skalowanie do roku,
+  zachowanie `_tsimSpan` i gałęzi „nie ładuj”; (7) `_simulate_schedule` duplikuje logikę `simulate_s1`.
+- 2026-10-27: **0.49.0 NA ŻYWO** (instalacja 10:03, badge v0.49.0, konsola 0 błędów, brak przepełnienia na 390 px).
+  `gross_c ≤ gross_b` na żywo: G12 3673 ≤ 3722, G12w 3443 ≤ 3522, G13 3336 ≤ 3396 (G13s bez danych — cennik niepotwierdzony).
+  Przy `lifetime_cycles` 6000 (0,253 zł/kWh) tylko G13 zima roboczy ma sugestię (13:00–16:00 do 90%, ~30 zł/rok); G12w zima roboczy 20 zł/rok
+  tuż poniżej progu; reszta „Nie ładuj z sieci”. Pułap C dla G12w 80 zł/rok. Screenshoty: `/config/playwright/pv-roi-0.49.0-karta-{desktop,mobile}.png`.
+  **ROADMAPA ZAMKNIĘTA.**
