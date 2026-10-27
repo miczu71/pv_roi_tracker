@@ -167,7 +167,8 @@ def attribute_heatpump(flows: dict, hp_kwh: float) -> dict:
     return {'hp_pv': hp_pv, 'hp_batt': hp_batt, 'hp_grid': hp_grid, 'anomaly': overflow > 1e-9}
 
 
-def grid_price_for_hour(d: date, hour: int, rates: Optional[tuple]) -> Optional[float]:
+def grid_price_for_hour(d: date, hour: int, rates: Optional[tuple],
+                        is_peak_fn=None) -> Optional[float]:
     """Cena sieci (PLN/kWh brutto) danej godziny z (peak_gross, offpeak_gross).
 
     offpeak_gross None → taryfa jednostrefowa (G11, flat = peak_gross)."""
@@ -176,7 +177,8 @@ def grid_price_for_hour(d: date, hour: int, rates: Optional[tuple]) -> Optional[
     peak_gross, offpeak_gross = rates
     if offpeak_gross is None:
         return peak_gross
-    return peak_gross if is_peak(datetime(d.year, d.month, d.day, hour)) else offpeak_gross
+    peak = (is_peak_fn or is_peak)(datetime(d.year, d.month, d.day, hour))
+    return peak_gross if peak else offpeak_gross
 
 
 def mode_split(hp_kwh: float, heat_h: float, dhw_h: float) -> dict:
@@ -206,6 +208,7 @@ def run_hours(
     rates_by_month: dict[str, tuple],
     rcem_by_month: dict[str, float],
     battery_efficiency: float = 0.92,
+    is_peak_fn=None,
 ) -> list[dict]:
     """Przelicz WSZYSTKIE godziny chronologicznie (pula baterii ma pamięć).
 
@@ -221,7 +224,7 @@ def run_hours(
         hp_kwh = h.get('hp_kwh') or 0.0
 
         flows = hourly_flows(h)
-        grid_price = grid_price_for_hour(d, hour, rates_by_month.get(ym))
+        grid_price = grid_price_for_hour(d, hour, rates_by_month.get(ym), is_peak_fn)
         pv_price = rcem_by_month.get(ym)
 
         pool.charge(flows['charge_from_pv'], flows['charge_from_grid'],
@@ -238,14 +241,15 @@ def run_hours(
         econ = (attrib['hp_grid'] * (grid_price or 0.0) + hp_batt_econ
                + attrib['hp_pv'] * (pv_price if pv_price is not None else (grid_price or 0.0)))
         has_price = grid_price is not None
+        hour_peak = (is_peak_fn or is_peak)(datetime(d.year, d.month, d.day, hour))
 
         out.append({
             'hour_key': hk, 'date': d, 'hour': hour, 'ym': ym,
             'season_start_year': season_start_year(d),
             'hp_kwh': hp_kwh, **modes,
             'hp_pv': attrib['hp_pv'], 'hp_batt': attrib['hp_batt'], 'hp_grid': attrib['hp_grid'],
-            'hp_grid_peak': attrib['hp_grid'] if is_peak(datetime(d.year, d.month, d.day, hour)) else 0.0,
-            'hp_grid_offpeak': attrib['hp_grid'] if not is_peak(datetime(d.year, d.month, d.day, hour)) else 0.0,
+            'hp_grid_peak': attrib['hp_grid'] if hour_peak else 0.0,
+            'hp_grid_offpeak': attrib['hp_grid'] if not hour_peak else 0.0,
             'cash_pln': cash if has_price else 0.0,
             'econ_pln': econ if has_price else 0.0,
             'has_price': has_price,
@@ -372,6 +376,7 @@ def compute(
     battery_efficiency: float = 0.92,
     today: Optional[date] = None,
     hdd_base: float = 15.0,
+    is_peak_fn=None,
 ) -> Optional[dict]:
     """Pełny payload zakładki „Pompa ciepła" dla `/api/data`. None gdy brak
     godzin (funkcja wyłączona lub jeszcze nic nie pobrano)."""
@@ -379,7 +384,7 @@ def compute(
         return None
     if today is None:
         today = date.today()
-    rows = run_hours(hours, rates_by_month, rcem_by_month, battery_efficiency)
+    rows = run_hours(hours, rates_by_month, rcem_by_month, battery_efficiency, is_peak_fn)
     months = aggregate_months(rows, hdd_base)
     seasons = aggregate_seasons(rows, today, hdd_base)
     current = next((s for s in seasons if s['is_current']), None)

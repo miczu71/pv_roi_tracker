@@ -402,3 +402,11 @@ def test_compute_flags_anomaly_hours_total():
                                'hp_kwh': 1.0, 'heat_h': 1.0, 'dhw_h': 0.0, 't_out': -3.0}}
     payload = compute(hours, {'2024-01': (1.2, 0.6)}, {'2024-01': 0.35}, today=date(2024, 1, 15))
     assert payload['anomaly_hours_total'] == 1
+
+
+def test_grid_price_wlasny_is_peak_fn():
+    rates = (1.2, 0.6)
+    mon = date(2026, 6, 1)
+    assert grid_price_for_hour(mon, 14, rates, is_peak_fn=lambda dt: True) == 1.2
+    assert grid_price_for_hour(mon, 7, rates, is_peak_fn=lambda dt: False) == 0.6
+    assert grid_price_for_hour(mon, 7, rates, is_peak_fn=None) == 1.2

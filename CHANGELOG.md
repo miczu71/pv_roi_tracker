@@ -10,6 +10,7 @@ Baza porównań symulacji taryf = bieżąca taryfa (zamiast sztywnego G12w). Kos
 - **Rozjazd symulacji z fakturą:** taryfa symulacji wg historii w 1. dniu miesiąca; miesiąc ze zmianą taryfy w środku jest pomijany.
 - **API:** `GET/PUT /api/tariff_periods` (edycja historii taryf z walidacją, zapis przelicza symulację w tle); `/api/tariff_now` liczy strefę bieżącej taryfy.
 - **Sensory HA:** nowe `tariffsim_baseline_tariff`, `tariffsim_month_baseline`, `tariffsim_12m_baseline`, `tariffsim_12m_c_baseline`, `tariffsim_saving_vs_baseline`; `tariffsim_saving_vs_g12w` jest aliasem (do migracji dashboardów). Sensory `*_g12w` nadal oznaczają koszt taryfy G12w.
+- **Strefy wg okresu taryfy:** godzinowe symulacje baterii i pompy ciepła liczą szczyt wg taryfy obowiązującej w danym dniu (`tariff_zones`, G12w/G12/G13/G13s/G11), a dystrybucja i opłaty dyn_a/dyn_b — wg taryfy bazowej. Brak historii okresów = dotychczasowe G12w.
 
 ## [0.50.0] — 2026-10-27
 

@@ -867,8 +867,11 @@ def main() -> None:
                     rcem_scraper._load_history(RCEM_HISTORY_PATH).items()}
             rce_prices = _rceh._load_cache(RCE_HOURLY_CACHE_PATH).get('prices', {})
 
-            payload = battery_sim.simulate_all(hours, cfg, zone_prices, rcem,
-                                               rce_hourly=rce_prices)
+            from . import tariff_catalog as _tcat_b, tariff_history as _th_b, tariff_zones as _tz_b
+            _periods_b = _th_b.load(TARIFF_PERIODS_PATH)
+            payload = battery_sim.simulate_all(
+                hours, cfg, zone_prices, rcem, rce_hourly=rce_prices,
+                is_peak_fn=_tz_b.peak_fn(_periods_b, _tcat_b.load_catalog()) if _periods_b else None)
             _web.update_battery_sim(payload)
             _battery_state['summary'] = payload.get('summary')
             _record_job('battery_sim', True)
@@ -1056,10 +1059,13 @@ def main() -> None:
                         float(rates['peak_gross']),
                         float(rates['offpeak_gross']) if rates.get('offpeak_gross') is not None else None)
 
+            from . import tariff_catalog as _tcat_h, tariff_history as _th_h, tariff_zones as _tz_h
+            _periods_h = _th_h.load(TARIFF_PERIODS_PATH)
             payload = heatpump.compute(
                 hours, rates_by_month, rcem_by_month,
                 battery_efficiency=live_reader._BATTERY_RT_EFF,
-                today=today, hdd_base=HEATPUMP_HDD_BASE_TEMP)
+                today=today, hdd_base=HEATPUMP_HDD_BASE_TEMP,
+                is_peak_fn=_tz_h.peak_fn(_periods_h, _tcat_h.load_catalog()) if _periods_h else None)
             _web.update_heatpump(payload)
             _record_job('heatpump', True)
             if payload:

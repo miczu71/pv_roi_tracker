@@ -345,3 +345,34 @@ def test_g13s_stale_per_taryfa_sprzedaz(cat):
     r2 = simulate_month("2026-03", {}, cat, settings=s)
     assert r2["G13s"]["fixed"] == pytest.approx(10.86 + 4.56 + 24.05 + 10.0)
     assert r2["G12w"]["fixed"] == pytest.approx(10.86 + 4.56 + 24.05 + 5.0)
+
+
+def test_dist_tariff_g13_zmienia_dist_i_fees_dyn_a(cat):
+    # 10:00 = morning_peak G13 (dist 0.2203), 14:00 = other (0.0392); w G12w 0.3298 / 0.0512
+    rdn = {f"{D}T10": 400.0, f"{D}T14": 200.0}
+    imp = {f"{D}T10": 1.0, f"{D}T14": 3.0}
+    a12 = simulate_month("2026-04", imp, cat, rdn=rdn)["dyn_a"]
+    a13 = simulate_month("2026-04", imp, cat, rdn=rdn, dist_tariff="G13")["dyn_a"]
+    assert a13["dist"] == pytest.approx(0.2203 + 3 * 0.0392)
+    assert a13["dist"] != pytest.approx(a12["dist"])
+    assert a13["energy"] == pytest.approx(a12["energy"])
+    same = simulate_month("2026-04", imp, cat, rdn=rdn, dist_tariff="G12w")["dyn_a"]
+    assert same == a12
+
+
+def test_dist_tariff_nieznana_taryfa_rzuca(cat):
+    with pytest.raises(ValueError):
+        simulate_month("2026-04", {f"{D}T10": 1.0}, cat, rdn={f"{D}T10": 400.0},
+                       dist_tariff="XYZ")
+
+
+def test_hourly_series_dist_tariff(cat):
+    from datetime import date
+    from pv_roi_tracker.tariff_sim import hourly_series
+    d = date(2026, 4, 14)
+    rdn = {f"{D}T10": 400.0}
+    h12 = hourly_series(d, d, {}, cat, tariffs=("dyn_a",), rdn=rdn)["dyn_a"]["hours"][10]
+    h13 = hourly_series(d, d, {}, cat, tariffs=("dyn_a",), rdn=rdn,
+                        dist_tariff="G13")["dyn_a"]["hours"][10]
+    assert h12["zone"] == "peak" and h13["zone"] == "morning_peak"
+    assert h12["net_per_kwh"] - h13["net_per_kwh"] == pytest.approx(0.3298 - 0.2203)

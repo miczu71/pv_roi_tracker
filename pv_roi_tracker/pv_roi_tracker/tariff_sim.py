@@ -63,7 +63,7 @@ def _dyn_b_price(catalog: dict, overrides: Optional[dict]) -> float:
 def simulate_month(ym: str, import_by_hour: dict, catalog: dict,
                    settings: Optional[TariffSettings] = None,
                    rdn: Optional[dict] = None, kompas: Optional[dict] = None,
-                   overrides: Optional[dict] = None) -> dict:
+                   overrides: Optional[dict] = None, dist_tariff: str = 'G12w') -> dict:
     """Koszt poboru `import_by_hour` ({YYYY-MM-DDTHH: kWh}) w miesiącu `ym` w każdej taryfie."""
     settings = settings or TariffSettings()
     rdn = rdn or {}
@@ -115,7 +115,7 @@ def simulate_month(ym: str, import_by_hour: dict, catalog: dict,
             for f in ('energy', 'dist', 'fees'):
                 acc[n][f] += kwh * r[f]
 
-        g12w = rates_per_kwh('G12w', p, zone_for('G12w', dt, catalog))
+        g12w = rates_per_kwh(dist_tariff, p, zone_for(dist_tariff, dt, catalog))
 
         if a_available:
             price = rdn.get(key)
@@ -201,9 +201,10 @@ def _month_range(from_ym: str, to_ym: str):
 def simulate_range(from_ym: str, to_ym: str, import_by_hour: dict, catalog: dict,
                    settings: Optional[TariffSettings] = None,
                    rdn: Optional[dict] = None, kompas: Optional[dict] = None,
-                   overrides: Optional[dict] = None) -> dict:
+                   overrides: Optional[dict] = None, dist_tariff: str = 'G12w') -> dict:
     """`{ym: simulate_month(...)}` dla miesięcy od `from_ym` do `to_ym` włącznie."""
-    return {ym: simulate_month(ym, import_by_hour, catalog, settings, rdn, kompas, overrides)
+    return {ym: simulate_month(ym, import_by_hour, catalog, settings, rdn, kompas, overrides,
+                                 dist_tariff)
             for ym in _month_range(from_ym, to_ym)}
 
 
@@ -212,7 +213,7 @@ def simulate_range(from_ym: str, to_ym: str, import_by_hour: dict, catalog: dict
 def hourly_series(from_date: date, to_date: date, import_by_hour: dict, catalog: dict,
                   tariffs=ALL_TARIFFS, settings: Optional[TariffSettings] = None,
                   rdn: Optional[dict] = None, kompas: Optional[dict] = None,
-                  overrides: Optional[dict] = None) -> dict:
+                  overrides: Optional[dict] = None, dist_tariff: str = 'G12w') -> dict:
     """Wiersz na KAŻDĄ godzinę doby od `from_date` do `to_date` (także bez poboru, kWh = 0).
 
     `{taryfa: {'available', 'reason', 'hours': [wiersz, ...]}}`, wiersz:
@@ -220,7 +221,7 @@ def hourly_series(from_date: date, to_date: date, import_by_hour: dict, catalog:
     DST jak w `simulate_month`: klucz `YYYY-MM-DDTHH`, jeden wiersz na klucz.
 
     Różnice względem `simulate_month`: dyn_a liczy cenę każdej godziny osobno (RDN/1000 + marża
-    + dystrybucja G12w + opłaty) — BEZ miesięcznej podłogi średniej; brak RDN → ta sama godzina
+    + dystrybucja taryfy bazowej `dist_tariff` (domyślnie G12w) + opłaty) — BEZ miesięcznej podłogi średniej; brak RDN → ta sama godzina
     tydzień wcześniej (`fallback: True`), nadal brak → ceny i koszty `None` (zone podana).
     Taryfa dynamiczna jest niedostępna (`available: False`, `hours: []`), gdy cały zakres leży
     przed jej `valid_from`; dni przed `valid_from` w szerszym zakresie mają ceny `None`.
@@ -270,7 +271,7 @@ def hourly_series(from_date: date, to_date: date, import_by_hour: dict, catalog:
                     r = rates_per_kwh(n, p, zone)
                     net = r['energy'] + r['dist'] + r['fees']
                 elif n == 'dyn_a':
-                    zone = zone_for('G12w', dt, catalog)
+                    zone = zone_for(dist_tariff, dt, catalog)
                     net = None
                     if not (a_from and iso < a_from):
                         price = rdn.get(key)
@@ -278,14 +279,14 @@ def hourly_series(from_date: date, to_date: date, import_by_hour: dict, catalog:
                             price = rdn.get((dt - timedelta(days=7)).strftime('%Y-%m-%dT%H'))
                             fallback = price is not None
                         if price is not None:
-                            g12w = rates_per_kwh('G12w', p, zone)
+                            g12w = rates_per_kwh(dist_tariff, p, zone)
                             net = price / 1000.0 + margin + g12w['dist'] + g12w['fees']
                 else:   # dyn_b
                     zone = kompas.get(key)
                     net = None
                     s_rate = (p.get('dynamic_dist_var_net') or {}).get(zone) if zone else None
                     if s_rate is not None and not (b_from and iso < b_from):
-                        fees = rates_per_kwh('G12w', p, zone_for('G12w', dt, catalog))['fees']
+                        fees = rates_per_kwh(dist_tariff, p, zone_for(dist_tariff, dt, catalog))['fees']
                         net = _dyn_b_price(catalog, overrides) + float(s_rate) + fees
                 gross = net * vat if net is not None else None
                 out[n]['hours'].append({

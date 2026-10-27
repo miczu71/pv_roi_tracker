@@ -144,3 +144,21 @@ def test_variant_b_soc_floor_zmniejsza_pojemnosc(cat):
     assert default == full
     assert floor["2026-06"]["G12w"]["charged_kwh"] < full["2026-06"]["G12w"]["charged_kwh"]
     assert floor["2026-06"]["G12w"]["charged_kwh"] == pytest.approx(4.2 / (0.92 ** 0.5))
+
+
+def test_dist_tariff_g13_zmienia_ceny_dyn_a_i_dyn_b(cat):
+    d = "2026-04-14"
+    rdn = {f"{d}T10": 400.0}
+    kompas = {f"{d}T10": "S4"}
+    a12 = tb.make_price_fn("dyn_a", cat, rdn, {})(f"{d}T10")[0]
+    a13 = tb.make_price_fn("dyn_a", cat, rdn, {}, dist_tariff="G13")(f"{d}T10")[0]
+    assert a12 - a13 == pytest.approx((0.3298 - 0.2203) * VAT)
+    assert tb.make_price_fn("dyn_a", cat, rdn, {}, dist_tariff="G12w")(f"{d}T10") == (a12, False)
+    b12 = tb.make_price_fn("dyn_b", cat, {}, kompas)(f"{d}T10")[0]
+    b13 = tb.make_price_fn("dyn_b", cat, {}, kompas, dist_tariff="G13")(f"{d}T10")[0]
+    assert b12 == pytest.approx(b13)    # opłaty (fees) nie zależą od strefy w katalogu
+
+
+def test_g12_flaga_szczytu_bez_zmian(cat):
+    fn = tb.make_price_fn("G12", cat, {}, {})
+    assert fn(f"{MON}T10")[1] is False and fn(f"{MON}T14")[1] is False

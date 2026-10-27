@@ -15,11 +15,8 @@ from typing import Callable, Optional
 
 from . import battery_sim
 from .tariff_catalog import period_for, rates_per_kwh, zone_for
+from .tariff_zones import PEAK_ZONES
 from .tariff_sim import ALL_TARIFFS as TARIFFS, STATIC_TARIFFS, _dyn_b_price, _g13s_from, _required
-
-_PEAK_ZONES = frozenset({'peak', 'morning_peak', 'evening_peak',
-                         'summer_workday_peak', 'summer_dayoff_peak',
-                         'winter_workday_peak', 'winter_dayoff_peak'})
 
 PriceFn = Callable[[str], Optional[tuple]]
 
@@ -29,7 +26,7 @@ def _parse(key: str) -> datetime:
 
 
 def make_price_fn(tariff: str, catalog: dict, rdn: Optional[dict], kompas: Optional[dict],
-                  overrides: Optional[dict] = None) -> PriceFn:
+                  overrides: Optional[dict] = None, dist_tariff: str = 'G12w') -> PriceFn:
     """`key -> (cena_brutto_kwh, is_peak)` lub None (godzina pominięta)."""
     rdn = rdn or {}
     kompas = kompas or {}
@@ -54,8 +51,8 @@ def make_price_fn(tariff: str, catalog: dict, rdn: Optional[dict], kompas: Optio
         if tariff in STATIC_TARIFFS:
             zone = zone_for(tariff, dt, catalog)
             r = rates_per_kwh(tariff, p, zone)
-            return (r['energy'] + r['dist'] + r['fees']) * vat, zone in _PEAK_ZONES
-        g12w = rates_per_kwh('G12w', p, zone_for('G12w', dt, catalog))
+            return (r['energy'] + r['dist'] + r['fees']) * vat, zone in PEAK_ZONES
+        g12w = rates_per_kwh(dist_tariff, p, zone_for(dist_tariff, dt, catalog))
         if tariff == 'dyn_a':
             price = rdn.get(key)
             if price is None:
@@ -76,7 +73,8 @@ def make_price_fn(tariff: str, catalog: dict, rdn: Optional[dict], kompas: Optio
 
 def simulate_variant_b(hours: dict, cfg, catalog: dict, rdn: Optional[dict],
                        kompas: Optional[dict], rcem_by_ym: dict, from_ym: str, to_ym: str,
-                       overrides: Optional[dict] = None, soc_floor: float = 0.0) -> dict:
+                       overrides: Optional[dict] = None, soc_floor: float = 0.0,
+                       dist_tariff: str = 'G12w') -> dict:
     """`{ym: {taryfa: {savings_pln, charged_kwh, discharged_kwh}}}` dla wszystkich taryf.
     `soc_floor` = ułamek pojemności zarezerwowany (dolny próg SoC), zmniejsza użyteczną pojemność."""
     cfg_b = dataclasses.replace(cfg, arbitrage_enabled=False,
@@ -86,7 +84,7 @@ def simulate_variant_b(hours: dict, cfg, catalog: dict, rdn: Optional[dict],
     for t in TARIFFS:
         rows = battery_sim.simulate_s1(
             hours, cfg_b, {}, rcem_by_ym, keys=keys,
-            price_fn=make_price_fn(t, catalog, rdn, kompas, overrides))
+            price_fn=make_price_fn(t, catalog, rdn, kompas, overrides, dist_tariff))
         for r in rows:
             out.setdefault(r['ym'], {})[t] = {
                 'savings_pln': r['savings_pln'],

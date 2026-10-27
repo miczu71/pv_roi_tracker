@@ -254,3 +254,20 @@ def test_s1_price_fn_none_pomija_godzine():
     assert r['discharged_kwh'] == pytest.approx(1.0)   # tylko godzina 12, godzina 11 pominięta
     only = simulate_s1({skipped: (0.0, 1.5)}, CFG, ZONE, RCEM, price_fn=lambda key: None)
     assert only == []
+
+
+def test_s1_is_peak_fn_zmienia_podzial_stref():
+    hours = {_h(MON, 2): (2.0, 0.0), _h(MON, 7): (0.0, 0.5)}
+    dom = simulate_s1(hours, CFG, ZONE, RCEM)[0]
+    assert dom == simulate_s1(hours, CFG, ZONE, RCEM, is_peak_fn=None)[0]
+    assert dom['disch_peak_kwh'] == pytest.approx(0.5)
+    alt = simulate_s1(hours, CFG, ZONE, RCEM, is_peak_fn=lambda dt: False)[0]
+    assert alt['disch_peak_kwh'] == pytest.approx(0.0)
+    assert alt['disch_offpeak_kwh'] == pytest.approx(0.5)
+
+
+def test_simulate_all_przekazuje_is_peak_fn():
+    hours = {_h(MON, 2): (2.0, 0.0), _h(MON, 7): (0.0, 0.5)}
+    base = simulate_all(hours, CFG, ZONE, RCEM)
+    alt = simulate_all(hours, CFG, ZONE, RCEM, is_peak_fn=lambda dt: False)
+    assert base['s1_months'][0]['disch_peak_kwh'] != alt['s1_months'][0]['disch_peak_kwh']

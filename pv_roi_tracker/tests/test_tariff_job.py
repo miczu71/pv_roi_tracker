@@ -224,7 +224,7 @@ calls: list = []
 
 def _fake_b(savings_for):
     """savings_for(ym, taryfa) -> oszczędność lub None (brak wpisu B)."""
-    def fake(hours, cfg, catalog, rdn, kompas, rcem, from_ym, to_ym, overrides=None, soc_floor=0.0):
+    def fake(hours, cfg, catalog, rdn, kompas, rcem, from_ym, to_ym, overrides=None, soc_floor=0.0, dist_tariff='G12w'):
         calls.append(soc_floor)
         out = {}
         y, m = int(from_ym[:4]), int(from_ym[5:7])
@@ -602,3 +602,17 @@ def test_recommend_best_year_tekst_z_nazwa_bazy():
     best2 = {**best, "tariff": "G13"}
     out2 = tj.recommend({"baseline_tariff": "G13", "best_year": {"best": best2}}, 100)["best_year"]
     assert out2["tariff_change"] is False
+
+
+def test_compute_payload_baseline_przekazuje_dist_tariff(monkeypatch, cat):
+    seen = {}
+
+    def fake(from_ym, to_ym, *a, **k):
+        seen.update(k)
+        return {}
+    monkeypatch.setattr(tj, "simulate_range", fake)
+    try:
+        tj.compute_payload({}, cat, TariffSettings(), {}, {}, {}, TODAY, baseline="G13")
+    except Exception:
+        pass    # pusty wynik nie jest przedmiotem testu
+    assert seen.get("dist_tariff") == "G13"
