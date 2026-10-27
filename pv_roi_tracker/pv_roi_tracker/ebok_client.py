@@ -240,6 +240,8 @@ class EbokClient:
             if link:
                 href = link.group(1).replace('&amp;', '&')
                 url = href if href.startswith('http') else SERVICE + (href if href.startswith('/') else '/' + href)
+                if not url.startswith(SERVICE + '/'):
+                    raise EbokError('link punktu poboru poza domeną portalu')
                 contract = {**contract, **parse_point_details(self._get(url, REQUEST_TIMEOUT).text)}
             else:
                 logger.warning('eBOK: brak linku do punktów poboru na stronie umowy')

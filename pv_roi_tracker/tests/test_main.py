@@ -12,6 +12,7 @@ from pv_roi_tracker.main import (
     previous_month, month_present, month_has_data,
     _months_since_commissioning, _heal_month_if_needed, _heal_action,
     _format_heatpump_push_line, _ebok_missing_documents, MAX_NEW_PER_SYNC,
+    _baseline_tariff, _periods_peak_fn,
 )
 from pv_roi_tracker.models import MonthlyRecord
 
@@ -239,3 +240,42 @@ def test_ebok_missing_documents_over_limit_flags_overflow():
     docs = [_Doc(f'T/K1/BN111111/{i:04d}/26') for i in range(MAX_NEW_PER_SYNC + 1)]
     missing, over = _ebok_missing_documents(docs, set())
     assert len(missing) == 6 and over is True
+
+
+# ── wiring taryfy: _baseline_tariff / _periods_peak_fn ──────────────────────────
+
+def _periods_file(tmp_path, monkeypatch, periods, override=''):
+    from pv_roi_tracker import main, tariff_history
+    path = tmp_path / 'tariff_periods.json'
+    if periods:
+        tariff_history.save(periods, path)
+    monkeypatch.setattr(main, 'TARIFF_PERIODS_PATH', path)
+    monkeypatch.setattr(main, 'CURRENT_TARIFF_OVERRIDE', override)
+
+
+def test_baseline_tariff_defaults_to_g12w_without_periods(tmp_path, monkeypatch):
+    _periods_file(tmp_path, monkeypatch, [])
+    assert _baseline_tariff() == 'G12w'
+
+
+def test_baseline_tariff_uses_last_period(tmp_path, monkeypatch):
+    _periods_file(tmp_path, monkeypatch, [{'tariff': 'G12W', 'from': None},
+                                          {'tariff': 'G13', 'from': '2026-11-01'}])
+    assert _baseline_tariff() == 'G13'
+
+
+def test_baseline_tariff_override_wins(tmp_path, monkeypatch):
+    _periods_file(tmp_path, monkeypatch, [{'tariff': 'G13', 'from': None}], override='G11')
+    assert _baseline_tariff() == 'G11'
+
+
+def test_periods_peak_fn_none_without_periods(tmp_path, monkeypatch):
+    _periods_file(tmp_path, monkeypatch, [])
+    assert _periods_peak_fn() is None
+
+
+def test_periods_peak_fn_callable_with_periods(tmp_path, monkeypatch):
+    from datetime import datetime
+    _periods_file(tmp_path, monkeypatch, [{'tariff': 'G11', 'from': None}])
+    fn = _periods_peak_fn()
+    assert fn(datetime(2026, 11, 3, 3)) is True  # G11: jedna strefa = szczyt
