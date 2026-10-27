@@ -142,7 +142,9 @@ osobowych) i wpis w MEMORY.md (`-config`).
 - Pominięte: second-opinion (diff 77 kB > limit 60 kB; pomiar zostaje 4/10).
 - Do obserwacji: jutro logi joba 07:00 (`ebok_payment` ok, brak pushy o błędzie); status niezapłaconej faktury ok. 5–8.11.
 - Znane długi nieblokujące (review): paginacja liczy przefiltrowany batch, brak dedupu po sygnaturze, `parse_documents_json` bez walidacji typów, `/api/ebok/diag` bez sprawdzenia `blocked_until`, stare docstringi, maskowanie checksum w wyjątkach `requests`; bezpiecznik >5 liczy też FK/NB.
-- **Następny: E2** (detekcja taryfy + `tariff_periods` + encja `current_tariff`, push przy zmianie). Wymaga planu `docs/PLAN_EBOK_MOJ_TAURON_E2.md` z sekcją Wykonawca przed kodem; otwarte: data zmiany na G13 (eBOK vs pierwsza faktura), pkt 5 (3-strefowe liczniki, E4–E5).
+- **E2 ZROBIONE (28.10 w repo, niewydane; wydanie łączone z E3+)**: plan `docs/PLAN_EBOK_MOJ_TAURON_E2.md`; commit dev 20afef3 (haiku-worker, verifier ACCEPT). `ebok_client.read_contract` + parsery, `tariff_history.py` (`/data/tariff_periods.json`), job 07:00 zapisuje `state['contract']` i pushuje zmianę taryfy, czujnik `current_tariff`, opcja `current_tariff_override` (schema `str?`). Testy 1000 passed, 23 skipped. Data zmiany = dzień pierwszego wykrycia (decyzja domyślna).
+  - Długi nieblokujące E2: uszkodzony `tariff_periods.json` → `load()=[]` i nadpisanie historii; `state['contract']` z numerem umowy trafia do `/api/ebok/status`; ścieżka błędu `read_contract` w `ebok_payment_check` bez testu; schema bez `list()`.
+- **Następny: E3** (baza dynamiczna w add-onie: `tariff_job`, `web.py:1207`, UI, publisher z neutralnymi encjami `*_baseline`, edycja `tariff_periods` w UI). Wymaga planu `docs/PLAN_EBOK_MOJ_TAURON_E3.md` z sekcją Wykonawca przed kodem; pkt 5 (3-strefowe liczniki) w E4–E5.
 
 ## ZMIANA ZAKRESU (user, 27.10, po odrzuceniu planu) — STAN ROBOCZY / HANDOFF
 User: „będę zmieniał taryfę na G13. Gdy wykryjemy zmianę taryfy, wszystkie porównania mają pokazywać
