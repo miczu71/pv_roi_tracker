@@ -311,7 +311,7 @@ class _PayClient:
 
 def test_refresh_payments_error_is_swallowed_and_state_untouched(monkeypatch, tmp_path):
     m, sent, jobs = _patch_pay_env(monkeypatch, tmp_path)
-    m._refresh_payments(_PayClient(exc=RuntimeError('boom')), [_PayDoc('S/1')], date(2026, 10, 27))
+    assert m._refresh_payments(_PayClient(exc=RuntimeError("boom")), [_PayDoc("S/1")], date(2026, 10, 27)) is False
     assert not m.EBOK_PAYMENT_STATE_PATH.exists() and sent == []
     assert jobs == [('ebok_payment', False, 'odczyt wpłat nie powiódł się')]
 

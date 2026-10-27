@@ -291,9 +291,9 @@ def _payments_window_start(today: date) -> date:
     return today - relativedelta(months=13)
 
 
-def _refresh_payments(client, docs, today: date) -> None:
+def _refresh_payments(client, docs, today: date) -> bool:
     """Wpłaty z eBOK (ta sama sesja) → rozliczenie z dokumentami i fakturami → `_payments` w stanie
-    płatności + push przy nowej rozbieżności. Błąd odczytu nie psuje joba (poza blokadą logowania)."""
+    płatności + push przy nowej rozbieżności. Błąd odczytu nie psuje joba (poza blokadą logowania). True = odczyt się udał."""
     from . import ebok_client as _ec, invoice_store
     from . import payment_reminders as _pr
     try:
@@ -301,11 +301,13 @@ def _refresh_payments(client, docs, today: date) -> None:
         result = _pr.reconcile_payments(docs, payments, invoice_store.load(INVOICE_PATH).values())
         for msg in _pr.apply_reconciliation(EBOK_PAYMENT_STATE_PATH, result, today):
             _notify_ha('PV ROI Tracker — wpłaty', msg, target='kacper')
+        return True
     except _ec.EbokLoginBlocked:
         raise
     except Exception:
         logger.exception('eBOK: odczyt wpłat nie powiódł się')
         _record_job('ebok_payment', False, 'odczyt wpłat nie powiódł się')
+        return False
 
 
 def _payment_status_payload(today: date) -> dict:
@@ -775,7 +777,7 @@ def main() -> None:
             from . import ebok_client as _ec
             notifications = _pr.apply_refresh(docs, EBOK_PAYMENT_STATE_PATH, _date.today())
             _send_payment_notes(notifications)
-            _refresh_payments(client, docs, _date.today())
+            payments_ok = _refresh_payments(client, docs, _date.today())
 
             # Taryfa z portalu → stan umowy + historia taryf (błąd odczytu nie psuje joba).
             tariff_note = ''
@@ -808,7 +810,9 @@ def main() -> None:
             except Exception:
                 logger.exception('eBOK: odczyt taryfy z umowy nie powiódł się')
 
-            _record_job('ebok_payment', True, f'wysłano {len(notifications)} przypomnień{tariff_note}')
+            payments_note = '' if payments_ok else '; odczyt wpłat nie powiódł się'
+            _record_job('ebok_payment', payments_ok,
+                        f'wysłano {len(notifications)} przypomnień{payments_note}{tariff_note}')
             return {'ok': True, 'sent': len(notifications)}
 
         return _ebok_run('ebok_payment', 'Sprawdzenie terminu płatności',
