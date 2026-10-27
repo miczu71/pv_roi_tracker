@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.49.3] — 2026-10-27
+
+- **Diagnostyka eBOK:** `/api/ebok/diag-page` zwraca dodatkowo zamaskowany fragment HTML wokół numeru płatnika i początek odpowiedzi CSV faktur (po zmianie Taurona CSV nie zawiera już rozpoznawalnych wierszy po samym zalogowaniu). Wersja 0.49.2 była wydana z niepodbitym plikiem wersji — użyj 0.49.3.
+
 ## [0.49.1] — 2026-10-27
 
 Naprawa logowania do eBOK Taurona.
