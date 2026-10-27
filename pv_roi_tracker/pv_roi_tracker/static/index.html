@@ -241,6 +241,11 @@
                   <button type="button" id="tsimBtnC" aria-pressed="false" onclick="tsimSetVariant('C')">Wariant C</button>
                 </div>
                 <p id="tsimVariantNote" class="tsim-variant-note"></p>
+                <ul class="tsim-legend">
+                  <li><b>A</b> — bez magazynu: cały pobór z sieci wyceniony w każdej taryfie.</li>
+                  <li><b>B</b> — magazyn tak jak dziś: ładuje się tylko z nadwyżki PV.</li>
+                  <li><b>C</b> — magazyn plus ładowanie z sieci w tanich strefach, jeśli się opłaca (sugestie w karcie niżej).</li>
+                </ul>
               </div>
               <div class="tsim-ctl-row"><span class="tsim-ctl-lbl">Różnica</span>
                 <select id="tsimPair1" aria-label="Taryfa 1" onchange="tsimCtlChanged('pair')"></select>

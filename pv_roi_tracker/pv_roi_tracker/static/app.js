@@ -4680,23 +4680,11 @@ function _renderTsimRecon() {
     }).join('') + '</tbody>';
 }
 
-// Godziny startu [h, h+1) → zakresy: [21,22,23,0,1,2] → "21:00–03:00"; przedział przez północ łączony.
-function _tsimHourRanges(hs) {
-  const set = [...new Set((hs || []).map(Number).filter(h => h >= 0 && h < 24))].sort((a, b) => a - b);
-  if (!set.length) return '—';
-  if (set.length === 24) return 'cała doba';
-  const runs = [];
-  set.forEach(h => {
-    const last = runs[runs.length - 1];
-    if (last && last.e === h) last.e = h + 1;
-    else runs.push({ s: h, e: h + 1 });
-  });
-  if (runs.length > 1 && runs[0].s === 0 && runs[runs.length - 1].e === 24) {
-    const first = runs.shift();
-    runs[runs.length - 1].e = first.e;
-  }
-  const fmt = h => String(h % 24).padStart(2, '0') + ':00';
-  return runs.map(r => fmt(r.s) + '–' + fmt(r.e)).join(', ');
+// Okno {start,end} (godziny, end wyłączny) → "22:00–06:00".
+function _tsimSpan(w) {
+  if (w.start === 0 && w.end === 24) return 'cała doba';
+  const f = h => String(h % 24).padStart(2, '0') + ':00';
+  return f(w.start) + '–' + f(w.end);
 }
 
 let _tsimPlanT = null;
@@ -4716,11 +4704,15 @@ function _renderTsimPlan() {
   const p = plans[_tsimPlanT] || {};
   const cell = k => {
     const e = p[k];
-    if (!e) return '<td class="tsim-na">brak danych</td>';
-    return '<td><div><b>Ładuj z sieci:</b> ' + _esc(_tsimHourRanges(e.charge_hours)) + '</div>' +
-      '<div><b>Rozładuj:</b> ' + _esc(_tsimHourRanges(e.discharge_hours)) + '</div>' +
-      '<div class="tsim-reco-why">oszczędność doby: ' + _esc(e.avg_saving_pln == null ? '—' : _tsimNum(e.avg_saving_pln, 2) + ' zł') +
-      ' · dni z akcją ' + _esc(e.days ?? '–') + '/' + _esc(e.days_total ?? '–') + '</div></td>';
+    if (!e || !e.days_total) return '<td class="tsim-na">brak danych</td>';
+    const yr = e.saving_vs_b_pln_year == null ? '—' : Math.round(e.saving_vs_b_pln_year).toLocaleString('pl-PL');
+    if (!e.worth_it || !e.charge_window) {
+      return '<td><div><b>Nie ładuj z sieci</b></div><div class="tsim-reco-why">zysk ok. ' + _esc(yr) + ' zł/rok — nie warto</div></td>';
+    }
+    const dz = (e.discharge_zones || []).map(_tsimSpan).join(', ');
+    return '<td><div><b>Ładuj z sieci ' + _esc(_tsimSpan(e.charge_window)) + ' do ' + _esc(e.target_soc_pct) + '%</b></div>' +
+      '<div>Rozładuj: ' + _esc(dz || '—') + '</div>' +
+      '<div class="tsim-reco-why">oszczędność ok. ' + _esc(yr) + ' zł/rok</div></td>';
   };
   const sel = '<label class="tsim-lbl">Taryfa: <select aria-label="Taryfa planu" onchange="tsimSetPlanTariff(this.value)">' +
     ts.map(t => '<option value="' + _esc(t) + '"' + (t === _tsimPlanT ? ' selected' : '') + '>' + _esc(t) + '</option>').join('') +
@@ -4733,7 +4725,8 @@ function _renderTsimPlan() {
   const gb = l12.gross_b ? l12.gross_b[_tsimPlanT] : null;
   const gc = l12.gross_c ? l12.gross_c[_tsimPlanT] : null;
   const yr = (gb != null && gc != null)
-    ? '<p class="tsim-variant-note">Roczna oszczędność z optymalizacją (C) względem bez niej (B): ' + _esc(_tsimZl(gb - gc)) + '.</p>' : '';
+    ? '<p class="tsim-variant-note">Pułap (C, pełna wiedza o dobie z góry): ' + _esc(_tsimZl(gb - gc)) +
+      '/rok względem B. Sugestie powyżej to prosta reguła do JIT, więc oszczędzają mniej.</p>' : '';
   el.style.display = '';
   el.innerHTML = '<div class="tsim-reco-head">Jak ustawić ładowanie z sieci</div>' + sel + unconf + tbl + yr +
     '<p class="tsim-variant-note">' + _esc(_tsim.data.variant_c_note || '') + '</p>';
@@ -4751,7 +4744,7 @@ function _renderTsimBest() {
     const cls = diff == null ? '' : diff < 0 ? 'tsim-cheaper' : diff > 0 ? 'tsim-worse' : '';
     const first = i === 0 ? ' class="tsim-best"' : '';
     return '<tr><td' + first + '>' + _esc(r.tariff) + '</td><td' + first + '>' + _esc(r.variant) + '</td><td' + first + '>' +
-      Math.round(r.gross).toLocaleString('pl-PL') + ' zł</td><td class="' + cls + '"' + first + '>' +
+      (r.gross == null ? '—' : Math.round(r.gross).toLocaleString('pl-PL') + ' zł') + '</td><td class="' + cls + '"' + first + '>' +
       (diff == null ? '—' : _tsimSigned(diff)) + '</td><td' + first + '>' +
       (r.confirmed ? '' : '<span class="tsim-badge-unconf">niepotwierdzony</span>') + '</td></tr>';
   }).join('');

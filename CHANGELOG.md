@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.49.0] — 2026-10-27
+
+Sugestie ładowania magazynu z sieci, wyjaśnienie wariantów A/B/C i poprawka wariantu C.
+
+- **Karta „Jak ustawić ładowanie z sieci” pokazuje sugestie** dla każdej taryfy, sezonu i typu dnia: okno ładowania z sieci, docelowy SoC (krok 10%), strefy rozładowania i szacowaną oszczędność na rok względem wariantu B. Gdy zysk jest poniżej 20 zł/rok albo przy tym koszcie zużycia się nie opłaca, komórka mówi „Nie ładuj z sieci” z kwotą. Sugestia to prosta reguła do przeniesienia do własnej automatyki; add-on niczego nie steruje.
+- **Linia „Pułap (C)”** pod tabelą: roczny zysk wariantu C (pełna wiedza o dobie) względem B, dla porównania z sugestiami.
+- **Legenda A/B/C** przy przełączniku wariantu: A bez magazynu, B magazyn jak dziś (ładowanie z PV), C magazyn plus ładowanie z sieci.
+- **Poprawka wariantu C:** C nie jest już gorszy od B. Stan naładowania przechodzi między dobami (wcześniej resetował się o północy), a w miesiącu liczony jest lepszy z planowania dobowego i ciągłej polityki B. Wartości `gross_c` mogą się zmienić względem 0.48.0.
+- **API** `/api/tariff_sim`: `plans[taryfa][grupa]` ma teraz `charge_window`, `target_soc_pct`, `discharge_zones`, `saving_vs_b_pln_year`, `worth_it`, `days_total`; usunięte pola `charge_hours`, `discharge_hours`, `days`, `avg_saving_pln`, `avg_grid_kwh`.
+- Ranking roczny: brak błędu przy pustej wartości kosztu.
+- Dokumentacja: `docs/ROADMAP_GRIDCHARGE_SUGGEST.md`.
+
 ## [0.48.0] — 2026-10-26
 
 G13s w symulacji taryf, planowanie ładowania magazynu z sieci i najlepszy wariant roczny.

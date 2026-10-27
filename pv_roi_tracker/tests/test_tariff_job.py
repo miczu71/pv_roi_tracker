@@ -368,7 +368,7 @@ def test_w_okresie_cennika_brak_catalog_ends(cat):
 # ── wariant C, best_year, recommend (E3) ─────────────────────────────────────
 
 def _fake_c(savings_for):
-    """savings_for(ym, taryfa) -> oszczędność lub None; zwraca (monthly, plans)."""
+    """savings_for(ym, taryfa) -> oszczędność lub None; zwraca monthly."""
     def fake(hours, cfg, catalog, rdn, kompas, rcem, from_ym, to_ym, *a, **k):
         out = {}
         y, m = int(from_ym[:4]), int(from_ym[5:7])
@@ -383,10 +383,7 @@ def _fake_c(savings_for):
             m += 1
             if m > 12:
                 y, m = y + 1, 1
-        plans = {"G12w": {"winter_workday": {"charge_hours": [1], "discharge_hours": [18],
-                                             "days": 1, "days_total": 2,
-                                             "avg_saving_pln": 1.0, "avg_grid_kwh": 2.0}}}
-        return out, plans
+        return out
     return fake
 
 

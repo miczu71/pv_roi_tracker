@@ -184,5 +184,5 @@ def test_e3_tsim_variant_c_plan_best_ids_and_js():
     for i in ('tsimBtnC', 'tsimPlan', 'tsimBest', 'tsimFeeG13s'):
         assert html.count(f'id="{i}"') == 1, i
     js = _static('app.js')
-    for needle in ('_tsimHasC', '_tsimHourRanges', 'best_year'):
+    for needle in ('_tsimHasC', '_tsimSpan', 'best_year'):
         assert needle in js, needle

@@ -182,9 +182,10 @@ def compute_payload(import_by_hour: dict, catalog: dict, settings: Optional[Tari
     if with_b:
         _attach_variant_b(months, tariff_battery.simulate_variant_b(
             hours, battery_cfg, catalog, rdn, kompas, rcem_by_ym or {}, from_ym, to_ym, soc_floor=tariff_grid_charge.SOC_FLOOR))
-        c_monthly, c_plans = tariff_grid_charge.simulate_variant_c(
+        _attach_variant_c(months, tariff_grid_charge.simulate_variant_c(
+            hours, battery_cfg, catalog, rdn, kompas, rcem_by_ym or {}, from_ym, to_ym))
+        plans = tariff_grid_charge.suggest_plans(
             hours, battery_cfg, catalog, rdn, kompas, rcem_by_ym or {}, from_ym, to_ym)
-        _attach_variant_c(months, c_monthly)
 
     cur = months.get(to_ym) or {}
     current = {t: (cur[t]['gross'] if _usable(cur.get(t), False) else None) for t in TARIFFS}
@@ -250,13 +251,13 @@ def compute_payload(import_by_hour: dict, catalog: dict, settings: Optional[Tari
     if with_b:
         payload['current_month']['gross_b'] = current_b
         payload['current_month']['gross_c'] = current_c
-        payload['plans'] = c_plans
+        payload['plans'] = plans
         payload['variant_b_note'] = ('Wariant B: gross_b = gross − oszczędność modułu magazynu '
                                      '(bez ceny modułu; zwrot w zakładce Magazyn; SoC ≥ 16%)')
         payload['variant_c_note'] = ('Wariant C to pułap: zna dobę z góry i planuje ładowanie z sieci. '
                                      'SoC dolny 16%, zakres 16→100%; do 2 cykli na dobę; '
-                                     'C startuje każdą dobę z dolnego SoC (B przenosi SoC między dobami); '
-                                     'ceny G13s są niepotwierdzone')
+                                     'SoC przenoszony między dobami; w miesiącu liczony lepszy z planowania '
+                                     'i polityki B; ceny G13s są niepotwierdzone')
     return payload
 
 
