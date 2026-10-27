@@ -483,3 +483,8 @@ def test_parsed_documents_feed_payment_reminders(tmp_path):
     assert [n['signature'] for n in notes] == [unpaid.signature]
     active = select_active_payment(load_payment_state(path), today)
     assert active['signature'] == unpaid.signature
+
+
+def test_paid_status_comparison_ignores_case_and_spaces():
+    data = {'Documents': [{'DocSignature': 'T/K1/BN111111/0001/26', 'Status': ' OPŁACONA '}]}
+    assert parse_documents_json(data)[0].paid is True

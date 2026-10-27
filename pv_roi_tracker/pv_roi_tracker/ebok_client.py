@@ -51,6 +51,7 @@ PAGE_SIZE = 100
 MAX_PAGES = 10  # safety cap: 1000 dokumentów
 # Status dokumentu uznawany za zapłacony; każdy inny = niezapłacony (słownik poznajemy z logów).
 PAID_STATUSES = {'Opłacona', 'Rozliczono', 'Zapłacona'}
+_PAID_FOLDED = {s.casefold() for s in PAID_STATUSES}
 
 
 class EbokError(Exception):
@@ -276,6 +277,11 @@ def _to_float(raw) -> Optional[float]:
         return None
 
 
+def _is_paid_status(status: str) -> bool:
+    """Porównanie bez wielkości liter i otaczających spacji (słownik portalu jest nieznany)."""
+    return status.strip().casefold() in _PAID_FOLDED
+
+
 def parse_documents_json(data: dict) -> list:
     """Map the GetDocuments payload to EbokDocument objects (rows without a signature are skipped).
     Statuses outside PAID_STATUSES are logged once, to learn the portal's vocabulary."""
@@ -286,7 +292,7 @@ def parse_documents_json(data: dict) -> list:
         if not sig:
             continue
         status = (row.get('Status') or '').strip()
-        if status not in PAID_STATUSES:
+        if not _is_paid_status(status):
             unknown.add(status)
         issued = _parse_date(row.get('IssueDateFormatted')) or _parse_date(row.get('IssueDate'))
         url = row.get('Url') or None
@@ -301,7 +307,7 @@ def parse_documents_json(data: dict) -> list:
             issued_on=issued.strftime('%d.%m.%Y') if issued else '',
             amount_gross_pln=_to_float(row.get('AmountGross')),
             due_date=_parse_date(row.get('PaymentDate')),
-            paid=status in PAID_STATUSES,
+            paid=_is_paid_status(status),
             pdf_url=url,
             status=status,
             doc_type=(row.get('DocType') or '').strip(),
