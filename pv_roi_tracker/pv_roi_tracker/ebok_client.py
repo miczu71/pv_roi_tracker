@@ -160,7 +160,6 @@ class EbokClient:
                             '(serwer nadal zwraca stronę logowania)')
         return r
 
-
     def select_payer(self, payer_id: str) -> None:
         """Reads the client checksum of `payer_id` from the documents archive page;
         it is required by the JSON API."""
@@ -335,6 +334,7 @@ def is_known(signature: str, known: set) -> bool:
 
 def _mask(text: str, payer_id: str) -> str:
     """Wycina numer płatnika i adresy e-mail z fragmentu diagnostycznego."""
-    text = text.replace(str(payer_id), '<płatnik>')
+    if payer_id:
+        text = text.replace(str(payer_id), '<płatnik>')
     return re.sub(r'[\w.+-]+@[\w-]+\.[\w.]+', '<email>', re.sub(r'\s+', ' ', text))
 

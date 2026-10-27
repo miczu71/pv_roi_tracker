@@ -11,6 +11,7 @@ Jobs:
 """
 from __future__ import annotations
 
+from datetime import date
 import logging
 import os
 from pathlib import Path
@@ -251,7 +252,13 @@ def _health_snapshot() -> tuple[str, dict]:
     return state, attrs
 
 
+EBOK_DATE_FROM = date(2015, 1, 1)  # filtr eBOK po dacie wystawienia, zakres szeroki
 MAX_NEW_PER_SYNC = 5  # bezpiecznik: więcej „brakujących” to raczej zmiana formatu sygnatur niż nowe faktury
+
+
+def _ebok_newest(docs, n: int = 3) -> list:
+    """n najnowszych dokumentów wg daty wystawienia (DD.MM.YYYY)."""
+    return sorted(docs, key=lambda d: d.issued_on.split('.')[::-1])[-n:]
 
 
 def _ebok_missing_documents(docs, known: set) -> tuple:
@@ -583,7 +590,7 @@ def main() -> None:
             if EBOK_PAYER_ID:
                 client.select_payer(EBOK_PAYER_ID)
 
-            date_from = _date(2015, 1, 1)  # filtr po dacie wystawienia, zakres szeroki
+            date_from = EBOK_DATE_FROM
             date_to = _date.today()
             docs = client.list_documents(date_from, date_to)
             return body(client, docs, state, date_from, date_to)
@@ -633,9 +640,7 @@ def main() -> None:
             existing = invoice_store.load(INVOICE_PATH)
             known_numbers = _ec.known_signatures(existing.values())
             missing, over_limit = _ebok_missing_documents(docs, known_numbers)
-            diag = {'total': len(docs),
-                    'latest': [d.signature for d in sorted(
-                        docs, key=lambda d: d.issued_on.split('.')[::-1])[-3:]]}
+            diag = {'total': len(docs), 'latest': [d.signature for d in _ebok_newest(docs)]}
             logger.info('eBOK: %d dok., brakujących %d', len(docs), len(missing))
 
             refresh_payment_bar(docs)
@@ -733,25 +738,20 @@ def main() -> None:
         client = _ec.EbokClient(EBOK_USERNAME, EBOK_PASSWORD)
 
         def mask(text: str) -> str:
-            return _ec._mask(text, EBOK_PAYER_ID or '\0')
+            return _ec._mask(text, EBOK_PAYER_ID)
 
         try:
             client.login()
             if EBOK_PAYER_ID:
                 client.select_payer(EBOK_PAYER_ID)
-            docs = client.list_documents(_date(2015, 1, 1), _date.today())
+            docs = client.list_documents(EBOK_DATE_FROM, _date.today())
             known = _ec.known_signatures(invoice_store.load(INVOICE_PATH).values())
-            newest = sorted(docs, key=lambda d: d.issued_on.split('.')[::-1])[-3:]
-            result = {
-                'total': len(docs),
-                'newest': [f'{d.issued_on} {d.signature} | {d.status}' for d in newest],
-                'statuses': sorted({d.status for d in docs}),
-                'unknown': [f'{d.issued_on} {d.signature} | {d.doc_name}'
-                            for d in docs if not _ec.is_known(d.signature, known)],
-            }
-            return {'ok': True, 'total': result['total'], 'statuses': result['statuses'],
-                    'newest': [mask(t) for t in result['newest']],
-                    'unknown': [mask(t) for t in result['unknown']]}
+            return {'ok': True, 'total': len(docs),
+                    'statuses': sorted({d.status for d in docs}),
+                    'newest': [mask(f'{d.issued_on} {d.signature} | {d.status}')
+                               for d in _ebok_newest(docs)],
+                    'unknown': [mask(f'{d.issued_on} {d.signature} | {d.doc_name}')
+                                for d in docs if not _ec.is_known(d.signature, known)]}
         except Exception as exc:
             return {'ok': False, 'error': mask(str(exc))}
 

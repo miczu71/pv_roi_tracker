@@ -452,3 +452,9 @@ def test_known_signatures_uses_invoice_number_and_ebok_filename():
     assert is_known('T/K1/X/0017/26', known) and is_known('T/K1/0262015/25', known)
     assert is_known('T/K1/0262015/25', known_signatures([{'filename': 'T_K1_0262015_25.pdf'}]))
     assert not is_known('T/K1/X/0018/26', known)
+
+
+def test_mask_hides_payer_and_email_and_tolerates_empty_payer():
+    from pv_roi_tracker.ebok_client import _mask
+    assert _mask('płatnik 11111111 a@b.pl', '11111111') == 'płatnik <płatnik> <email>'
+    assert _mask('abc', '') == 'abc'

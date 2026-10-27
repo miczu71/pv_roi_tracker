@@ -2385,9 +2385,10 @@ async function ebokSync() {
       parts.push(imported.length ? 'Pobrano: ' + imported.join(', ') : 'Brak nowych dokumentów');
       if ((d.needs_training || []).length)
         parts.push('⚠ trening: ' + d.needs_training.join(', '));
-      if ((d.not_found || []).length)
-        parts.push('⚠ nie pobrano PDF: ' + d.not_found.join(', '));
-      msg.className = (d.needs_training || []).length || (d.not_found || []).length ? '' : 'ok';
+      const notFound = d.not_found || [];
+      if (notFound.length)
+        parts.push('⚠ nie pobrano PDF: ' + notFound.join(', '));
+      msg.className = (d.needs_training || []).length || notFound.length ? '' : 'ok';
       msg.textContent = parts.join('; ');
       if (imported.length) setTimeout(loadData, 1500);
     } else if (d.blocked) {
