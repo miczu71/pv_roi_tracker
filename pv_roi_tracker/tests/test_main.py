@@ -11,7 +11,7 @@ from datetime import date
 from pv_roi_tracker.main import (
     previous_month, month_present, month_has_data,
     _months_since_commissioning, _heal_month_if_needed, _heal_action,
-    _format_heatpump_push_line,
+    _format_heatpump_push_line, _ebok_missing_documents, MAX_NEW_PER_SYNC,
 )
 from pv_roi_tracker.models import MonthlyRecord
 
@@ -211,3 +211,31 @@ def test_format_heatpump_push_line_handles_missing_coverage():
 def test_format_heatpump_push_line_rounds_to_whole_numbers():
     line = _format_heatpump_push_line(_hp_month(kwh_total=0.4, kwh_heating=0.0, kwh_dhw=0.4))
     assert 'Pompa ciepła: 0 kWh (grzanie 0 / CWU 0)' in line
+
+
+# ── _ebok_missing_documents (bezpiecznik importu eBOK) ───────────────────────
+
+class _Doc:
+    def __init__(self, signature):
+        self.signature = signature
+
+
+def test_ebok_missing_documents_returns_unknown_only():
+    from pv_roi_tracker.ebok_client import known_signatures
+    known = known_signatures([{'invoice_number': 'T/K1/BN111111/0001/26'}])
+    docs = [_Doc('T/K1/BN111111/0001/26'), _Doc('T/K1/BN111111/0002/26')]
+    missing, over = _ebok_missing_documents(docs, known)
+    assert [d.signature for d in missing] == ['T/K1/BN111111/0002/26'] and over is False
+
+
+def test_ebok_missing_documents_at_limit_is_allowed():
+    docs = [_Doc(f'T/K1/BN111111/{i:04d}/26') for i in range(MAX_NEW_PER_SYNC)]
+    missing, over = _ebok_missing_documents(docs, set())
+    assert len(missing) == MAX_NEW_PER_SYNC and over is False
+
+
+def test_ebok_missing_documents_over_limit_flags_overflow():
+    assert MAX_NEW_PER_SYNC == 5
+    docs = [_Doc(f'T/K1/BN111111/{i:04d}/26') for i in range(MAX_NEW_PER_SYNC + 1)]
+    missing, over = _ebok_missing_documents(docs, set())
+    assert len(missing) == 6 and over is True

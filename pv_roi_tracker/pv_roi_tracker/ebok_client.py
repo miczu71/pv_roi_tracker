@@ -1,48 +1,56 @@
 """
-Client for TAURON eBOK (ebok.tauron.pl) — logs in via Keycloak, lists invoice
-documents for a payer, and downloads their PDFs.
+Client for the TAURON customer portal "Mój TAURON" (moj.tauron.pl, ex-eBOK) — logs in
+via Keycloak, lists invoice documents for a payer and downloads their PDFs.
 
-Findings from the Etap 1 spike (docs/ROADMAP_EBOK_IMPORT.md):
-  • Login: Keycloak `kc-form-login` — same flow as PiotrMachowski/Tauron-AMIplus
-    connector.py, no captcha/OTP observed.
-  • Client selection: GET /wyborKlienta/id/<client_id> (payer → client id mapping
-    is read from /wyborKlienta itself, see `find_client_id`).
-  • Listing: the CSV export (/content/platnosci/csv/dataOd/.../dataDo/.../type/
-    archiwumFaktur) returns the FULL matching history in one request, windows-1250
-    encoded, but has no numeric id — only the HTML archive page maps
-    SYGNATURA → numeric id (used to download the PDF), max 50 rows/page,
-    paginated as /content/platnosci/archiwumFaktur/page/<n>/display/50/...
-  • PDF: GET /podgladFaktury/id/<numeric_id> returns the PDF bytes directly.
+Since 26.10.2026 the old ebok.tauron.pl endpoints (client picker, CSV export, HTML
+archive and invoice preview) are gone. The portal is a Sitecore site with a JSON API
+(probe of 27.10.2026, docs/ROADMAP_EBOK_MOJ_TAURON.md):
+  • Login: Keycloak `kc-form-login` on logowanie.tauron.pl with service=moj.tauron.pl
+    (same flow as before, no captcha/OTP observed).
+  • Payer: GET /Home/Pages/archiwum-dokumentow carries one
+    `data-client-number="<payer>" data-client-checksum="<64 hex>"` div per supply
+    point; the checksum of the chosen payer is required by the JSON API
+    (`select_payer`, `parse_client_checksum`).
+  • Listing: GET /api/sitecore/EbokArchiveDocuments/GetDocuments (rangeFrom/rangeTo
+    paging, from/to filter = issue date) → JSON {Status, TotalNumber, Documents}
+    (`list_documents`, `parse_documents_json`).
+  • PDF: GET the document's `Url` → JSON {Status, Document: <base64 PDF>}
+    (`download_pdf`).
 
 Kept dependency-free (only `requests`, already in requirements.txt). All network
 calls go through `self._session` (a requests.Session, or any object exposing a
 compatible `.get`/`.post`), injected in the constructor so tests can substitute
 a fake session without an extra mocking library. Parsing helpers are plain
-functions with no I/O, testable directly on captured HTML/CSV fixtures.
+functions with no I/O, testable directly on captured fixtures.
 """
 from __future__ import annotations
 
-import csv
-import io
+import base64
+import binascii
+import json
 import logging
 import re
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from typing import Callable, Optional
+from urllib.parse import urlencode
 
 import requests
 
 logger = logging.getLogger(__name__)
 
-MAX_ARCHIVE_ONLY = 5   # bezpiecznik: tyle dokumentów naraz importujemy tylko z archiwum HTML
 LOGIN_URL = 'https://logowanie.tauron.pl/realms/ext/protocol/cas/login'
-SERVICE = 'https://ebok.tauron.pl'
+SERVICE = 'https://moj.tauron.pl'
+SYSTEM = 'T18'
 USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64) pv_roi_tracker/ebok-sync'
 REQUEST_TIMEOUT = 45
 ARCHIVE_TIMEOUT = 60
 RETRY_DELAYS = (10, 30, 90)  # s przed kolejnymi ponowieniami GET po timeoucie / błędzie połączenia
-MAX_ARCHIVE_PAGES = 20  # safety cap — well above what 100s of invoices would need at 50/page
+PAGE_SIZE = 100
+MAX_PAGES = 10  # safety cap: 1000 dokumentów
+# Status dokumentu uznawany za zapłacony; każdy inny = niezapłacony (słownik poznajemy z logów).
+PAID_STATUSES = {'Opłacona', 'Rozliczono', 'Zapłacona'}
 
 
 class EbokError(Exception):
@@ -58,20 +66,22 @@ class EbokLoginBlocked(EbokError):
 
 
 class EbokLayoutChanged(EbokError):
-    """Expected page structure (login form, CSV columns, archive rows, ...) not found —
+    """Expected page structure (login form, JSON payload, ...) not found —
     Tauron likely changed their frontend."""
 
 
 @dataclass
 class EbokDocument:
-    """One row from the eBOK invoice archive CSV."""
-    signature: str                          # SYGNATURA, e.g. "T/K1/BN567872/0017/26"
-    doc_name: str                           # NAZWA DOKUMENTU, e.g. "Faktura rzeczywista"
-    issued_on: str                          # DATA WYSTAWIENIA, "DD.MM.YYYY"
+    """One document from the Mój TAURON archive (GetDocuments)."""
+    signature: str                          # DocSignature, e.g. "T/K1/BN111111/0017/26"
+    doc_name: str                           # DocKindValue, e.g. "Faktura rzeczywista"
+    issued_on: str                          # IssueDateFormatted, "DD.MM.YYYY"
     amount_gross_pln: Optional[float]
-    due_date: Optional[date] = None         # TERMIN PŁATNOŚCI — None for docs without one (e.g. noty)
-    paid: bool = False                      # ZAPŁACONA — only "zapłacona" counts as paid
-    numeric_id: Optional[str] = None        # filled in later by locate_ids()
+    due_date: Optional[date] = None         # PaymentDate — None for docs without one (e.g. noty)
+    paid: bool = False                      # Status in PAID_STATUSES
+    pdf_url: Optional[str] = None           # absolute URL of GetDocumentImage
+    status: str = ''                        # raw Status ("Opłacona", "Rozliczono", ...)
+    doc_type: str = ''                      # DocType: FV / FK / NB
 
 
 class EbokClient:
@@ -91,11 +101,13 @@ class EbokClient:
         self._session = session or requests.Session()
         self._sleep = sleep
         self._logged_in = False
+        self._payer_id: Optional[str] = None
+        self._checksum: Optional[str] = None
 
     def _get_retrying(self, *args, **kwargs):
         """session.get z ponowieniami po timeoucie / błędzie połączenia (kolejne
-        próby po RETRY_DELAYS; incydent 2026-10-19: jednorazowy ReadTimeout na
-        /wyborKlienta zostawił health `degraded` do następnego joba). Tylko GET —
+        próby po RETRY_DELAYS; incydent 2026-10-19: jednorazowy ReadTimeout
+        przy wyborze płatnika zostawił health `degraded` do następnego joba). Tylko GET —
         POST logowania nigdy nie jest ponawiany, bo powtórki zbliżają konto do
         blokady Taurona."""
         for delay in RETRY_DELAYS:
@@ -132,8 +144,8 @@ class EbokClient:
     def _get(self, url: str, timeout: int):
         """GET within the logged-in session. Tauron expires the Keycloak session
         server-side while `_logged_in` stays True, and an expired session answers
-        with the login page at status 200 (incident 2026-10-01: /wyborKlienta
-        without client rows → misleading "Płatnik nie znaleziony"). On a login
+        with the login page at status 200 (incident 2026-10-01: strona wyboru
+        klienta bez wierszy → mylące "Płatnik nie znaleziony"). On a login
         page: log in again and retry once; still a login page → EbokError."""
         self.login()
         r = self._get_retrying(url, headers={'User-Agent': USER_AGENT}, timeout=timeout)
@@ -148,186 +160,152 @@ class EbokClient:
                             '(serwer nadal zwraca stronę logowania)')
         return r
 
-    def select_client(self, client_id: str) -> None:
-        r = self._get(f'{SERVICE}/wyborKlienta/id/{client_id}', REQUEST_TIMEOUT)
-        if r.status_code != 200:
-            raise EbokError(f'Wybór klienta {client_id} nie powiódł się (status {r.status_code})')
-
-    def find_client_id(self, payer_id: str) -> Optional[str]:
-        """Look up the internal client id for a given payer number (SYGNATURA-style
-        'Nr płatnika', e.g. '60567872') from the /wyborKlienta landing page."""
-        r = self._get(f'{SERVICE}/wyborKlienta', REQUEST_TIMEOUT)
-        if r.status_code != 200:
-            raise EbokError(f'Pobranie /wyborKlienta nie powiodło się (status {r.status_code})')
-        client_id = parse_client_id_for_payer(r.text, payer_id)
-        if client_id is None:
-            logger.warning('eBOK: /wyborKlienta bez płatnika — %s', summarize_client_page(r.text, payer_id))
-        return client_id
 
     def select_payer(self, payer_id: str) -> None:
-        """Wybiera płatnika. Gdy /wyborKlienta nie ma listy klientów, tylko stronę
-        główną z numerem płatnika (od 26.10.2026 Tauron sam wybiera jedynego klienta
-        i przekierowuje), uznaje go za już wybranego."""
-        r = self._get(f'{SERVICE}/wyborKlienta', REQUEST_TIMEOUT)
+        """Reads the client checksum of `payer_id` from the documents archive page;
+        it is required by the JSON API."""
+        r = self._get(f'{SERVICE}/Home/Pages/archiwum-dokumentow', REQUEST_TIMEOUT)
         if r.status_code != 200:
-            raise EbokError(f'Pobranie /wyborKlienta nie powiodło się (status {r.status_code})')
-        client_id = parse_client_id_for_payer(r.text, payer_id)
-        if client_id is not None:
-            self.select_client(client_id)
-            return
-        if '/wyborKlienta/id/' not in r.text and str(payer_id) in r.text:
-            logger.info('eBOK: klient wybrany automatycznie (strona główna zamiast listy)')
-            return
-        logger.warning('eBOK: /wyborKlienta bez płatnika — %s', summarize_client_page(r.text, payer_id))
-        raise EbokError(f'Płatnik {payer_id} nie znaleziony na /wyborKlienta')
-
-    def probe_home(self, payer_id: str) -> dict:
-        """Tylko odczyt: zarys strony głównej po zalogowaniu (zob. summarize_home_page)."""
-        r = self._get(f'{SERVICE}/wyborKlienta', REQUEST_TIMEOUT)
-        out = {'status': r.status_code, **summarize_home_page(r.text, payer_id)}
-        out['payer_html'] = payer_html_context(r.text, payer_id)
-        today = date.today()
-        c = self._get(f'{SERVICE}/content/platnosci/csv/dataOd/2022-01-01/dataDo/'
-                      f'{(today + timedelta(days=365)).isoformat()}/type/archiwumFaktur', ARCHIVE_TIMEOUT)
-        out['csv_probe'] = {'status': c.status_code, 'bytes': len(c.content),
-                            'head': _mask(c.content[:400].decode('windows-1250', errors='replace'), payer_id)}
-        return out
+            raise EbokError(f'Pobranie archiwum dokumentów nie powiodło się (status {r.status_code})')
+        checksum = parse_client_checksum(r.text, payer_id)
+        if checksum is None:
+            raise EbokError(f'Płatnik {payer_id} nie znaleziony na liście punktów')
+        self._payer_id = str(payer_id)
+        self._checksum = checksum
 
     # ── listing ──────────────────────────────────────────────────────────────
 
     def list_documents(self, date_from: date, date_to: date) -> list[EbokDocument]:
-        """Full invoice history for the currently-selected client via the CSV
-        export — one request, no pagination needed."""
-        url = (f'{SERVICE}/content/platnosci/csv/dataOd/{date_from.isoformat()}'
-               f'/dataDo/{date_to.isoformat()}/type/archiwumFaktur')
-        r = self._get(url, ARCHIVE_TIMEOUT)
-        if r.status_code != 200:
-            raise EbokError(f'Pobranie CSV faktur nie powiodło się (status {r.status_code})')
-        docs = parse_documents_csv(r.content)
-        if r.content and not docs:
-            raise EbokLayoutChanged('CSV faktur nie zawiera rozpoznawalnych wierszy — sprawdź format')
+        """Documents issued between the dates (inclusive) for the selected payer,
+        fetched in pages of PAGE_SIZE (at most MAX_PAGES)."""
+        if not self._checksum or not self._payer_id:
+            raise EbokError('Nie wybrano płatnika (select_payer)')
+        docs: list[EbokDocument] = []
+        for page in range(MAX_PAGES):
+            range_from = page * PAGE_SIZE + 1
+            query = urlencode({
+                'rangeFrom': range_from, 'rangeTo': range_from + PAGE_SIZE - 1,
+                'clientNumber': self._payer_id, 'clientNumberCheckSum': self._checksum,
+                'system': SYSTEM, 'from': date_from.strftime('%d.%m.%Y'),
+                'to': date_to.strftime('%d.%m.%Y'), 'docKind': 'All', 'docNumber': '',
+            })
+            r = self._get(f'{SERVICE}/api/sitecore/EbokArchiveDocuments/GetDocuments?{query}',
+                          ARCHIVE_TIMEOUT)
+            if r.status_code != 200:
+                raise EbokError(f'Pobranie listy dokumentów nie powiodło się (status {r.status_code})')
+            data = _json_or_layout_error(r, 'lista dokumentów')
+            batch = parse_documents_json(data)
+            docs.extend(batch)
+            total = data.get('TotalNumber')
+            if not batch or not isinstance(total, int) or len(docs) >= total:
+                break
+        else:
+            logger.warning('eBOK: lista dokumentów obcięta do %d stron (%d dok.)', MAX_PAGES, len(docs))
         return docs
 
-    def archive_page_ids(self, date_from: date, date_to: date) -> dict:
-        """SYGNATURA → numeric id for the first (newest) archive HTML page. Second
-        source next to the CSV: on 2026-10-18 the CSV export returned 8 rows
-        (77 in the spike) and omitted a freshly issued invoice that the archive
-        page listed."""
-        url = (f'{SERVICE}/content/platnosci/archiwumFaktur/page/1/display/50'
-               f'/dataOd/{date_from.isoformat()}/dataDo/{date_to.isoformat()}')
-        r = self._get(url, ARCHIVE_TIMEOUT)
+    def download_pdf(self, pdf_url: str) -> bytes:
+        r = self._get(pdf_url, REQUEST_TIMEOUT)
         if r.status_code != 200:
-            raise EbokError(f'Pobranie archiwum (strona 1) nie powiodło się (status {r.status_code})')
-        return parse_archive_html(r.text)
-
-    def diagnose(self, needle: str, today: date) -> dict:
-        """Read-only probe: czy dokument `needle` (np. "0018/26") jest widoczny w CSV,
-        w archiwum HTML (różne zakresy dat) i na innych stronach płatności. Zwraca
-        tylko liczby, sygnatury i adresy linków — bez kwot i danych osobowych."""
-        def fetch(path: str):
-            try:
-                r = self._get(f'{SERVICE}{path}', ARCHIVE_TIMEOUT)
-                return r.status_code, r
-            except Exception as exc:  # timeout itp. — raportujemy, nie przerywamy
-                return f'ERR {type(exc).__name__}', None
-
-        tomorrow = today + timedelta(days=1)
-        out: dict = {'needle': needle, 'csv': [], 'archive_html': [], 'pages': []}
-        for label, d_to in (('dziś+1', tomorrow), ('dziś+30', today + timedelta(days=30))):
-            st, r = fetch(f'/content/platnosci/csv/dataOd/2022-01-01/dataDo/{d_to.isoformat()}/type/archiwumFaktur')
-            docs = parse_documents_csv(r.content) if r is not None and st == 200 else []
-            newest = sorted(docs, key=lambda d: d.issued_on.split('.')[::-1])[-3:]
-            out['csv'].append({'dataDo': label, 'status': st, 'rows': len(docs),
-                               'has_needle': any(needle in d.signature for d in docs),
-                               'newest': [f'{d.issued_on} {d.signature}' for d in newest]})
-        for label, d_from in (('365 dni', today - timedelta(days=365)), ('120 dni', today - timedelta(days=120)),
-                              ('od 2022', date(2022, 1, 1))):
-            st, r = fetch(f'/content/platnosci/archiwumFaktur/page/1/display/50'
-                          f'/dataOd/{d_from.isoformat()}/dataDo/{tomorrow.isoformat()}')
-            html = r.text if r is not None and st == 200 else ''
-            sigs = sorted(parse_archive_html(html))
-            out['archive_html'].append({'zakres': label, 'status': st, 'rows': len(sigs),
-                                        'has_needle': needle in html, 'newest': sigs[:3]})
-        for path in ('/platnosci', '/content/platnosci', '/faktury', '/content/platnosci/faktury',
-                     '/content/platnosci/biezace', '/content/platnosci/fakturyDoZaplaty'):
-            st, r = fetch(path)
-            html = r.text if r is not None and st == 200 else ''
-            links = sorted(set(re.findall(r'href="(/[^"#?]*(?:faktur|platnosc|rozlicz)[^"#?]*)"', html, re.I)))[:12]
-            out['pages'].append({'path': path, 'status': st, 'has_needle': needle in html, 'links': links})
-        return out
-
-    def locate_ids(self, signatures: set, date_from: date, date_to: date) -> dict:
-        """Map SYGNATURA → numeric podgladFaktury id by paginating the HTML
-        archive page. Stops early once every requested signature is found."""
-        found: dict = {}
-        remaining = set(signatures)
-        page = 1
-        while remaining and page <= MAX_ARCHIVE_PAGES:
-            url = (f'{SERVICE}/content/platnosci/archiwumFaktur/page/{page}/display/50'
-                   f'/dataOd/{date_from.isoformat()}/dataDo/{date_to.isoformat()}')
-            r = self._get(url, ARCHIVE_TIMEOUT)
-            if r.status_code != 200:
-                raise EbokError(f'Pobranie archiwum (strona {page}) nie powiodło się '
-                                 f'(status {r.status_code})')
-            page_map = parse_archive_html(r.text)
-            if not page_map:
-                break  # no more pages
-            for sig, doc_id in page_map.items():
-                if sig in remaining:
-                    found[sig] = doc_id
-                    remaining.discard(sig)
-            page += 1
-        return found
-
-    def download_pdf(self, numeric_id: str) -> bytes:
-        r = self._get(f'{SERVICE}/podgladFaktury/id/{numeric_id}', REQUEST_TIMEOUT)
-        if r.status_code != 200 or not r.content.startswith(b'%PDF'):
-            raise EbokError(f'Pobranie PDF id={numeric_id} nie powiodło się '
-                             f'(status {r.status_code})')
-        return r.content
+            raise EbokError(f'Pobranie PDF nie powiodło się (status {r.status_code})')
+        data = _json_or_layout_error(r, 'PDF')
+        try:
+            pdf = base64.b64decode(data.get('Document') or '', validate=False)
+        except (binascii.Error, ValueError, TypeError) as exc:
+            raise EbokError(f'Pobranie PDF: niepoprawne dane base64 ({exc})') from exc
+        if not pdf.startswith(b'%PDF'):
+            raise EbokError('Pobranie PDF: odpowiedź nie jest plikiem PDF')
+        return pdf
 
 
 def _is_login_page(r) -> bool:
     return b'id="kc-form-login"' in (r.content or b'')
 
 
+def _json_or_layout_error(r, what: str) -> dict:
+    """Parsed JSON object with Status == "OK", otherwise EbokLayoutChanged."""
+    try:
+        data = json.loads(r.text)
+    except ValueError as exc:
+        raise EbokLayoutChanged(f'Odpowiedź ({what}) nie jest JSON-em — Tauron zmienił API?') from exc
+    if not isinstance(data, dict) or data.get('Status') != 'OK':
+        status = data.get('Status') if isinstance(data, dict) else type(data).__name__
+        raise EbokLayoutChanged(f'Odpowiedź ({what}) ze statusem {status!r} zamiast "OK"')
+    return data
+
+
 # ── pure parsing helpers (no I/O — unit-testable on captured fixtures) ─────────
 
-def parse_documents_csv(raw: bytes) -> list:
-    """Parse the eBOK 'archiwumFaktur' CSV export (windows-1250, ';'-delimited)."""
-    text = raw.decode('windows-1250', errors='replace')
-    reader = csv.DictReader(io.StringIO(text), delimiter=';')
-    docs = []
-    for row in reader:
-        sig = (row.get('SYGNATURA') or '').strip()
-        if not sig:
-            continue
-        amount_raw = (row.get('KWOTA BRUTTO') or '').strip()
-        amount = None
-        if amount_raw and amount_raw != '---':
-            try:
-                amount = float(amount_raw.replace(' ', '').replace('\xa0', '').replace(',', '.'))
-            except ValueError:
-                amount = None
-        docs.append(EbokDocument(
-            signature=sig,
-            doc_name=(row.get('NAZWA DOKUMENTU') or '').strip(),
-            issued_on=(row.get('DATA WYSTAWIENIA') or '').strip(),
-            amount_gross_pln=amount,
-            due_date=_parse_ddmmyyyy((row.get('TERMIN PŁATNOŚCI') or '').strip()),
-            paid=(row.get('ZAPŁACONA') or '').strip() == 'zapłacona',
-        ))
-    return docs
+_CLIENT_DIV_RE = re.compile(r'<[^>]*\bdata-client-number="[^"]*"[^>]*>')
 
 
-def _parse_ddmmyyyy(raw: str) -> Optional[date]:
-    """Parse a "DD.MM.YYYY" cell; None for missing/placeholder ("---") values."""
-    if not raw or raw == '---':
+def parse_client_checksum(html: str, payer_id: str) -> Optional[str]:
+    """Checksum (64 hex) of the element carrying `data-client-number="<payer_id>"`
+    on the documents archive page; None when the payer is not listed."""
+    for tag in _CLIENT_DIV_RE.findall(html or ''):
+        number = re.search(r'data-client-number="([^"]*)"', tag)
+        checksum = re.search(r'data-client-checksum="([0-9a-fA-F]+)"', tag)
+        if number and checksum and number.group(1).strip() == str(payer_id):
+            return checksum.group(1)
+    return None
+
+
+def _parse_date(raw) -> Optional[date]:
+    """"DD.MM.YYYY" or ISO ("YYYY-MM-DD", optionally with time); None for missing/"---"."""
+    if not raw or not isinstance(raw, str) or raw.strip() in ('', '---'):
         return None
+    text = raw.strip()
+    for fmt, chunk in (('%d.%m.%Y', text[:10]), ('%Y-%m-%d', text[:10])):
+        try:
+            return datetime.strptime(chunk, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _to_float(raw) -> Optional[float]:
+    if raw is None or isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        return float(raw)
     try:
-        return datetime.strptime(raw, '%d.%m.%Y').date()
+        return float(str(raw).replace(' ', '').replace('\xa0', '').replace(',', '.'))
     except ValueError:
         return None
+
+
+def parse_documents_json(data: dict) -> list:
+    """Map the GetDocuments payload to EbokDocument objects (rows without a signature are skipped).
+    Statuses outside PAID_STATUSES are logged once, to learn the portal's vocabulary."""
+    docs = []
+    unknown: set = set()
+    for row in (data or {}).get('Documents') or []:
+        sig = (row.get('DocSignature') or '').strip()
+        if not sig:
+            continue
+        status = (row.get('Status') or '').strip()
+        if status not in PAID_STATUSES:
+            unknown.add(status)
+        issued = _parse_date(row.get('IssueDateFormatted')) or _parse_date(row.get('IssueDate'))
+        url = row.get('Url') or None
+        if url and not url.startswith('http'):
+            url = SERVICE + (url if url.startswith('/') else '/' + url)
+        if url and not url.startswith(SERVICE + '/'):
+            logger.warning('eBOK: %s — adres PDF spoza %s, pomijam', sig, SERVICE)
+            url = None  # ciasteczka sesji tylko do własnego hosta
+        docs.append(EbokDocument(
+            signature=sig,
+            doc_name=(row.get('DocKindValue') or '').strip(),
+            issued_on=issued.strftime('%d.%m.%Y') if issued else '',
+            amount_gross_pln=_to_float(row.get('AmountGross')),
+            due_date=_parse_date(row.get('PaymentDate')),
+            paid=status in PAID_STATUSES,
+            pdf_url=url,
+            status=status,
+            doc_type=(row.get('DocType') or '').strip(),
+        ))
+    for status in sorted(unknown):
+        logger.info('eBOK: status dokumentu poza PAID_STATUSES: %r', status)
+    return docs
 
 
 def normalize_signature(text: str) -> str:
@@ -355,85 +333,8 @@ def is_known(signature: str, known: set) -> bool:
     return normalize_signature(signature) in known
 
 
-def find_missing_signatures(csv_signatures: set, archive_ids: dict, known: set) -> tuple:
-    """(missing, extra): signatures to import — from the CSV or the archive page —
-    and the subset seen only on the archive page (CSV gap)."""
-    extra = {sig.strip() for sig in archive_ids
-             if sig not in csv_signatures and not is_known(sig, known)}
-    if len(extra) > MAX_ARCHIVE_ONLY:
-        # zbyt wiele naraz = raczej niezgodność formatu sygnatur niż nowe faktury
-        logger.warning('eBOK: %d dokumentów tylko w archiwum (limit %d) — pomijam',
-                       len(extra), MAX_ARCHIVE_ONLY)
-        extra = set()
-    missing = {sig for sig in csv_signatures if not is_known(sig, known)} | extra
-    return missing, extra
-
-
-_ARCHIVE_ROW_RE = re.compile(
-    r'href="/podgladFaktury/id/(\d+)"\s*class="invoicePreviewHelper[^"]*helperLink"[^>]*>'
-    r'(?:<i[^>]*></i>)?([^<]+)</a>'
-)
-
-
-def parse_archive_html(html: str) -> dict:
-    """Map SYGNATURA → numeric id from one archiwumFaktur HTML page."""
-    return {sig.strip(): doc_id for doc_id, sig in _ARCHIVE_ROW_RE.findall(html)}
-
-
-def summarize_client_page(html: str, payer_id: str) -> str:
-    """Diagnostyka strony /wyborKlienta, gdy parser nie znalazł płatnika: tylko
-    tytuł i liczby, bez numeru płatnika i danych osobowych."""
-    title = re.search(r'<title[^>]*>\s*([^<]{0,80}?)\s*</title>', html, re.I)
-    return (f'tytuł="{title.group(1) if title else "-"}", długość={len(html)}, '
-            f'wierszy tr={html.count("<tr>")}, '
-            f'linków klienta={len(re.findall(r"/wyborKlienta/id/\d+", html))}, '
-            f'numer płatnika w HTML={"tak" if str(payer_id) in html else "nie"}')
-
-
-def parse_client_id_for_payer(html: str, payer_id: str) -> Optional[str]:
-    """Find the internal client id for a given 'Nr płatnika' on the
-    /wyborKlienta landing page (one <tr> per contract/payer)."""
-    for row in html.split('<tr>'):
-        m = re.search(r'<label>\s*[^<]*<br\s*/>\s*(\d+)\s*</label>', row)
-        idm = re.search(r'/wyborKlienta/id/(\d+)', row)
-        if m and idm and m.group(1) == str(payer_id):
-            return idm.group(1)
-    return None
-
-
-_TARIFF_WORDS_RE = re.compile(r'(?:taryf|G1[123][a-z]?\b|G13\w*|licznik|umow|punkt poboru|moc umown)', re.I)
-
-
-def summarize_home_page(html: str, payer_id: str) -> dict:
-    """Zarys strony po zalogowaniu pod kątem taryfy: tytuł, linki, fragmenty ze słowami
-    kluczowymi. Numer płatnika jest wycinany; bez kwot i adresów (fragmenty ≤120 znaków
-    tekstu, bez znaczników)."""
-    title = re.search(r'<title[^>]*>\s*([^<]{0,80}?)\s*</title>', html, re.I)
-    links = sorted(set(re.findall(r'href="(/[^"#?\s]{2,80})"', html)))[:60]
-    text = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', ' ', re.sub(r'(?is)<(script|style).*?</\1>', ' ', html)))
-    text = _mask(text, payer_id)
-    snippets = []
-    for m in _TARIFF_WORDS_RE.finditer(text):
-        snip = text[max(0, m.start() - 50):m.end() + 70].strip()
-        if snip not in snippets:
-            snippets.append(snip)
-        if len(snippets) >= 15:
-            break
-    return {'title': title.group(1) if title else '-', 'length': len(html),
-            'links': links, 'snippets': snippets}
-
-
 def _mask(text: str, payer_id: str) -> str:
     """Wycina numer płatnika i adresy e-mail z fragmentu diagnostycznego."""
     text = text.replace(str(payer_id), '<płatnik>')
     return re.sub(r'[\w.+-]+@[\w-]+\.[\w.]+', '<email>', re.sub(r'\s+', ' ', text))
 
-
-def payer_html_context(html: str, payer_id: str, radius: int = 500) -> list:
-    """Surowy HTML (≤2 fragmenty) wokół numeru płatnika — jak strona linkuje do wyboru umowy."""
-    out = []
-    for m in re.finditer(re.escape(str(payer_id)), html):
-        out.append(_mask(html[max(0, m.start() - radius):m.end() + radius], payer_id))
-        if len(out) >= 2:
-            break
-    return out

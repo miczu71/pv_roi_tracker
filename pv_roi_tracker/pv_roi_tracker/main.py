@@ -251,6 +251,17 @@ def _health_snapshot() -> tuple[str, dict]:
     return state, attrs
 
 
+MAX_NEW_PER_SYNC = 5  # bezpiecznik: więcej „brakujących” to raczej zmiana formatu sygnatur niż nowe faktury
+
+
+def _ebok_missing_documents(docs, known: set) -> tuple:
+    """(missing, over_limit): dokumenty eBOK jeszcze nie zaimportowane i czy jest ich więcej
+    niż MAX_NEW_PER_SYNC (wtedy sync niczego nie importuje, tylko zgłasza)."""
+    from . import ebok_client as _ec
+    missing = [d for d in docs if not _ec.is_known(d.signature, known)]
+    return missing, len(missing) > MAX_NEW_PER_SYNC
+
+
 def _load_ebok_state() -> dict:
     import json
     if not EBOK_STATE_PATH.exists():
@@ -547,11 +558,11 @@ def main() -> None:
     # ── eBOK TAURON auto-import (docs/ROADMAP_EBOK_IMPORT.md) ──────────────────
     # Świeży klient (= świeże logowanie) na każdy job: Tauron wygasza sesję po
     # swojej stronie, a klient trzymany przez cały proces po dobie dostawał
-    # stronę logowania zamiast /wyborKlienta (incydent 2026-10-01). Joby lecą
+    # stronę logowania zamiast listy punktów (incydent 2026-10-01). Joby lecą
     # ≤2×/dobę, logowanie jest tanie (spike Etapu 1).
     def _ebok_run(job: str, what: str, failed: str, body) -> dict:
         """Wspólny szkielet jobów eBOK: konfiguracja, blokada 24h, logowanie + wybór
-        płatnika, lista dokumentów (CSV), potem body(client, docs, state, date_from,
+        płatnika, lista dokumentów (JSON API), potem body(client, docs, state, date_from,
         date_to) -> dict. Nigdy nie rzuca — błędy trafiają do wyniku, health (`job`)
         i pusha (`what`/`failed` to tekst komunikatu)."""
         from . import ebok_client as _ec
@@ -572,11 +583,8 @@ def main() -> None:
             if EBOK_PAYER_ID:
                 client.select_payer(EBOK_PAYER_ID)
 
-            date_from = _date(2022, 1, 1)  # przed 2023-08 (start konta wg spike'a Etapu 1)
-            # Tauron filtruje po terminie płatności, nie po dacie wystawienia: z dataDo=jutro
-            # faktura z terminem za 14 dni jest niewidoczna (0018/26, 19.10.2026). Portal sam
-            # używa dataDo rok do przodu.
-            date_to = _date.today() + _td(days=365)
+            date_from = _date(2015, 1, 1)  # filtr po dacie wystawienia, zakres szeroki
+            date_to = _date.today()
             docs = client.list_documents(date_from, date_to)
             return body(client, docs, state, date_from, date_to)
 
@@ -608,10 +616,10 @@ def main() -> None:
         """One eBOK sync: list the full invoice history, download+ingest only the
         documents not already present (dedup by invoice_number), push on problems.
         Returns a JSON-able summary; never raises (errors are captured in the result)."""
-        from datetime import datetime as _dt, timedelta as _td
+        from datetime import datetime as _dt
 
         def refresh_payment_bar(docs) -> None:
-            """Stan płatności/pasek ze świeżego CSV — bez dodatkowego logowania do eBOK."""
+            """Stan płatności/pasek ze świeżej listy dokumentów — bez dodatkowego logowania do eBOK."""
             from . import payment_reminders as _pr
             from datetime import date as _date
             try:
@@ -624,24 +632,21 @@ def main() -> None:
             from . import ebok_client as _ec
             existing = invoice_store.load(INVOICE_PATH)
             known_numbers = _ec.known_signatures(existing.values())
-            try:
-                # wąski zakres: archiwum od 2022 potrafi przekroczyć timeout (19.10.2026)
-                archive_ids = client.archive_page_ids(date_to - _td(days=120), date_to)
-            except Exception as exc:  # źródło dodatkowe — nie psuje synchronizacji z CSV
-                logger.warning('eBOK: archiwum HTML niedostępne (%s) — tylko CSV', exc)
-                archive_ids = {}
-            csv_signatures = {d.signature for d in docs}
-            missing, extra = _ec.find_missing_signatures(csv_signatures, archive_ids, known_numbers)
-            diag = {'csv_rows': len(docs), 'archive_page_rows': len(archive_ids),
-                    'csv_latest': [d.signature for d in sorted(
+            missing, over_limit = _ebok_missing_documents(docs, known_numbers)
+            diag = {'total': len(docs),
+                    'latest': [d.signature for d in sorted(
                         docs, key=lambda d: d.issued_on.split('.')[::-1])[-3:]]}
-            logger.info('eBOK: CSV %d dok., archiwum (str. 1) %d, brakujących %d', len(docs),
-                        len(archive_ids), len(missing))
-            if extra:
-                logger.warning('eBOK: CSV nie zawiera dokumentów widocznych w archiwum: %s',
-                               ', '.join(sorted(extra)))
+            logger.info('eBOK: %d dok., brakujących %d', len(docs), len(missing))
 
             refresh_payment_bar(docs)
+            if over_limit:
+                signatures = sorted(d.signature for d in missing)
+                _record_job('ebok', False, f'{len(signatures)} brakujących dokumentów — import wstrzymany')
+                _notify_ha('PV ROI Tracker — eBOK',
+                           f'eBOK: {len(signatures)} dokumentów do importu (limit {MAX_NEW_PER_SYNC}), '
+                           f'nic nie zaimportowano: {", ".join(signatures)}', target='kacper')
+                return {'ok': False, 'imported': [], 'over_limit': signatures,
+                        'error': f'zbyt wiele brakujących dokumentów ({len(signatures)})', **diag}
             if not missing:
                 state['last_sync'] = _dt.now().isoformat()
                 state.pop('blocked_until', None)
@@ -649,23 +654,18 @@ def main() -> None:
                 _record_job('ebok', True, 'brak nowych dokumentów')
                 return {'ok': True, 'imported': [], 'skipped_existing': len(docs), 'errors': [], **diag}
 
-            id_map = {sig: archive_ids[sig] for sig in missing if sig in archive_ids}
-            rest = missing - set(id_map)
-            if rest:
-                id_map.update(client.locate_ids(rest, date_from, date_to))
             files = []
             not_found = []
-            for signature in sorted(missing):
-                doc_id = id_map.get(signature)
-                if not doc_id:
-                    not_found.append(signature)
+            for doc in sorted(missing, key=lambda d: d.signature):
+                if not doc.pdf_url:
+                    not_found.append(doc.signature)
                     continue
                 try:
-                    pdf_bytes = client.download_pdf(doc_id)
-                    files.append((f'ebok_{signature.replace("/", "-")}.pdf', pdf_bytes))
+                    pdf_bytes = client.download_pdf(doc.pdf_url)
+                    files.append((f'ebok_{doc.signature.replace("/", "-")}.pdf', pdf_bytes))
                 except Exception:
-                    logger.exception('eBOK: pobranie PDF %s nie powiodło się', signature)
-                    not_found.append(signature)
+                    logger.exception('eBOK: pobranie PDF %s nie powiodło się', doc.signature)
+                    not_found.append(doc.signature)
 
             from .invoice_ingest import ingest_pdfs
             ingested = ingest_pdfs(files, INVOICE_PATH)
@@ -692,11 +692,11 @@ def main() -> None:
                 if errors:
                     lines.append(f'błędy parsera: {len(errors)}')
                 if not_found:
-                    lines.append(f'nie znaleziono id w archiwum: {", ".join(not_found)}')
+                    lines.append(f'nie pobrano PDF: {", ".join(not_found)}')
                 _notify_ha('PV ROI Tracker — eBOK', ' '.join(lines), target='kacper')
 
             return {'ok': True, 'imported': imported, 'needs_training': needs_training,
-                    'errors': errors, 'not_found_in_archive': not_found, **diag}
+                    'errors': errors, 'not_found': not_found, **diag}
 
         return _ebok_run('ebok', 'Synchronizacja eBOK',
                          'Synchronizacja eBOK nie powiodła się', body)
@@ -705,7 +705,7 @@ def main() -> None:
         ebok_sync()
 
     def ebok_payment_check() -> dict:
-        """Lekki, codzienny check: samo CSV (bez PDF), termin płatności/status
+        """Lekki, codzienny check: sama lista dokumentów (bez PDF), termin płatności/status
         dla niezapłaconych faktur, przypomnienie dzień przed terminem i w dniu
         terminu (docs/ROADMAP_EBOK_PAYMENT_STATUS.md Etap 2). Nigdy nie rzuca —
         błędy trafiają do wyniku i health, tak jak ebok_sync()."""
@@ -725,37 +725,35 @@ def main() -> None:
     def ebok_payment_check_job() -> None:
         ebok_payment_check()
 
-    def ebok_diag(needle: str) -> dict:
-        """Tylko odczyt: gdzie w eBOK widać dokument `needle` (zob. EbokClient.diagnose).
-        Nie importuje niczego, nie wysyła pushy, nie dotyka health."""
+    def ebok_diag() -> dict:
+        """Tylko odczyt: stan listy dokumentów eBOK i co zaimportowałby sync. Nie importuje
+        niczego, nie wysyła pushy, nie dotyka health. Płatnik i e-mail są maskowane."""
         from . import ebok_client as _ec
         from datetime import date as _date
         client = _ec.EbokClient(EBOK_USERNAME, EBOK_PASSWORD)
+
+        def mask(text: str) -> str:
+            return _ec._mask(text, EBOK_PAYER_ID or '\0')
+
         try:
             client.login()
             if EBOK_PAYER_ID:
                 client.select_payer(EBOK_PAYER_ID)
-            result = client.diagnose(needle, _date.today())
-            # które dokumenty z CSV dedup uznaje za nieznane (czyli wróciłyby do importu)
-            from datetime import timedelta as _td
-            docs = client.list_documents(_date(2022, 1, 1), _date.today() + _td(days=365))
+            docs = client.list_documents(_date(2015, 1, 1), _date.today())
             known = _ec.known_signatures(invoice_store.load(INVOICE_PATH).values())
-            result['csv_total'] = len(docs)
-            result['csv_unknown'] = [f'{d.issued_on} {d.signature} | {d.doc_name}'
-                                     for d in docs if not _ec.is_known(d.signature, known)]
-            return {'ok': True, **result}
+            newest = sorted(docs, key=lambda d: d.issued_on.split('.')[::-1])[-3:]
+            result = {
+                'total': len(docs),
+                'newest': [f'{d.issued_on} {d.signature} | {d.status}' for d in newest],
+                'statuses': sorted({d.status for d in docs}),
+                'unknown': [f'{d.issued_on} {d.signature} | {d.doc_name}'
+                            for d in docs if not _ec.is_known(d.signature, known)],
+            }
+            return {'ok': True, 'total': result['total'], 'statuses': result['statuses'],
+                    'newest': [mask(t) for t in result['newest']],
+                    'unknown': [mask(t) for t in result['unknown']]}
         except Exception as exc:
-            return {'ok': False, 'error': str(exc)}
-
-    def ebok_diag_page() -> dict:
-        """Tylko odczyt: zarys strony głównej eBOK (taryfa, linki menu)."""
-        from . import ebok_client as _ec
-        client = _ec.EbokClient(EBOK_USERNAME, EBOK_PASSWORD)
-        try:
-            client.login()
-            return {'ok': True, **client.probe_home(EBOK_PAYER_ID)}
-        except Exception as exc:
-            return {'ok': False, 'error': str(exc)}
+            return {'ok': False, 'error': mask(str(exc))}
 
     def _ebok_status() -> dict:
         state = _load_ebok_state()
@@ -775,7 +773,6 @@ def main() -> None:
     if EBOK_USERNAME and EBOK_PASSWORD:
         _web.set_ebok_sync_callback(ebok_sync)
         _web.set_ebok_diag_callback(ebok_diag)
-        _web.set_ebok_diag_page_callback(ebok_diag_page)
     _web.set_ebok_status_callback(_ebok_status)
     _web.set_ebok_payment_status_callback(_ebok_payment_status)
 

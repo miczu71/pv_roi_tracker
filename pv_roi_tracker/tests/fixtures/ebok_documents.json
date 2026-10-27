@@ -1,0 +1,53 @@
+{
+ "Status": "OK",
+ "TotalNumber": 3,
+ "RangeFrom": 1,
+ "RangeTo": 100,
+ "Documents": [
+  {
+   "DocSignature": "T/K1/BN111111/0015/26",
+   "DocType": "FV",
+   "DocKindValue": "Faktura rzeczywista",
+   "IsDocumentCorrection": false,
+   "AmountGross": 100.5,
+   "AmountNet": 81.71,
+   "IssueDate": "2026-08-05T00:00:00",
+   "IssueDateFormatted": "05.08.2026",
+   "PaymentDate": "19.08.2026",
+   "ConsumeEnergy": 210.0,
+   "Status": "Opłacona",
+   "Url": "/api/sitecore/EbokArchiveDocuments/GetDocumentImage?id=1&mode=1",
+   "SodId": "1"
+  },
+  {
+   "DocSignature": "T/K1/BN111111/0016/26",
+   "DocType": "FK",
+   "DocKindValue": "Faktura korygująca",
+   "IsDocumentCorrection": true,
+   "AmountGross": -12.34,
+   "AmountNet": -10.03,
+   "IssueDate": "2026-09-05T00:00:00",
+   "IssueDateFormatted": "05.09.2026",
+   "PaymentDate": "---",
+   "ConsumeEnergy": 0,
+   "Status": "Rozliczono",
+   "Url": "https://moj.tauron.pl/api/sitecore/EbokArchiveDocuments/GetDocumentImage?id=2&mode=1",
+   "SodId": "2"
+  },
+  {
+   "DocSignature": "T/K1/BN111111/0017/26",
+   "DocType": "FV",
+   "DocKindValue": "Faktura rzeczywista",
+   "IsDocumentCorrection": false,
+   "AmountGross": 80.0,
+   "AmountNet": 65.04,
+   "IssueDate": "2026-10-05T00:00:00",
+   "IssueDateFormatted": "05.10.2026",
+   "PaymentDate": "2026-10-19",
+   "ConsumeEnergy": 150.0,
+   "Status": "Do zapłaty",
+   "Url": "/api/sitecore/EbokArchiveDocuments/GetDocumentImage?id=3&mode=1",
+   "SodId": "3"
+  }
+ ]
+}

@@ -2385,9 +2385,9 @@ async function ebokSync() {
       parts.push(imported.length ? 'Pobrano: ' + imported.join(', ') : 'Brak nowych dokumentów');
       if ((d.needs_training || []).length)
         parts.push('⚠ trening: ' + d.needs_training.join(', '));
-      if ((d.not_found_in_archive || []).length)
-        parts.push('⚠ nie znaleziono w archiwum: ' + d.not_found_in_archive.join(', '));
-      msg.className = (d.needs_training || []).length || (d.not_found_in_archive || []).length ? '' : 'ok';
+      if ((d.not_found || []).length)
+        parts.push('⚠ nie pobrano PDF: ' + d.not_found.join(', '));
+      msg.className = (d.needs_training || []).length || (d.not_found || []).length ? '' : 'ok';
       msg.textContent = parts.join('; ');
       if (imported.length) setTimeout(loadData, 1500);
     } else if (d.blocked) {

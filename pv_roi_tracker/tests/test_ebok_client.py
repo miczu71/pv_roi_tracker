@@ -1,13 +1,9 @@
 """
 Unit tests for ebok_client.py.
 
-Parsing helpers (CSV/HTML) are pure functions tested here on synthetic
-fixtures with fabricated names/amounts/invoice numbers — no real personal
-data is committed to this (public) repo.
-
-Tests against the real fixtures captured during the Etap 1 spike (real name,
-address, invoice numbers) live outside the repo and are skipped automatically
-when absent, mirroring the pattern in test_invoice_parser.py.
+Parsing helpers (HTML/JSON) are pure functions tested here on synthetic
+fixtures (tests/fixtures/ebok_*) with fabricated payer, amounts and invoice
+numbers — no real personal data is committed to this (public) repo.
 
 Login/network behaviour is tested with a small FakeSession stand-in (no
 requests_mock/responses dependency — this add-on pins its dependencies
@@ -15,6 +11,8 @@ deliberately, see requirements.txt).
 """
 from __future__ import annotations
 
+import base64
+import json
 from datetime import date
 from pathlib import Path
 
@@ -26,16 +24,20 @@ from pv_roi_tracker.ebok_client import (
     EbokError,
     EbokLoginBlocked,
     EbokLoginFailed,
-    find_missing_signatures,
+    EbokLayoutChanged,
+    PAID_STATUSES,
     is_known,
     known_signatures,
-    parse_archive_html,
-    parse_client_id_for_payer,
-    parse_documents_csv,
-    summarize_home_page,
+    parse_client_checksum,
+    parse_documents_json,
 )
 
-_REAL_FIXTURES_DIR = Path('/data/home/.claude/uploads/ebok_fixtures')
+_FIX = Path(__file__).parent / 'fixtures'
+_ARCHIWUM_HTML = (_FIX / 'ebok_archiwum.html').read_text(encoding='utf-8')
+_DOCS_JSON = json.loads((_FIX / 'ebok_documents.json').read_text(encoding='utf-8'))
+_PDF_JSON = (_FIX / 'ebok_pdf.json').read_text(encoding='utf-8')
+_PAYER = '11111111'
+_CHECKSUM = 'a' * 64
 
 
 # ── Fake HTTP session (no extra test dependency) ────────────────────────────
@@ -158,8 +160,7 @@ class _SequenceSession(FakeSession):
         return super()._respond(method, url, **kwargs)
 
 
-_LANDING_HTML = ('<tr><td><label>Jan Kowalski<br/> 60567872</label></td>'
-                 '<td><a href="/wyborKlienta/id/111111">Zobacz</a></td></tr>')
+_LANDING_HTML = _ARCHIWUM_HTML
 
 
 def _seq_client() -> tuple[EbokClient, _SequenceSession]:
@@ -172,33 +173,36 @@ def _seq_client() -> tuple[EbokClient, _SequenceSession]:
 
 def test_expired_session_relogs_and_retries_once():
     client, session = _seq_client()
-    session.when_seq('/wyborKlienta', [_FakeResponse(text=_LOGIN_FORM_HTML),
-                                       _FakeResponse(text=_LANDING_HTML)])
+    session.when_seq('/archiwum-dokumentow', [_FakeResponse(text=_LOGIN_FORM_HTML),
+                                              _FakeResponse(text=_ARCHIWUM_HTML)])
     client.login()
-    assert client.find_client_id('60567872') == '111111'
+    client.select_payer(_PAYER)
+    assert client._checksum == _CHECKSUM
     posts = [c for c in session.calls if c[0] == 'POST']
     assert len(posts) == 2  # logowanie startowe + ponowne po wygaśnięciu sesji
 
 
 def test_session_still_expired_after_relogin_raises_clear_error():
     client, session = _seq_client()
-    session.when_seq('/wyborKlienta', [_FakeResponse(text=_LOGIN_FORM_HTML)])
+    session.when_seq('/archiwum-dokumentow', [_FakeResponse(text=_LOGIN_FORM_HTML)])
     with pytest.raises(EbokError, match='Sesja eBOK'):
-        client.find_client_id('60567872')
+        client.select_payer(_PAYER)
 
 
-def test_find_client_id_logs_page_summary_when_payer_missing(caplog):
+def test_select_payer_unknown_payer_raises():
     client, session = _seq_client()
-    session.when_seq('/wyborKlienta', [_FakeResponse(
-        text='<html><head><title>Regulamin</title></head><body><tr><td>Zaakceptuj</td></tr></body></html>')])
-    with caplog.at_level('WARNING'):
-        assert client.find_client_id('60567872') is None
-    msg = ' '.join(r.getMessage() for r in caplog.records)
-    assert 'Regulamin' in msg
-    assert 'wierszy tr=1' in msg
-    assert 'linków klienta=0' in msg
-    assert 'numer płatnika w HTML=nie' in msg
-    assert '60567872' not in msg
+    session.when('/archiwum-dokumentow', _FakeResponse(text=_ARCHIWUM_HTML))
+    with pytest.raises(EbokError, match='nie znaleziony'):
+        client.select_payer('00000000')
+
+
+def test_select_payer_uses_service_url_and_picks_matching_checksum():
+    client, session = _seq_client()
+    session.when('/archiwum-dokumentow', _FakeResponse(text=_ARCHIWUM_HTML))
+    client.select_payer('22222222')
+    assert client._checksum == 'b' * 64
+    gets = [c[1] for c in session.calls if c[0] == 'GET' and 'archiwum-dokumentow' in c[1]]
+    assert gets == ['https://moj.tauron.pl/Home/Pages/archiwum-dokumentow']
 
 
 # ── ponawianie przy timeoucie / błędzie połączenia ──────────────────────────
@@ -220,12 +224,12 @@ class _FlakyGetSession(_SequenceSession):
 
 
 def _flaky_client(fail_times: int, exc=None):
-    session = _FlakyGetSession('/wyborKlienta', exc or requests.exceptions.ReadTimeout('timed out'),
+    session = _FlakyGetSession('/archiwum-dokumentow', exc or requests.exceptions.ReadTimeout('timed out'),
                                fail_times)
     session.when('logowanie.tauron.pl/realms/ext/protocol/cas/login',
                  _FakeResponse(text=_LOGIN_FORM_HTML))
     session.when('logowanie.tauron.pl/action', _FakeResponse(text=_LOGGED_IN_HTML))
-    session.when('/wyborKlienta', _FakeResponse(text=_LANDING_HTML))
+    session.when('/archiwum-dokumentow', _FakeResponse(text=_ARCHIWUM_HTML))
     sleeps: list = []
     client = EbokClient('user@example.com', 'secret', session=session, sleep=sleeps.append)
     return client, session, sleeps
@@ -233,23 +237,23 @@ def _flaky_client(fail_times: int, exc=None):
 
 def test_get_retries_after_timeout_with_growing_delays():
     client, session, sleeps = _flaky_client(fail_times=2)
-    assert client.find_client_id('60567872') == '111111'
+    client.select_payer(_PAYER)
     assert sleeps == [10, 30]
 
 
 def test_get_retries_after_connection_error():
     client, _, sleeps = _flaky_client(
         fail_times=1, exc=requests.exceptions.ConnectionError('reset'))
-    assert client.find_client_id('60567872') == '111111'
+    client.select_payer(_PAYER)
     assert sleeps == [10]
 
 
 def test_get_gives_up_after_three_retries():
     client, session, sleeps = _flaky_client(fail_times=99)
     with pytest.raises(requests.exceptions.ReadTimeout):
-        client.find_client_id('60567872')
+        client.select_payer(_PAYER)
     assert sleeps == [10, 30, 90]
-    attempts = [c for c in session.calls if c[0] == 'GET' and '/wyborKlienta' in c[1]]
+    attempts = [c for c in session.calls if c[0] == 'GET' and '/archiwum-dokumentow' in c[1]]
     assert len(attempts) == 4  # próba + 3 ponowienia
 
 
@@ -271,97 +275,172 @@ def test_login_post_is_never_retried():
     assert sleeps == []
 
 
+
+# ── parse_client_checksum() ─────────────────────────────────────────────────
+
+def test_parse_client_checksum_picks_row_for_payer():
+    assert parse_client_checksum(_ARCHIWUM_HTML, '11111111') == 'a' * 64
+    assert parse_client_checksum(_ARCHIWUM_HTML, '22222222') == 'b' * 64
+    assert parse_client_checksum(_ARCHIWUM_HTML, '33333333') is None
+
+
+def test_parse_client_checksum_tolerates_attribute_order():
+    html = '<div data-system="T18" data-client-checksum="%s" data-client-number="11111111">' % ('c' * 64)
+    assert parse_client_checksum(html, '11111111') == 'c' * 64
+
+
+# ── parse_documents_json() ──────────────────────────────────────────────────
+
+def test_parse_documents_json_maps_fields():
+    docs = parse_documents_json(_DOCS_JSON)
+    assert [d.signature for d in docs] == [
+        'T/K1/BN111111/0015/26', 'T/K1/BN111111/0016/26', 'T/K1/BN111111/0017/26']
+    fv, fk, unpaid = docs
+    assert fv.paid is True and fv.doc_type == 'FV' and fv.status == 'Opłacona'
+    assert fv.amount_gross_pln == pytest.approx(100.5)
+    assert fv.due_date == date(2026, 8, 19) and fv.issued_on == '05.08.2026'
+    assert fv.doc_name == 'Faktura rzeczywista'
+    # względny Url dołączany do SERVICE, bezwzględny bez zmian
+    assert fv.pdf_url == 'https://moj.tauron.pl/api/sitecore/EbokArchiveDocuments/GetDocumentImage?id=1&mode=1'
+    assert fk.pdf_url == 'https://moj.tauron.pl/api/sitecore/EbokArchiveDocuments/GetDocumentImage?id=2&mode=1'
+    assert fk.paid is True and fk.doc_type == 'FK' and fk.due_date is None
+    assert fk.amount_gross_pln == pytest.approx(-12.34)
+
+
+def test_parse_documents_json_unknown_status_is_unpaid_and_logged(caplog):
+    with caplog.at_level('INFO'):
+        docs = parse_documents_json(_DOCS_JSON)
+    unpaid = docs[2]
+    assert unpaid.paid is False and unpaid.status == 'Do zapłaty'
+    assert unpaid.due_date == date(2026, 10, 19)  # data ISO
+    assert 'Do zapłaty' in ' '.join(r.getMessage() for r in caplog.records)
+    assert not any('Opłacona' in r.getMessage() for r in caplog.records)
+
+
+def test_paid_statuses():
+    assert PAID_STATUSES == {'Opłacona', 'Rozliczono', 'Zapłacona'}
+
+
+def test_parse_documents_json_missing_values_are_none():
+    raw = {'Status': 'OK', 'Documents': [{'DocSignature': 'X/1', 'DocType': 'NB', 'Status': 'Rozliczono',
+                                          'AmountGross': None, 'PaymentDate': '---', 'Url': None}]}
+    d = parse_documents_json(raw)[0]
+    assert d.amount_gross_pln is None and d.due_date is None and d.pdf_url is None
+
+
+def test_parse_documents_json_skips_rows_without_signature():
+    assert parse_documents_json({'Documents': [{'DocSignature': ''}, {}]}) == []
+
+
 # ── list_documents() / download_pdf() wiring ────────────────────────────────
 
-def test_list_documents_returns_parsed_rows():
+def _selected_client():
     client, session = _client_with_successful_login()
-    csv_text = (
-        'SYGNATURA;NAZWA DOKUMENTU;DATA WYSTAWIENIA;DODATKOWE INFORMACJE;'
-        'KWOTA BRUTTO;TERMIN PŁATNOŚCI;KWOTA DO ZAPŁATY;ZAPŁACONA\r\n'
-        'T/K1/TEST/0001/26;Faktura rzeczywista;01.01.2026;---;100,50;15.01.2026;---;zapłacona\r\n'
-    ).encode('windows-1250')
-    session.when('/content/platnosci/csv/', _FakeResponse(content=csv_text))
-    docs = client.list_documents(date(2022, 1, 1), date(2027, 1, 1))
-    assert len(docs) == 1
-    assert docs[0].signature == 'T/K1/TEST/0001/26'
-    assert docs[0].amount_gross_pln == pytest.approx(100.50)
-    assert docs[0].due_date == date(2026, 1, 15)
-    assert docs[0].paid is True
+    session.when('/archiwum-dokumentow', _FakeResponse(text=_ARCHIWUM_HTML))
+    client.select_payer(_PAYER)
+    return client, session
 
 
-def test_list_documents_bad_status_raises():
-    client, session = _client_with_successful_login()
-    session.when('/content/platnosci/csv/', _FakeResponse(status_code=500))
+def test_list_documents_returns_parsed_rows_and_sends_filters():
+    client, session = _selected_client()
+    session.when('GetDocuments', _FakeResponse(text=json.dumps(_DOCS_JSON)))
+    docs = client.list_documents(date(2015, 1, 1), date(2026, 10, 27))
+    assert len(docs) == 3
+    url = [c[1] for c in session.calls if 'GetDocuments' in c[1]][0]
+    for part in ('https://moj.tauron.pl/api/sitecore/EbokArchiveDocuments/GetDocuments',
+                 'rangeFrom=1', 'rangeTo=100', f'clientNumber={_PAYER}',
+                 f'clientNumberCheckSum={_CHECKSUM}', 'system=T18',
+                 'from=01.01.2015', 'to=27.10.2026', 'docKind=All'):
+        assert part in url
+
+
+def test_list_documents_paginates_until_total():
+    client, session = _selected_client()
+
+    def page(first, last, total):
+        return json.dumps({'Status': 'OK', 'TotalNumber': total, 'Documents': [
+            {'DocSignature': f'T/K1/BN111111/{i:04d}/26', 'DocType': 'FV', 'Status': 'Opłacona'}
+            for i in range(first, last + 1)]})
+
+    session.when('rangeFrom=1&', _FakeResponse(text=page(1, 100, 250)))
+    session.when('rangeFrom=101&', _FakeResponse(text=page(101, 200, 250)))
+    session.when('rangeFrom=201&', _FakeResponse(text=page(201, 250, 250)))
+    docs = client.list_documents(date(2015, 1, 1), date(2026, 10, 27))
+    assert len(docs) == 250
+    urls = [c[1] for c in session.calls if 'GetDocuments' in c[1]]
+    assert len(urls) == 3 and 'rangeFrom=201&rangeTo=300' in urls[2]
+
+
+def test_list_documents_page_limit(monkeypatch, caplog):
+    client, session = _selected_client()
+    body = json.dumps({'Status': 'OK', 'TotalNumber': 99999, 'Documents': [
+        {'DocSignature': 'T/K1/BN111111/0001/26', 'DocType': 'FV', 'Status': 'Opłacona'}]})
+    session.when('GetDocuments', _FakeResponse(text=body))
+    client.list_documents(date(2015, 1, 1), date(2026, 10, 27))
+    assert len([c for c in session.calls if 'GetDocuments' in c[1]]) == 10
+    assert 'obcięta' in caplog.text
+
+
+def test_parse_documents_json_foreign_host_pdf_url_is_dropped(caplog):
+    data = {'Documents': [{'DocSignature': 'T/K1/BN111111/0001/26', 'DocType': 'FV',
+                           'Status': 'Opłacona', 'Url': 'https://evil.example/x.pdf'}]}
+    (doc,) = parse_documents_json(data)
+    assert doc.pdf_url is None
+    assert 'spoza' in caplog.text
+
+
+def test_list_documents_status_not_ok_raises_layout_changed():
+    client, session = _selected_client()
+    session.when('GetDocuments', _FakeResponse(text=json.dumps({'Status': 'Error', 'Documents': []})))
+    with pytest.raises(EbokLayoutChanged):
+        client.list_documents(date(2015, 1, 1), date(2026, 10, 27))
+
+
+def test_list_documents_non_json_raises_layout_changed():
+    client, session = _selected_client()
+    session.when('GetDocuments', _FakeResponse(text='<html>Strona główna</html>'))
+    with pytest.raises(EbokLayoutChanged):
+        client.list_documents(date(2015, 1, 1), date(2026, 10, 27))
+
+
+def test_list_documents_bad_http_status_raises():
+    client, session = _selected_client()
+    session.when('GetDocuments', _FakeResponse(status_code=500))
     with pytest.raises(EbokError):
-        client.list_documents(date(2022, 1, 1), date(2027, 1, 1))
+        client.list_documents(date(2015, 1, 1), date(2026, 10, 27))
 
 
-def test_download_pdf_returns_bytes():
-    client, session = _client_with_successful_login()
-    session.when('/podgladFaktury/id/123', _FakeResponse(content=b'%PDF-1.4 fake'))
-    assert client.download_pdf('123') == b'%PDF-1.4 fake'
-
-
-def test_download_pdf_non_pdf_response_raises():
-    client, session = _client_with_successful_login()
-    session.when('/podgladFaktury/id/123', _FakeResponse(text='<html>error page</html>'))
+def test_list_documents_without_selected_payer_raises():
+    client, _ = _client_with_successful_login()
     with pytest.raises(EbokError):
-        client.download_pdf('123')
+        client.list_documents(date(2015, 1, 1), date(2026, 10, 27))
 
 
-def test_locate_ids_stops_once_all_found():
+def test_download_pdf_decodes_base64_document():
     client, session = _client_with_successful_login()
-    page1_html = (
-        '<a href="/podgladFaktury/id/111"  class="invoicePreviewHelper typ_106 helperLink" >'
-        '<i class="icon"></i>T/K1/TEST/0002/26</a>'
-    )
-    session.when('/archiwumFaktur/page/1/', _FakeResponse(text=page1_html))
-    found = client.locate_ids({'T/K1/TEST/0002/26'}, date(2022, 1, 1), date(2027, 1, 1))
-    assert found == {'T/K1/TEST/0002/26': '111'}
-    # only page 1 requested (plus the initial login GET/POST) — no page/2 call
-    assert not any('page/2/' in url for _, url, _ in session.calls)
+    session.when('GetDocumentImage', _FakeResponse(text=_PDF_JSON))
+    pdf = client.download_pdf('https://moj.tauron.pl/api/sitecore/EbokArchiveDocuments/GetDocumentImage?id=1&mode=1')
+    assert pdf.startswith(b'%PDF-1.4')
+    assert pdf == base64.b64decode(json.loads(_PDF_JSON)['Document'])
 
 
-def test_locate_ids_gives_up_after_empty_page():
+def test_download_pdf_non_pdf_payload_raises():
     client, session = _client_with_successful_login()
-    session.when('/archiwumFaktur/page/', _FakeResponse(text='<html>brak wierszy</html>'))
-    found = client.locate_ids({'NIEISTNIEJACY/0000/00'}, date(2022, 1, 1), date(2027, 1, 1))
-    assert found == {}
-
-
-def test_archive_page_ids_returns_first_page_mapping():
-    client, session = _client_with_successful_login()
-    page1_html = (
-        '<a href="/podgladFaktury/id/111"  class="invoicePreviewHelper typ_106 helperLink" >'
-        '<i class="icon"></i>T/K1/TEST/0018/26</a>'
-    )
-    session.when('/archiwumFaktur/page/1/', _FakeResponse(text=page1_html))
-    assert client.archive_page_ids(date(2022, 1, 1), date(2027, 1, 1)) == {'T/K1/TEST/0018/26': '111'}
-
-
-def test_archive_page_ids_bad_status_raises():
-    client, session = _client_with_successful_login()
-    session.when('/archiwumFaktur/page/1/', _FakeResponse(status_code=500))
+    body = json.dumps({'Status': 'OK', 'Document': base64.b64encode(b'<html>error</html>').decode()})
+    session.when('GetDocumentImage', _FakeResponse(text=body))
     with pytest.raises(EbokError):
-        client.archive_page_ids(date(2022, 1, 1), date(2027, 1, 1))
+        client.download_pdf('https://moj.tauron.pl/api/x/GetDocumentImage?id=1')
 
 
-def test_diagnose_reports_needle_per_source_without_raising_on_errors():
+def test_download_pdf_non_json_or_bad_status_raises():
     client, session = _client_with_successful_login()
-    csv_text = (
-        'SYGNATURA;NAZWA DOKUMENTU;DATA WYSTAWIENIA;DODATKOWE INFORMACJE;'
-        'KWOTA BRUTTO;TERMIN PŁATNOŚCI;KWOTA DO ZAPŁATY;ZAPŁACONA\r\n'
-        'T/K1/TEST/0017/26;Faktura rzeczywista;08.09.2026;---;100,50;22.09.2026;---;zapłacona\r\n'
-    ).encode('windows-1250')
-    session.when('/content/platnosci/csv/', _FakeResponse(content=csv_text))
-    session.when('/archiwumFaktur/page/1/', _FakeResponse(
-        text='<a href="/podgladFaktury/id/7"  class="invoicePreviewHelper helperLink" >'
-             '<i class="icon"></i>T/K1/TEST/0018/26</a>'))
-    out = client.diagnose('0018/26', date(2026, 10, 19))
-    assert [c['has_needle'] for c in out['csv']] == [False, False]
-    assert out['csv'][0]['rows'] == 1 and out['csv'][0]['newest'] == ['08.09.2026 T/K1/TEST/0017/26']
-    assert all(a['has_needle'] for a in out['archive_html'])
-    assert len(out['pages']) == 6
+    session.when('GetDocumentImage', _FakeResponse(text='<html>error page</html>'))
+    with pytest.raises(EbokError):
+        client.download_pdf('https://moj.tauron.pl/api/x/GetDocumentImage?id=1')
+    client2, session2 = _client_with_successful_login()
+    session2.when('GetDocumentImage', _FakeResponse(status_code=500))
+    with pytest.raises(EbokError):
+        client2.download_pdf('https://moj.tauron.pl/api/x/GetDocumentImage?id=1')
 
 
 def test_known_signatures_uses_invoice_number_and_ebok_filename():
@@ -373,184 +452,3 @@ def test_known_signatures_uses_invoice_number_and_ebok_filename():
     assert is_known('T/K1/X/0017/26', known) and is_known('T/K1/0262015/25', known)
     assert is_known('T/K1/0262015/25', known_signatures([{'filename': 'T_K1_0262015_25.pdf'}]))
     assert not is_known('T/K1/X/0018/26', known)
-    assert find_missing_signatures({'T/K1/X/0017/26', 'T/K1-0262015-25'.replace('K1-', 'K1/'), 'T/K1/X/0018/26'},
-                                   {}, known)[0] == {'T/K1/X/0018/26'}
-
-
-# ── find_missing_signatures ──────────────────────────────────────────────────
-
-def _known(*numbers):
-    return known_signatures([{'invoice_number': n} for n in numbers])
-
-
-def test_find_missing_signatures_csv_only():
-    missing, extra = find_missing_signatures({'A/1', 'A/2'}, {}, _known('A/1'))
-    assert missing == {'A/2'} and extra == set()
-
-
-def test_find_missing_signatures_archive_only_document_is_extra():
-    # CSV skurczone (jak 18.10.2026): faktura widoczna tylko w HTML archiwum
-    missing, extra = find_missing_signatures({'A/1'}, {'A/1': '1', 'A/18': '18'}, _known('A/1'))
-    assert missing == {'A/18'} and extra == {'A/18'}
-
-
-def test_find_missing_signatures_too_many_archive_only_is_ignored():
-    archive = {f'A/{i}': str(i) for i in range(10)}
-    missing, extra = find_missing_signatures(set(), archive, _known())
-    assert missing == set() and extra == set()
-
-
-def test_find_missing_signatures_known_archive_entries_ignored():
-    missing, extra = find_missing_signatures({'A/1'}, {'A/1': '1', 'A/2': '2'}, _known('A/1', 'A/2'))
-    assert missing == set() and extra == set()
-
-
-# ── pure parsing helpers ─────────────────────────────────────────────────────
-
-def test_parse_documents_csv_decodes_polish_chars_and_skips_blank_rows():
-    csv_bytes = (
-        'SYGNATURA;NAZWA DOKUMENTU;DATA WYSTAWIENIA;DODATKOWE INFORMACJE;'
-        'KWOTA BRUTTO;TERMIN PŁATNOŚCI;KWOTA DO ZAPŁATY;ZAPŁACONA\r\n'
-        'T/K1/TEST/0003/26;Faktura korygująca;05.02.2026;---;-12,34;19.02.2026;---;zapłacona\r\n'
-        ';;;;;;;\r\n'
-    ).encode('windows-1250', errors='replace')
-    docs = parse_documents_csv(csv_bytes)
-    assert len(docs) == 1
-    assert docs[0].doc_name == 'Faktura korygująca'
-    assert docs[0].amount_gross_pln == pytest.approx(-12.34)
-
-
-def test_parse_documents_csv_handles_dash_amount():
-    csv_bytes = (
-        'SYGNATURA;NAZWA DOKUMENTU;DATA WYSTAWIENIA;DODATKOWE INFORMACJE;'
-        'KWOTA BRUTTO;TERMIN PŁATNOŚCI;KWOTA DO ZAPŁATY;ZAPŁACONA\r\n'
-        'T/K1/TEST/0004/26;Faktura korygująca;05.02.2026;---;---;19.02.2026;---;zapłacona\r\n'
-    ).encode('windows-1250')
-    docs = parse_documents_csv(csv_bytes)
-    assert docs[0].amount_gross_pln is None
-
-
-def test_parse_documents_csv_unpaid_row_has_paid_false():
-    csv_bytes = (
-        'SYGNATURA;NAZWA DOKUMENTU;DATA WYSTAWIENIA;DODATKOWE INFORMACJE;'
-        'KWOTA BRUTTO;TERMIN PŁATNOŚCI;KWOTA DO ZAPŁATY;ZAPŁACONA\r\n'
-        'T/K1/TEST/0006/26;Faktura rzeczywista;01.03.2026;---;80,00;15.03.2026;80,00;niezapłacona\r\n'
-    ).encode('windows-1250')
-    docs = parse_documents_csv(csv_bytes)
-    assert docs[0].paid is False
-    assert docs[0].due_date == date(2026, 3, 15)
-
-
-def test_parse_documents_csv_missing_or_dash_due_date_is_none():
-    csv_bytes = (
-        'SYGNATURA;NAZWA DOKUMENTU;DATA WYSTAWIENIA;DODATKOWE INFORMACJE;'
-        'KWOTA BRUTTO;TERMIN PŁATNOŚCI;KWOTA DO ZAPŁATY;ZAPŁACONA\r\n'
-        'K1N0474969;Nota uznaniowa;01.03.2026;---;50,00;---;---;---\r\n'
-    ).encode('windows-1250')
-    docs = parse_documents_csv(csv_bytes)
-    assert docs[0].due_date is None
-    assert docs[0].paid is False
-
-
-def test_parse_archive_html_maps_signature_to_numeric_id():
-    html = (
-        '<a href="/podgladFaktury/id/999888777"  class="invoicePreviewHelper typ_106 helperLink" >'
-        '<i class="icon iconArrowSmallest"></i>T/K1/TEST/0005/26</a><br/>'
-        '<a href="/podgladFaktury/id/999888777"  class="invoicePreviewHelper typ_106 " >'
-        '<i class="icon iconArrowSmallest"></i>Faktura rzeczywista</a>'
-    )
-    result = parse_archive_html(html)
-    assert result == {'T/K1/TEST/0005/26': '999888777'}
-
-
-def test_parse_archive_html_no_rows_returns_empty_dict():
-    assert parse_archive_html('<html>brak faktur</html>') == {}
-
-
-def test_parse_client_id_for_payer_matches_correct_row():
-    html = (
-        '<table><tbody>'
-        '<tr><td><label>JAN KOWALSKI <br />12345678</label></td>'
-        '<td><a href="/wyborKlienta/id/111111">Zobacz</a></td></tr>'
-        '<tr><td><label>JAN KOWALSKI <br />87654321</label></td>'
-        '<td><a href="/wyborKlienta/id/222222">Zobacz</a></td></tr>'
-        '</tbody></table>'
-    )
-    assert parse_client_id_for_payer(html, '87654321') == '222222'
-    assert parse_client_id_for_payer(html, '00000000') is None
-
-
-# ── Optional regression tests on real spike fixtures (skipped if absent) ────
-
-@pytest.mark.skipif(not _REAL_FIXTURES_DIR.exists(),
-                    reason='real eBOK fixtures not available on this machine')
-class TestRealFixtures:
-    def test_real_csv_has_77_documents(self):
-        raw = (_REAL_FIXTURES_DIR / 'archiwum_real.csv').read_bytes()
-        docs = parse_documents_csv(raw)
-        assert len(docs) == 77
-        signatures = [d.signature for d in docs]
-        assert len(signatures) == len(set(signatures))  # no duplicates
-
-    def test_real_archive_page_maps_at_least_50_ids(self):
-        html = (_REAL_FIXTURES_DIR / 'archiwumFaktur_page1_real.html').read_text(encoding='utf-8')
-        mapping = parse_archive_html(html)
-        assert len(mapping) == 50
-
-    def test_real_landing_page_resolves_known_payer(self):
-        html = (_REAL_FIXTURES_DIR / 'landing_real.html').read_text(encoding='utf-8')
-        assert parse_client_id_for_payer(html, '60567872') == '9810070'
-
-    def test_real_sample_invoice_parses_cleanly(self):
-        from pv_roi_tracker.invoice_parser import parse_invoice
-        pdf_bytes = (_REAL_FIXTURES_DIR / 'sample_invoice_2026-08_real.pdf').read_bytes()
-        data = parse_invoice(pdf_bytes)
-        assert data.warnings == []
-        assert data.year == 2026 and data.month == 8
-        assert data.amount_due_pln == pytest.approx(63.3)
-
-
-_HOME_HTML = ('<html><head><title>Strona G&#243;wna | M&#243;j TAURON</title></head><body>'
-              '<nav><a href="/content/platnosci">Płatności</a><a href="/mojeDane/umowa">Umowa</a></nav>'
-              '<h2>Punkt poboru</h2><p>Nr płatnika 60567872</p><p>Grupa taryfowa: G12w</p></body></html>')
-
-
-def test_select_payer_selects_from_landing_list():
-    client, session = _seq_client()
-    session.when_seq('/wyborKlienta', [_FakeResponse(text=_LANDING_HTML), _FakeResponse(text='ok')])
-    client.select_payer('60567872')
-    assert any('/wyborKlienta/id/111111' in c[1] for c in session.calls if c[0] == 'GET')
-
-
-def test_select_payer_accepts_home_page_when_client_preselected():
-    client, session = _seq_client()
-    session.when_seq('/wyborKlienta', [_FakeResponse(text=_HOME_HTML)])
-    client.select_payer('60567872')
-    gets = [c[1] for c in session.calls if c[0] == 'GET' and '/wyborKlienta' in c[1]]
-    assert gets == ['https://ebok.tauron.pl/wyborKlienta']  # bez /id/…
-
-
-def test_select_payer_raises_when_payer_absent_everywhere():
-    client, session = _seq_client()
-    session.when_seq('/wyborKlienta', [_FakeResponse(text='<html><title>Regulamin</title></html>')])
-    with pytest.raises(EbokError, match='nie znaleziony'):
-        client.select_payer('60567872')
-
-
-def test_summarize_home_page_lists_title_links_and_keyword_snippets_without_payer_number():
-    out = summarize_home_page(_HOME_HTML, '60567872')
-    assert 'TAURON' in out['title']
-    assert '/mojeDane/umowa' in out['links']
-    assert any('G12w' in s for s in out['snippets'])
-    assert '60567872' not in str(out)
-
-
-def test_probe_home_returns_masked_payer_context_and_csv_head():
-    client, session = _seq_client()
-    session.when_seq('/wyborKlienta', [_FakeResponse(
-        text='<a href="/wybierz?x=1">Nr płatnika 60567872 jan@example.com</a>')])
-    session.when('/content/platnosci/csv/', _FakeResponse(content='<html>Strona</html>'.encode('windows-1250')))
-    out = client.probe_home('60567872')
-    assert '/wybierz?x=1' in out['payer_html'][0]
-    assert '60567872' not in str(out) and 'jan@example.com' not in str(out)
-    assert out['csv_probe']['status'] == 200 and 'Strona' in out['csv_probe']['head']
