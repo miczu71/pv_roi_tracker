@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.50.0] — 2026-10-27
+
+Przejście eBOK na portal „Mój TAURON” (stare strony i CSV Taurona przestały działać, joby eBOK padały od 26.10).
+
+- **Import faktur z JSON API:** lista dokumentów (`GetDocuments`, filtr po dacie wystawienia) i pobranie PDF zamiast CSV/archiwum HTML. Status „Opłacona”/„Rozliczono” = zapłacona; nieznany status z terminem płatności = niezapłacona (logowany, żeby poznać słownik).
+- **Bezpiecznik importu:** więcej niż 5 brakujących dokumentów w jednym przebiegu → nic nie jest importowane, przychodzi powiadomienie z listą sygnatur.
+- **Płatnik:** pusta opcja `ebok_payer_id` wybiera jedynego klienta konta; przy kilku płatnikach job zgłasza błąd z prośbą o ustawienie opcji.
+- **Diagnostyka:** `GET /api/ebok/diag` (tylko odczyt) zwraca liczbę dokumentów, najnowsze sygnatury, zbiór statusów i dokumenty, które zaimportowałby sync; usunięto `diag-page`.
+
 ## [0.49.3] — 2026-10-27
 
 - **Diagnostyka eBOK:** `/api/ebok/diag-page` zwraca dodatkowo zamaskowany fragment HTML wokół numeru płatnika i początek odpowiedzi CSV faktur (po zmianie Taurona CSV nie zawiera już rozpoznawalnych wierszy po samym zalogowaniu). Wersja 0.49.2 była wydana z niepodbitym plikiem wersji — użyj 0.49.3.

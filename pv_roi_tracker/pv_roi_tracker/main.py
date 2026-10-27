@@ -587,8 +587,7 @@ def main() -> None:
         client = _ec.EbokClient(EBOK_USERNAME, EBOK_PASSWORD)
         try:
             client.login()
-            if EBOK_PAYER_ID:
-                client.select_payer(EBOK_PAYER_ID)
+            client.select_payer(EBOK_PAYER_ID)
 
             date_from = EBOK_DATE_FROM
             date_to = _date.today()
@@ -745,8 +744,7 @@ def main() -> None:
 
         try:
             client.login()
-            if EBOK_PAYER_ID:
-                client.select_payer(EBOK_PAYER_ID)
+            client.select_payer(EBOK_PAYER_ID)
             docs = client.list_documents(EBOK_DATE_FROM, _date.today())
             known = _ec.known_signatures(invoice_store.load(INVOICE_PATH).values())
             return {'ok': True, 'total': len(docs),

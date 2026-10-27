@@ -488,3 +488,18 @@ def test_parsed_documents_feed_payment_reminders(tmp_path):
 def test_paid_status_comparison_ignores_case_and_spaces():
     data = {'Documents': [{'DocSignature': 'T/K1/BN111111/0001/26', 'Status': ' OPŁACONA '}]}
     assert parse_documents_json(data)[0].paid is True
+
+
+def test_select_payer_empty_with_several_clients_raises():
+    client, session = _seq_client()
+    session.when('/archiwum-dokumentow', _FakeResponse(text=_ARCHIWUM_HTML))
+    with pytest.raises(EbokError, match='ebok_payer_id'):
+        client.select_payer('')
+
+
+def test_select_payer_empty_picks_sole_client():
+    html = '<div data-client-number="11111111" data-client-checksum="' + 'a' * 64 + '" data-system="T18"></div>'
+    client, session = _seq_client()
+    session.when('/archiwum-dokumentow', _FakeResponse(text=html))
+    client.select_payer('')
+    assert client._payer_id == '11111111' and client._checksum == 'a' * 64

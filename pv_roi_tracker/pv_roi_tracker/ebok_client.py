@@ -167,6 +167,12 @@ class EbokClient:
         r = self._get(f'{SERVICE}/Home/Pages/archiwum-dokumentow', REQUEST_TIMEOUT)
         if r.status_code != 200:
             raise EbokError(f'Pobranie archiwum dokumentów nie powiodło się (status {r.status_code})')
+        if not payer_id:
+            clients = parse_clients(r.text)
+            if len(clients) != 1:
+                raise EbokError('Ustaw ebok_payer_id: na koncie jest '
+                                f'{len(clients)} płatników, nie da się wybrać automatycznie')
+            payer_id = next(iter(clients))
         checksum = parse_client_checksum(r.text, payer_id)
         if checksum is None:
             raise EbokError(f'Płatnik {payer_id} nie znaleziony na liście punktów')
@@ -242,15 +248,20 @@ def _json_or_layout_error(r, what: str) -> dict:
 _CLIENT_DIV_RE = re.compile(r'<[^>]*\bdata-client-number="[^"]*"[^>]*>')
 
 
-def parse_client_checksum(html: str, payer_id: str) -> Optional[str]:
-    """Checksum (64 hex) of the element carrying `data-client-number="<payer_id>"`
-    on the documents archive page; None when the payer is not listed."""
+def parse_clients(html: str) -> dict:
+    """{payer number: checksum (64 hex)} for every supply point on the documents archive page."""
+    clients = {}
     for tag in _CLIENT_DIV_RE.findall(html or ''):
         number = re.search(r'data-client-number="([^"]*)"', tag)
         checksum = re.search(r'data-client-checksum="([0-9a-fA-F]+)"', tag)
-        if number and checksum and number.group(1).strip() == str(payer_id):
-            return checksum.group(1)
-    return None
+        if number and checksum:
+            clients[number.group(1).strip()] = checksum.group(1)
+    return clients
+
+
+def parse_client_checksum(html: str, payer_id: str) -> Optional[str]:
+    """Checksum of `payer_id` on the documents archive page; None when the payer is not listed."""
+    return parse_clients(html).get(str(payer_id))
 
 
 def _parse_date(raw) -> Optional[date]:
