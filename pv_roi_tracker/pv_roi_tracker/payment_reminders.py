@@ -128,10 +128,7 @@ def reconcile_payments(docs, payments, invoice_records) -> dict:
     last_payment = None
     credits = [p for p in payments if p.type == 'Wpłata' and p.date is not None]
     if credits:
-        last = max(credits, key=lambda p: p.date)     # remis: późniejszy na liście wygrywa
-        for p in credits:
-            if p.date == last.date:
-                last = p
+        last = sorted(credits, key=lambda p: p.date)[-1]   # remis: późniejszy na liście wygrywa
         covered = {}
         for sig, gross, _amount in last.settlements:
             if gross is not None and gross - settled_n.get(norm(sig), 0.0) > 0.01:

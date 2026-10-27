@@ -2493,7 +2493,6 @@ function _renderLastPayment(lp, mismatches) {
       ', na fakturze ' + _plMoney(m.amount_due);
   });
   line.textContent = text;
-  line.style.whiteSpace = 'pre-line';
   line.style.display = '';
 }
 

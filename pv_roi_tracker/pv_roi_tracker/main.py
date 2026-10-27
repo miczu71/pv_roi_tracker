@@ -287,11 +287,8 @@ def _ebok_missing_documents(docs, known: set) -> tuple:
 
 def _payments_window_start(today: date) -> date:
     """Początek okna wpłat: 13 miesięcy wstecz (dzień przycięty do długości miesiąca)."""
-    import calendar
-    year, month = today.year - 1, today.month - 1
-    if month == 0:
-        year, month = year - 1, 12
-    return date(year, month, min(today.day, calendar.monthrange(year, month)[1]))
+    from dateutil.relativedelta import relativedelta
+    return today - relativedelta(months=13)
 
 
 def _refresh_payments(client, docs, today: date) -> None:
