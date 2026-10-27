@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.53.0] — 2026-10-27
+
+Wpłaty z „Mój TAURON” i kontrola depozytu, utwardzenie przed zmianą taryfy.
+
+- **Wpłaty i depozyt:** add-on czyta historię wpłat z portalu (13 miesięcy), rozlicza je z fakturami i pokazuje w sekcji „eBOK i faktury” ostatnią wpłatę oraz kwotę pokrytą depozytem. Rozbieżność między rozliczeniem a kwotą z PDF faktury daje jedno powiadomienie. Faktura z nieznanym statusem portalu, a w pełni rozliczona wpłatą, jest traktowana jako opłacona. Zmiana układu odpowiedzi portalu kończy się błędem joba, nie pustą listą.
+- **Historia taryf:** uszkodzony `tariff_periods.json` trafia do kopii `.corrupt` i nie jest nadpisywany; opcja `current_tariff_override` uwzględniana w strefach szczytu; wykrycie zmiany taryfy od razu przelicza symulację.
+- **Zmiana wyników symulacji G12:** strefa `day` jest teraz szczytem także w cenach godzinowych (jedno źródło `is_peak_zone`), więc symulacje G12 mogą się nieznacznie zmienić.
+- **Harmonogram JIT:** „tania” cena okna to średnia najtańszych godzin potrzebnych do naładowania, nie minimum; brak połączenia MQTT nie jest już raportowany jako sukces.
+- Katalog taryf G13/G13s sprawdzony z oficjalną taryfą 2026 — bez zmian.
+
 ## [0.52.0] — 2026-10-27
 
 Harmonogram mostów JIT dla taryf strefowych — dane dla automatyzacji ładowania baterii w HA.
