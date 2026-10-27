@@ -192,7 +192,7 @@ def solve_day(prices, export_kwh, import_kwh, rcem, cfg, *, soc_floor=SOC_FLOOR,
 
 def simulate_variant_c(hours, cfg, catalog, rdn, kompas, rcem_by_ym, from_ym, to_ym,
                        overrides=None, *, soc_floor=SOC_FLOOR, max_cycles=2.0,
-                       step_kwh=0.2, tariffs=GRID_TARIFFS) -> dict:
+                       step_kwh=0.2, tariffs=GRID_TARIFFS, dist_tariff='G12w') -> dict:
     """-> monthly = {ym: {taryfa: {savings_pln, wear_pln, grid_charged_kwh,
     pv_charged_kwh, discharged_kwh}}}.
     Ceny: tariff_battery.make_price_fn(t, catalog, rdn, kompas, overrides); rcem: rcem_by_ym.get(ym)
@@ -210,7 +210,7 @@ def simulate_variant_c(hours, cfg, catalog, rdn, kompas, rcem_by_ym, from_ym, to
 
     monthly: dict = {}
     for t in tariffs:
-        price_fn = make_price_fn(t, catalog, rdn, kompas, overrides)
+        price_fn = make_price_fn(t, catalog, rdn, kompas, overrides, dist_tariff=dist_tariff)
         day_prices: dict = {}
         for day, keys in days.items():
             prices = []
@@ -406,7 +406,8 @@ def _suggest_group(recs, cfg, U, gk, base, scale, soc_floor) -> tuple:
 
 
 def suggest_plans(hours, cfg, catalog, rdn, kompas, rcem_by_ym, from_ym, to_ym,
-                  overrides=None, *, soc_floor=SOC_FLOOR, tariffs=GRID_TARIFFS) -> dict:
+                  overrides=None, *, soc_floor=SOC_FLOOR, tariffs=GRID_TARIFFS,
+                  dist_tariff='G12w') -> dict:
     """-> {taryfa: {grupa: {'charge_window': {'start','end'}|None, 'target_soc_pct': int|None,
     'discharge_zones': [{'start','end'}], 'saving_vs_b_pln_year': float (>=0), 'worth_it': bool,
     'days_total': int}}}. Ocena na ostatnich 12 miesiącach kończących się na `to_ym` (nie przed
@@ -424,7 +425,7 @@ def suggest_plans(hours, cfg, catalog, rdn, kompas, rcem_by_ym, from_ym, to_ym,
     year_days = _year_day_counts(to_ym)
     day_groups: dict = {}
     for t in tariffs:
-        price_fn = make_price_fn(t, catalog, rdn, kompas, overrides)
+        price_fn = make_price_fn(t, catalog, rdn, kompas, overrides, dist_tariff=dist_tariff)
         recs = []
         days_seen: dict = {}
         for k in keys:

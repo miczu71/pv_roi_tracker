@@ -204,9 +204,11 @@ def compute_payload(import_by_hour: dict, catalog: dict, settings: Optional[Tari
             hours, battery_cfg, catalog, rdn, kompas, rcem_by_ym or {}, from_ym, to_ym, soc_floor=tariff_grid_charge.SOC_FLOOR,
             dist_tariff=baseline))
         _attach_variant_c(months, tariff_grid_charge.simulate_variant_c(
-            hours, battery_cfg, catalog, rdn, kompas, rcem_by_ym or {}, from_ym, to_ym))
+            hours, battery_cfg, catalog, rdn, kompas, rcem_by_ym or {}, from_ym, to_ym,
+            dist_tariff=baseline))
         plans = tariff_grid_charge.suggest_plans(
-            hours, battery_cfg, catalog, rdn, kompas, rcem_by_ym or {}, from_ym, to_ym)
+            hours, battery_cfg, catalog, rdn, kompas, rcem_by_ym or {}, from_ym, to_ym,
+            dist_tariff=baseline)
 
     cur = months.get(to_ym) or {}
     current = {t: (cur[t]['gross'] if _usable(cur.get(t), False) else None) for t in TARIFFS}

@@ -1196,7 +1196,7 @@ def api_tariff_hourly():
     # zakres z dniem bieżącym/przyszłym: ceny RDN i pobór się zmieniają → cache tylko w 10-min kubełku
     bucket = _now().strftime('%Y%m%d%H%M')[:-1] if b >= today else None
     key = (a.isoformat(), b.isoformat(), tariffs, len(inp['rdn']), len(inp['kompas']),
-           len(inp['import_by_hour']), repr(inp['settings']), bucket)
+           len(inp['import_by_hour']), repr(inp['settings']), inp['baseline'], bucket)
     cached = _tariff_hourly_cache.get(key)
     if cached is not None:
         return jsonify(cached)
@@ -1219,7 +1219,8 @@ def api_tariff_hourly():
             tomorrow = {'day': (today + timedelta(days=1)).isoformat(),
                         **{k: t[k] for k in ('rdn_available', 'reason', 'eurpln_fallback', 'eurpln_used')}}
         series = _ts.hourly_series(a, b, inp['import_by_hour'], inp['catalog'], tariffs,
-                                   inp['settings'], rdn, kompas, inp['overrides'])
+                                   inp['settings'], rdn, kompas, inp['overrides'],
+                                   dist_tariff=inp['baseline'])
         if a > today and 'dyn_a' in series and series['dyn_a']['available']:
             dayres = [ahead[d] for d in ahead if a <= d <= b]
             if dayres and not any(r['rdn_available'] for r in dayres):

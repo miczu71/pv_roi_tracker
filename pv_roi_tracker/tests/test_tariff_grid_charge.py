@@ -356,7 +356,7 @@ def test_s_duzy_spread_g12(cat):
 
 
 def test_s_maly_spread(cat, monkeypatch):
-    def flat(tariff, catalog, rdn, kompas, overrides=None):
+    def flat(tariff, catalog, rdn, kompas, overrides=None, dist_tariff='G12w'):
         return lambda key: (1.0 + (0.001 if int(key[11:13]) < 12 else 0.0), False)
     monkeypatch.setattr(gc, "make_price_fn", flat)
     hours = _month_hours("2026-01", 31, lambda d, h: (0.0, 0.8))

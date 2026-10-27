@@ -738,6 +738,7 @@ def main() -> None:
 
         def body(client, docs, state, date_from, date_to) -> dict:
             from datetime import datetime as _dt
+            from . import ebok_client as _ec
             notifications = _pr.apply_refresh(docs, EBOK_PAYMENT_STATE_PATH, _date.today())
             _send_payment_notes(notifications)
 
@@ -750,11 +751,16 @@ def main() -> None:
                                                        _th.normalize(contract.get('taryfa')),
                                                        _date.today())
                 _th.save(periods, TARIFF_PERIODS_PATH)
+                if contract.get('taryfa') and _th.normalize(contract['taryfa']) is None:
+                    logger.warning('eBOK: taryfa z portalu spoza katalogu (%s) — baza porównań bez zmian',
+                                   contract['taryfa'])
                 if change:
                     _notify_ha('PV ROI Tracker — taryfa',
                                f'Wykryto zmianę taryfy: {change[0]} → {change[1]}. '
                                'Porównania w add-onie przejdą na nową bazę.',
                                target='kacper')
+            except _ec.EbokLoginBlocked:
+                raise  # blokada konta musi dojść do _ebok_run (blocked_until), nie być połknięta
             except Exception:
                 logger.exception('eBOK: odczyt taryfy z umowy nie powiódł się')
 

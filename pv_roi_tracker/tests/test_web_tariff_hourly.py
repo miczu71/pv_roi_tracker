@@ -26,7 +26,7 @@ def wired(monkeypatch):
     web._tariff_hourly_cache.clear()
     cat = load_catalog()
     inputs = {'import_by_hour': {'2026-03-10T10': 1.0}, 'catalog': cat,
-              'settings': TariffSettings(), 'rdn': {}, 'kompas': {}, 'overrides': None,
+              'settings': TariffSettings(), 'rdn': {}, 'kompas': {}, 'overrides': None, 'baseline': 'G12w',
               'price_cache': _Cache()}
     monkeypatch.setattr(web, '_tariff_inputs_callback', lambda: inputs)
     monkeypatch.setattr(web, '_today', lambda: TODAY)
