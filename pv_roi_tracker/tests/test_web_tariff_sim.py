@@ -51,3 +51,11 @@ def test_rekomendacja_c_i_best_year(client, tmp_path, monkeypatch):
     assert j['recommendation']['C']['best'] == 'G13s'
     assert j['recommendation']['best_year']['tariff_change'] is True
     assert j['data']['best_year']['best'] == best
+
+
+def test_rekomendacja_z_baza_z_payloadu(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(web, '_tariff_settings_path', tmp_path / 'ts.json')
+    web.update_tariff_sim({'to': '2026-10', 'baseline_tariff': 'G13',
+                           'last12': {'gross': {'G12w': 500.0, 'G13': 1000.0}}})
+    a = client.get('/api/tariff_sim').get_json()['recommendation']['A']
+    assert a['best'] == 'G12w' and a['baseline_tariff'] == 'G13'

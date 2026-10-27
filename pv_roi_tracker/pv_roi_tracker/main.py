@@ -903,6 +903,9 @@ def main() -> None:
             cache.ensure('2024-12-01', today.isoformat())
             invoices = invoice_store.filter_billing(
                 invoice_store.filter_real(invoice_store.load(INVOICE_PATH)))
+            from . import tariff_history as _th
+            periods = _th.load(TARIFF_PERIODS_PATH)
+            baseline = _th.current(periods, CURRENT_TARIFF_OVERRIDE) or tariff_job.BASELINE_TARIFF
             payload = tariff_job.compute_payload(
                 tariff_job.import_series(hours), _tcat.load_catalog(),
                 tariff_settings_store.to_catalog_settings(
@@ -910,7 +913,8 @@ def main() -> None:
                 cache.rdn, cache.kompas, invoices, today, hours=hours,
                 battery_cfg=battery_store.load_config(BATTERY_CONFIG_PATH),
                 rcem_by_ym={ym: float(v) for ym, v
-                            in rcem_scraper._load_history(RCEM_HISTORY_PATH).items()})
+                            in rcem_scraper._load_history(RCEM_HISTORY_PATH).items()},
+                baseline=baseline, tariff_periods=periods)
             tariff_job.save_payload(payload, TARIFF_SIM_PATH)
             _web.update_tariff_sim(payload)
             _tariff_state['payload'] = payload
@@ -931,10 +935,23 @@ def main() -> None:
     _web.set_tariff_settings_path(TARIFF_SETTINGS_PATH)
     _web.set_tariff_settings_callback(_tariff_settings_changed)
 
+    def _tariff_periods_changed(periods: list) -> None:
+        from . import tariff_history as _th
+        _th.save(periods, TARIFF_PERIODS_PATH)
+        _threading.Thread(target=tariff_sim_job, daemon=True,
+                          name='tariff-sim-periods').start()
+
+    _web.set_tariff_periods_path(TARIFF_PERIODS_PATH)
+    _web.set_tariff_override(CURRENT_TARIFF_OVERRIDE)
+    _web.set_tariff_periods_callback(_tariff_periods_changed)
+
     def _tariff_inputs() -> dict:
         """Wejścia dla /api/tariff_hourly|now|catalog — czytane per request, bez stanu."""
+        from . import tariff_history as _th
         cache = PriceCache(TARIFF_PRICE_CACHE_PATH)
         return {
+            'baseline': (_th.current(_th.load(TARIFF_PERIODS_PATH), CURRENT_TARIFF_OVERRIDE)
+                         or tariff_job.BASELINE_TARIFF),
             'import_by_hour': tariff_job.import_series(battery_store.load_hours(BATTERY_HOURS_PATH)),
             'catalog': _tcat.load_catalog(),
             'settings': tariff_settings_store.to_catalog_settings(

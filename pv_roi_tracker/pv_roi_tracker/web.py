@@ -154,6 +154,28 @@ def set_tariff_settings_callback(fn) -> None:
     _tariff_settings_callback = fn
 
 
+_tariff_periods_path = None
+_tariff_periods_callback = None
+_tariff_override = ''
+
+
+def set_tariff_periods_path(path) -> None:
+    global _tariff_periods_path
+    _tariff_periods_path = path
+
+
+def set_tariff_override(value) -> None:
+    """Ręczny override bieżącej taryfy (opcja add-onu), tylko do odczytu w GET /api/tariff_periods."""
+    global _tariff_override
+    _tariff_override = value or ''
+
+
+def set_tariff_periods_callback(fn) -> None:
+    """fn(periods: list) — zapisuje historię taryf i przelicza symulację."""
+    global _tariff_periods_callback
+    _tariff_periods_callback = fn
+
+
 def _load_tariff_cfg() -> dict:
     from . import tariff_config as _tc
     try:
@@ -1080,6 +1102,37 @@ def api_tariff_settings_post():
         return jsonify({'ok': False, 'error': str(exc)}), 500
 
 
+@app.route('/api/tariff_periods')
+def api_tariff_periods_get():
+    from . import tariff_history as _th
+    if not _tariff_periods_path:
+        return jsonify({'ok': False, 'error': 'tariff_periods_path not configured'}), 500
+    periods = _th.load(_tariff_periods_path)
+    return jsonify({'ok': True, 'periods': periods,
+                    'current_tariff': _th.current(periods, _tariff_override),
+                    'override': _th.normalize(_tariff_override)})
+
+
+@app.route('/api/tariff_periods', methods=['PUT'])
+def api_tariff_periods_put():
+    """Zapisz historię taryf (walidacja) i przelicz symulację w tle (callback z main.py)."""
+    from . import tariff_history as _th
+    if not _tariff_periods_path or _tariff_periods_callback is None:
+        return jsonify({'ok': False, 'error': 'tariff periods not wired'}), 500
+    try:
+        raw = request.get_json(force=True, silent=True)
+        if not isinstance(raw, dict):
+            raise ValueError('oczekiwano obiektu JSON z kluczem periods')
+        periods = _th.validate_periods(raw.get('periods'))
+        _tariff_periods_callback(periods)
+        return jsonify({'ok': True, 'periods': periods})
+    except ValueError as exc:
+        return jsonify({'ok': False, 'error': str(exc)}), 400
+    except Exception as exc:
+        log.exception('tariff_periods PUT failed')
+        return jsonify({'ok': False, 'error': str(exc)}), 500
+
+
 _tariff_inputs_callback = None
 _tariff_hourly_cache: 'OrderedDict' = OrderedDict()
 _TARIFF_HOURLY_CACHE_MAX = 32
@@ -1198,12 +1251,12 @@ def api_tariff_hourly():
 
 @app.route('/api/tariff_now')
 def api_tariff_now():
-    """Bieżąca strefa i cena taryfy użytkownika (G12w) + najbliższa zmiana strefy."""
+    """Bieżąca strefa i cena taryfy użytkownika (baza porównań) + najbliższa zmiana strefy."""
     if _tariff_inputs_callback is None:
         return _tariff_error('tariff inputs not wired', 503)
     from .tariff_catalog import period_for, rates_per_kwh, zone_for
-    tariff = 'G12w'
     inp = _tariff_inputs_callback()
+    tariff = inp.get('baseline') or 'G12w'
     cat, ov = inp['catalog'], inp['overrides']
     now = _now().replace(minute=0, second=0, microsecond=0)
     try:

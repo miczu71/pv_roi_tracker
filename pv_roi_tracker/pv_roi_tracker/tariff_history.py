@@ -41,6 +41,37 @@ def _valid(item) -> Optional[dict]:
     return {'tariff': tariff, 'from': start}
 
 
+def validate_periods(raw) -> list:
+    """Walidacja okresów z UI: niepusta lista `{tariff, from}`; taryfa → zapis kanoniczny;
+    `from` null tylko w pierwszym wpisie, reszta ISO `YYYY-MM-DD` ściśle rosnąco."""
+    if not isinstance(raw, list) or not raw:
+        raise ValueError('oczekiwano niepustej listy okresów')
+    out: list = []
+    prev = None
+    for i, item in enumerate(raw):
+        if not isinstance(item, dict):
+            raise ValueError(f'okres {i + 1}: oczekiwano obiektu {{tariff, from}}')
+        tariff = normalize(item.get('tariff'))
+        if tariff is None:
+            raise ValueError(f'okres {i + 1}: nieznana taryfa')
+        if 'from' not in item:
+            raise ValueError(f'okres {i + 1}: brak pola from')
+        start = item['from']
+        if start is None:
+            if i > 0:
+                raise ValueError(f'okres {i + 1}: data początku jest wymagana')
+        else:
+            try:
+                day = date.fromisoformat(start)
+            except (TypeError, ValueError):
+                raise ValueError(f'okres {i + 1}: data musi mieć format RRRR-MM-DD') from None
+            if prev is not None and day <= prev:
+                raise ValueError(f'okres {i + 1}: daty muszą rosnąć')
+            prev = day
+        out.append({'tariff': tariff, 'from': start})
+    return out
+
+
 def load(path) -> list:
     """Okresy z pliku; brak pliku albo uszkodzona zawartość → []."""
     try:

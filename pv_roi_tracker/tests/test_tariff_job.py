@@ -513,3 +513,92 @@ def test_recommend_best_year_ponizej_progu_i_bez_zmiany_taryfy():
 def test_recommend_best_year_none():
     assert tj.recommend({"best_year": None}, 100)["best_year"] is None
     assert tj.recommend({"best_year": {"best": None}}, 100)["best_year"] is None
+
+
+# ── baza porównań = bieżąca taryfa (E3) ──────────────────────────────────────
+
+def test_baza_domyslna_g12w_i_aliasy(monkeypatch, cat):
+    _patch_range(monkeypatch, _base(g12w=100.0, g13=80.0))
+    p = run(cat)
+    assert p["baseline_tariff"] == "G12w"
+    l12 = p["last12"]
+    assert l12["saving_vs_baseline"] == l12["saving_vs_g12w"] == pytest.approx(240.0)
+    assert p["best_year"]["baseline"]["tariff"] == "G12w"
+
+
+def test_baza_g13_ranking_i_oszczednosc(monkeypatch, cat):
+    _patch_range(monkeypatch, _base(g12w=100.0, g13=80.0))
+    p = tj.compute_payload({}, cat, TariffSettings(), {}, {}, {}, TODAY, baseline="G13")
+    assert p["baseline_tariff"] == "G13"
+    l12 = p["last12"]
+    # najtańsza dyn_a (90*12=1080)? nie: G13 = 960 < dyn_a 1080 -> oszczędność 0
+    assert l12["cheapest"] == "G13"
+    assert l12["saving_vs_baseline"] == l12["saving_vs_g12w"] == 0.0
+    assert p["best_year"]["baseline"] == {"tariff": "G13", "variant": "A", "gross": pytest.approx(960.0)}
+    assert p["best_year"]["warnings"] == []   # najlepsza = baza, brak ostrzeżenia o zmianie grupy
+
+
+def test_baza_g13_oszczednosc_dodatnia(monkeypatch, cat):
+    _patch_range(monkeypatch, _base(g12w=50.0, g13=100.0))
+    p = tj.compute_payload({}, cat, TariffSettings(), {}, {}, {}, TODAY, baseline="G13")
+    assert p["last12"]["cheapest"] == "G12w"
+    assert p["last12"]["saving_vs_baseline"] == p["last12"]["saving_vs_g12w"] == pytest.approx(600.0)
+    assert p["best_year"]["best"]["saving_pln"] == pytest.approx(600.0)
+
+
+def test_reconcile_wg_okresow_taryfy(monkeypatch, cat):
+    # G13 net 100.0 (gross 123), G12w net 200.0
+    per = _base(g12w=246.0, g13=123.0)
+    _patch_range(monkeypatch, per)
+    periods = [{"tariff": "G12w", "from": None}, {"tariff": "G13", "from": "2026-03-01"}]
+    inv = {"2026-02": _inv(200.0), "2026-04": _inv(100.0)}
+    p = tj.compute_payload({}, cat, TariffSettings(), {}, {}, inv, TODAY, tariff_periods=periods)
+    r = p["reconciliation"]
+    assert r["2026-02"]["sim_net"] == pytest.approx(200.0) and r["2026-02"]["ok"] is True
+    assert r["2026-04"]["sim_net"] == pytest.approx(100.0) and r["2026-04"]["ok"] is True
+
+
+def test_reconcile_zmiana_w_srodku_miesiaca_pomijana(monkeypatch, cat):
+    _patch_range(monkeypatch, _base())
+    periods = [{"tariff": "G12w", "from": None}, {"tariff": "G13", "from": "2026-03-15"}]
+    p = tj.compute_payload({}, cat, TariffSettings(), {}, {}, {"2026-03": _inv(100.0)}, TODAY,
+                           tariff_periods=periods)
+    assert p["reconciliation"] == {}
+
+
+def test_reconcile_bez_okresow_to_g12w(monkeypatch, cat):
+    _patch_range(monkeypatch, _base(g12w=123.0))
+    p = tj.compute_payload({}, cat, TariffSettings(), {}, {}, {"2026-02": _inv(100.0)}, TODAY,
+                           tariff_periods=[])
+    assert p["reconciliation"]["2026-02"]["sim_net"] == pytest.approx(100.0)
+
+
+def test_recommend_baza_z_payloadu():
+    pl = {"baseline_tariff": "G13", "last12": {"gross": {"G12w": 500.0, "G13": 1000.0}}}
+    r = tj.recommend(pl, 100)["A"]
+    assert r["best"] == "G12w" and r["switch"] is True
+    assert r["baseline_tariff"] == "G13" and r["baseline_gross"] == 1000.0 and r["g12w"] == 1000.0
+    assert r["saving_pln"] == 500.0
+
+
+def test_recommend_baza_najtansza_tekst():
+    pl = {"baseline_tariff": "G13", "last12": {"gross": {"G12w": 1500.0, "G13": 1000.0}}}
+    r = tj.recommend(pl, 100)["A"]
+    assert r["best"] == "G13" and r["switch"] is False
+    assert r["reason"] == "G13 jest najtańsza"
+
+
+def test_recommend_stary_payload_bez_baseline_tariff():
+    r = tj.recommend({"last12": {"gross": {"G12w": 1000.0, "G13": 600.0}}}, 100)["A"]
+    assert r["baseline_tariff"] == "G12w" and r["g12w"] == 1000.0 and r["switch"] is True
+
+
+def test_recommend_best_year_tekst_z_nazwa_bazy():
+    best = {"tariff": "G12w", "variant": "A", "gross": 500.0, "saving_pln": 500.0, "confirmed": True}
+    pl = {"baseline_tariff": "G13", "best_year": {"best": best}}
+    out = tj.recommend(pl, 100)["best_year"]
+    assert "względem G13 A" in out["reason"]
+    assert out["tariff_change"] is True
+    best2 = {**best, "tariff": "G13"}
+    out2 = tj.recommend({"baseline_tariff": "G13", "best_year": {"best": best2}}, 100)["best_year"]
+    assert out2["tariff_change"] is False

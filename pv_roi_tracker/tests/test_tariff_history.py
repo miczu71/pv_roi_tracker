@@ -3,6 +3,8 @@ import json
 import logging
 from datetime import date
 
+import pytest
+
 from pv_roi_tracker import tariff_history as th
 
 
@@ -90,3 +92,32 @@ def test_tariff_on_empty_history_is_none():
     assert th.tariff_on([], date(2026, 10, 27)) is None
     dated_only = [{'tariff': 'G11', 'from': '2026-10-01'}]
     assert th.tariff_on(dated_only, date(2026, 9, 1)) is None
+
+
+# ── validate_periods (E3) ────────────────────────────────────────────────────
+
+def test_validate_periods_ok_i_kanoniczna_nazwa():
+    raw = [{'tariff': 'g12w', 'from': None}, {'tariff': 'G13', 'from': '2026-03-01'}]
+    assert th.validate_periods(raw) == [{'tariff': 'G12w', 'from': None},
+                                        {'tariff': 'G13', 'from': '2026-03-01'}]
+
+
+def test_validate_periods_jeden_wpis_z_data():
+    assert th.validate_periods([{'tariff': 'G11', 'from': '2025-01-01'}]) == [
+        {'tariff': 'G11', 'from': '2025-01-01'}]
+
+
+@pytest.mark.parametrize('raw', [
+    [], None, 'x', {}, [1],
+    [{'tariff': 'XX', 'from': None}],
+    [{'from': None}],
+    [{'tariff': 'G12w'}],
+    [{'tariff': 'G12w', 'from': None}, {'tariff': 'G13', 'from': None}],
+    [{'tariff': 'G12w', 'from': None}, {'tariff': 'G13', 'from': '2026-13-01'}],
+    [{'tariff': 'G12w', 'from': None}, {'tariff': 'G13', 'from': '2026-03-01'},
+     {'tariff': 'G11', 'from': '2026-03-01'}],
+    [{'tariff': 'G12w', 'from': '2026-05-01'}, {'tariff': 'G13', 'from': '2026-03-01'}],
+])
+def test_validate_periods_zle_wejscia(raw):
+    with pytest.raises(ValueError):
+        th.validate_periods(raw)

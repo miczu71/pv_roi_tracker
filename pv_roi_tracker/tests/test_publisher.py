@@ -60,21 +60,22 @@ def test_render_value_unaffected_for_non_rate_sensors(result):
 # ── symulacja taryf (tariffsim_*) ────────────────────────────────────────────
 
 _SIM = {
-    'current_month': {'ym': '2026-10', 'gross': {'G12w': 55.5, 'dyn_a': None}},
-    'last12': {'gross': {'G12w': 1234.5678, 'dyn_a': None}, 'cheapest': 'G12w',
-               'saving_vs_g12w': 0.0,
+    'baseline_tariff': 'G13s',
+    'current_month': {'ym': '2026-10', 'gross': {'G12w': 55.5, 'G13s': 44.4, 'dyn_a': None}},
+    'last12': {'gross': {'G12w': 1234.5678, 'G13s': 999.5, 'dyn_a': None}, 'cheapest': 'G12w',
+               'saving_vs_g12w': 0.0, 'saving_vs_baseline': 0.0,
                'gross_c': {'G12w': 1000.0, 'G13s': 900.5, 'G11': None}},
     'best_year': {'best': {'tariff': 'G13s', 'variant': 'C', 'gross': 900.5,
                            'saving_pln': 334.0678, 'confirmed': False}},
 }
 
 
-def test_tariffsim_ma_23_sensory_monetary_bez_state_class():
+def test_tariffsim_ma_28_sensory_monetary_bez_state_class():
     sims = [s for s in _SENSORS if s.slug.startswith('tariffsim_')]
-    assert len(sims) == 23
+    assert len(sims) == 28
     for s in sims:
         assert s.state_class is None
-        if s.slug not in ('tariffsim_cheapest', 'tariffsim_best_variant'):
+        if s.slug not in ('tariffsim_cheapest', 'tariffsim_best_variant', 'tariffsim_baseline_tariff'):
             assert s.unit == 'PLN' and s.device_class == 'monetary'
     assert _sensor('tariffsim_cheapest').unit is None
     assert _sensor('tariffsim_best_variant').unit is None
@@ -111,7 +112,7 @@ def test_render_tariffsim_unknown(result):
     assert _render_value(_sensor('tariffsim_cheapest'), result, tariff_sim={}) == 'unknown'
 
 
-def test_publish_roi_publikuje_23_tematy_tariffsim(result):
+def test_publish_roi_publikuje_28_tematow_tariffsim(result):
     from unittest.mock import MagicMock
     from pv_roi_tracker.publisher import MQTTPublisher
     pub = MQTTPublisher('localhost', 1883, '', '')
@@ -120,7 +121,7 @@ def test_publish_roi_publikuje_23_tematy_tariffsim(result):
     result = dataclasses.replace(result, roi_pct=1.0)
     pub.publish_roi(result, tariff_sim=_SIM)
     topics = [c.args[0] for c in pub._client.publish.call_args_list]
-    assert sum('/tariffsim_' in t for t in topics) == 23
+    assert sum('/tariffsim_' in t for t in topics) == 28
 
 
 # ── bieżąca taryfa (current_tariff) ──────────────────────────────────────────
@@ -146,3 +147,26 @@ def test_publish_roi_publishes_current_tariff(result):
     published = {c.args[0]: c.args[1] for c in pub._client.publish.call_args_list}
     topic = next(t for t in published if t.endswith('/current_tariff/state'))
     assert published[topic] == 'G12w'
+
+
+def test_render_tariffsim_baza_e3(result):
+    assert _render_value(_sensor('tariffsim_baseline_tariff'), result, tariff_sim=_SIM) == 'G13s'
+    assert _render_value(_sensor('tariffsim_month_baseline'), result, tariff_sim=_SIM) == '44.4'
+    assert _render_value(_sensor('tariffsim_12m_baseline'), result, tariff_sim=_SIM) == '999.5'
+    assert _render_value(_sensor('tariffsim_12m_c_baseline'), result, tariff_sim=_SIM) == '900.5'
+    sim = {**_SIM, 'last12': {**_SIM['last12'], 'saving_vs_baseline': 12.5, 'saving_vs_g12w': 12.5}}
+    assert _render_value(_sensor('tariffsim_saving_vs_baseline'), result, tariff_sim=sim) == '12.5'
+    assert _render_value(_sensor('tariffsim_saving_vs_g12w'), result, tariff_sim=sim) == '12.5'
+
+
+def test_render_tariffsim_baza_brak_danych(result):
+    for slug in ('tariffsim_baseline_tariff', 'tariffsim_month_baseline',
+                 'tariffsim_12m_baseline', 'tariffsim_12m_c_baseline',
+                 'tariffsim_saving_vs_baseline'):
+        assert _render_value(_sensor(slug), result) == 'unknown'
+    # stary payload bez baseline_tariff -> baza G12w
+    old = {'current_month': {'gross': {'G12w': 7.0}}}
+    assert _render_value(_sensor('tariffsim_month_baseline'), result, tariff_sim=old) == '7.0'
+    # alias stary czyta saving_vs_baseline, gdy jest
+    assert _render_value(_sensor('tariffsim_saving_vs_g12w'), result,
+                         tariff_sim={'last12': {'saving_vs_baseline': 3.0}}) == '3.0'

@@ -104,6 +104,11 @@ _SENSORS: list[_Sensor] = [
     _Sensor('tariffsim_best_cost', 'PV Tariff Sim Best Cost', None, 'PLN', 'monetary', None, 'mdi:cash'),
     _Sensor('tariffsim_best_saving', 'PV Tariff Sim Best Saving', None, 'PLN', 'monetary', None, 'mdi:piggy-bank-outline'),
     _Sensor('tariffsim_cheapest', 'PV Tariff Sim Cheapest', None, None, None, None, 'mdi:medal'),
+    _Sensor('tariffsim_baseline_tariff', 'PV Tariff Sim Baseline Tariff', None, None, None, None, 'mdi:flash'),
+    _Sensor('tariffsim_month_baseline', 'PV Tariff Sim Month Baseline', None, 'PLN', 'monetary', None, 'mdi:calendar-month'),
+    _Sensor('tariffsim_12m_baseline', 'PV Tariff Sim 12M Baseline', None, 'PLN', 'monetary', None, 'mdi:calendar-range'),
+    _Sensor('tariffsim_12m_c_baseline', 'PV Tariff Sim 12M C Baseline', None, 'PLN', 'monetary', None, 'mdi:calendar-range'),
+    _Sensor('tariffsim_saving_vs_baseline', 'PV Tariff Sim Saving vs Baseline', None, 'PLN', 'monetary', None, 'mdi:piggy-bank-outline'),
     _Sensor('tariffsim_saving_vs_g12w', 'PV Tariff Sim Saving vs G12w', None, 'PLN', 'monetary', None, 'mdi:piggy-bank-outline'),
     _Sensor('current_tariff', 'PV Current Tariff', None, None, None, None, 'mdi:flash'),
     # Latest-invoice rates (v0.20.0) — single source of truth for energy_simulation.yaml
@@ -164,8 +169,13 @@ def _tariff_sim_value(slug: str, tariff_sim: Optional[dict]) -> Any:
     sim = tariff_sim or {}
     if slug == 'tariffsim_cheapest':
         return (sim.get('last12') or {}).get('cheapest')
-    if slug == 'tariffsim_saving_vs_g12w':
-        return (sim.get('last12') or {}).get('saving_vs_g12w')
+    baseline = sim.get('baseline_tariff') or 'G12w'
+    if slug == 'tariffsim_baseline_tariff':
+        return sim.get('baseline_tariff')
+    if slug in ('tariffsim_saving_vs_baseline', 'tariffsim_saving_vs_g12w'):
+        l12 = sim.get('last12') or {}
+        v = l12.get('saving_vs_baseline')
+        return v if v is not None else l12.get('saving_vs_g12w')
     if slug.startswith('tariffsim_best_'):
         best = (sim.get('best_year') or {}).get('best') or {}
         if slug == 'tariffsim_best_variant':
@@ -180,6 +190,8 @@ def _tariff_sim_value(slug: str, tariff_sim: Optional[dict]) -> Any:
     else:
         gross = (sim.get('last12') or {}).get('gross') or {}
         part = slug[len('tariffsim_12m_'):]
+    if part == 'baseline':
+        part = baseline.lower()
     for name, val in gross.items():          # klucze w payloadzie: G12w, dyn_a; slug małymi
         if name.lower() == part:
             return val
