@@ -135,6 +135,15 @@ niezgodności), `api/ebok/payment-status` (ostatnia wpłata Y → 00xx/26, bez r
 sekcji eBOK w UI. Notatki pamięci: aktualizacja `project_ebok_moj_tauron` (nowe API, bez danych
 osobowych) i wpis w MEMORY.md (`-config`).
 
+## STATUS (27.10.2026)
+- **E1 ZROBIONE i wydane jako 0.50.0** (commity dev: b6a7979 worker → 6168ceb simplify → 254f942 review → ade2a23 → 627ee56 bump; tag `v0.50.0`, release published; mirror `/config` e1ec5a0). Testy 976 passed, 23 skipped.
+- Na żywo (12:2x): `api/ebok/diag` total 78, statusy {Opłacona, Rozliczono}, `unknown` 1 (faktura 2024-01); `POST api/ebok/sync` → ok, imported `2024-01`, bez błędów; `payment-status` → `active: null`.
+- Ulepszenie ponad plan: pusty `ebok_payer_id` wybiera jedynego klienta konta (kilku → błąd z prośbą o ustawienie opcji).
+- Pominięte: second-opinion (diff 77 kB > limit 60 kB; pomiar zostaje 4/10).
+- Do obserwacji: jutro logi joba 07:00 (`ebok_payment` ok, brak pushy o błędzie); status niezapłaconej faktury ok. 5–8.11.
+- Znane długi nieblokujące (review): paginacja liczy przefiltrowany batch, brak dedupu po sygnaturze, `parse_documents_json` bez walidacji typów, `/api/ebok/diag` bez sprawdzenia `blocked_until`, stare docstringi, maskowanie checksum w wyjątkach `requests`; bezpiecznik >5 liczy też FK/NB.
+- **Następny: E2** (detekcja taryfy + `tariff_periods` + encja `current_tariff`, push przy zmianie). Wymaga planu `docs/PLAN_EBOK_MOJ_TAURON_E2.md` z sekcją Wykonawca przed kodem; otwarte: data zmiany na G13 (eBOK vs pierwsza faktura), pkt 5 (3-strefowe liczniki, E4–E5).
+
 ## ZMIANA ZAKRESU (user, 27.10, po odrzuceniu planu) — STAN ROBOCZY / HANDOFF
 User: „będę zmieniał taryfę na G13. Gdy wykryjemy zmianę taryfy, wszystkie porównania mają pokazywać
 bazę jako nową taryfę, zarówno w add-onie, jak i w HA”. E1 (naprawa eBOK) jest bez zmian i pilny.
