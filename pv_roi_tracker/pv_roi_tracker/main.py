@@ -639,6 +639,9 @@ def main() -> None:
             from . import ebok_client as _ec
             existing = invoice_store.load(INVOICE_PATH)
             known_numbers = _ec.known_signatures(existing.values())
+            if not docs and known_numbers:
+                # Status OK z pustą listą przy znanej historii = zły checksum/płatnik, nie „brak nowych”
+                raise _ec.EbokLayoutChanged('Lista dokumentów jest pusta mimo zaimportowanych faktur')
             missing, over_limit = _ebok_missing_documents(docs, known_numbers)
             diag = {'total': len(docs), 'latest': [d.signature for d in _ebok_newest(docs)]}
             logger.info('eBOK: %d dok., brakujących %d', len(docs), len(missing))

@@ -371,6 +371,14 @@ def test_list_documents_paginates_until_total():
     assert len(urls) == 3 and 'rangeFrom=201&rangeTo=300' in urls[2]
 
 
+def test_list_documents_empty_page_before_total_warns(caplog):
+    client, session = _selected_client()
+    body = json.dumps({'Status': 'OK', 'TotalNumber': 5, 'Documents': []})
+    session.when('GetDocuments', _FakeResponse(text=body))
+    assert client.list_documents(date(2015, 1, 1), date(2026, 10, 27)) == []
+    assert 'niepełna' in caplog.text
+
+
 def test_list_documents_page_limit(monkeypatch, caplog):
     client, session = _selected_client()
     body = json.dumps({'Status': 'OK', 'TotalNumber': 99999, 'Documents': [
@@ -458,3 +466,20 @@ def test_mask_hides_payer_and_email_and_tolerates_empty_payer():
     from pv_roi_tracker.ebok_client import _mask
     assert _mask('płatnik 11111111 a@b.pl', '11111111') == 'płatnik <płatnik> <email>'
     assert _mask('abc', '') == 'abc'
+
+
+def test_parsed_documents_feed_payment_reminders(tmp_path):
+    """Kontrakt klient ↔ payment_reminders: niezapłacona faktura z fixture'a daje
+    przypomnienie i aktywną płatność, opłacone dokumenty są pomijane."""
+    from pv_roi_tracker.payment_reminders import (
+        apply_refresh, load_payment_state, select_active_payment)
+    docs = parse_documents_json(_DOCS_JSON)
+    unpaid = next(d for d in docs if not d.paid)
+    path = tmp_path / 'payment_state.json'
+    today = unpaid.due_date
+
+    notes = apply_refresh(docs, path, today)
+
+    assert [n['signature'] for n in notes] == [unpaid.signature]
+    active = select_active_payment(load_payment_state(path), today)
+    assert active['signature'] == unpaid.signature

@@ -196,7 +196,11 @@ class EbokClient:
             batch = parse_documents_json(data)
             docs.extend(batch)
             total = data.get('TotalNumber')
-            if not batch or not isinstance(total, int) or len(docs) >= total:
+            if not isinstance(total, int) or len(docs) >= total:
+                break
+            if not batch:
+                logger.warning('eBOK: pusta strona listy przy %d z %d dok. — lista może być niepełna',
+                               len(docs), total)
                 break
         else:
             logger.warning('eBOK: lista dokumentów obcięta do %d stron (%d dok.)', MAX_PAGES, len(docs))
