@@ -222,6 +222,20 @@ def _notify_ha(title: str, message: str, target: str = 'family') -> None:
 _job_health: dict = {}
 
 
+def _baseline_tariff() -> str:
+    """Bieżąca taryfa bazowa porównań: override > ostatni okres > domyślna."""
+    from . import tariff_history as _th, tariff_job
+    return (_th.current(_th.load(TARIFF_PERIODS_PATH), CURRENT_TARIFF_OVERRIDE)
+            or tariff_job.BASELINE_TARIFF)
+
+
+def _periods_peak_fn():
+    """Funkcja szczytu wg okresów taryfy; None gdy brak okresów (symulacje zostają przy G12w)."""
+    from . import tariff_catalog as _tcat, tariff_history as _th, tariff_zones as _tz
+    periods = _th.load(TARIFF_PERIODS_PATH)
+    return _tz.peak_fn(periods, _tcat.load_catalog()) if periods else None
+
+
 def _record_job(name: str, ok: bool, detail: str = '') -> None:
     from datetime import datetime as _dtt
     now = _dtt.now().isoformat(timespec='seconds')
@@ -867,11 +881,9 @@ def main() -> None:
                     rcem_scraper._load_history(RCEM_HISTORY_PATH).items()}
             rce_prices = _rceh._load_cache(RCE_HOURLY_CACHE_PATH).get('prices', {})
 
-            from . import tariff_catalog as _tcat_b, tariff_history as _th_b, tariff_zones as _tz_b
-            _periods_b = _th_b.load(TARIFF_PERIODS_PATH)
             payload = battery_sim.simulate_all(
                 hours, cfg, zone_prices, rcem, rce_hourly=rce_prices,
-                is_peak_fn=_tz_b.peak_fn(_periods_b, _tcat_b.load_catalog()) if _periods_b else None)
+                is_peak_fn=_periods_peak_fn())
             _web.update_battery_sim(payload)
             _battery_state['summary'] = payload.get('summary')
             _record_job('battery_sim', True)
@@ -908,7 +920,7 @@ def main() -> None:
                 invoice_store.filter_real(invoice_store.load(INVOICE_PATH)))
             from . import tariff_history as _th
             periods = _th.load(TARIFF_PERIODS_PATH)
-            baseline = _th.current(periods, CURRENT_TARIFF_OVERRIDE) or tariff_job.BASELINE_TARIFF
+            baseline = _baseline_tariff()
             payload = tariff_job.compute_payload(
                 tariff_job.import_series(hours), _tcat.load_catalog(),
                 tariff_settings_store.to_catalog_settings(
@@ -950,11 +962,9 @@ def main() -> None:
 
     def _tariff_inputs() -> dict:
         """Wejścia dla /api/tariff_hourly|now|catalog — czytane per request, bez stanu."""
-        from . import tariff_history as _th
         cache = PriceCache(TARIFF_PRICE_CACHE_PATH)
         return {
-            'baseline': (_th.current(_th.load(TARIFF_PERIODS_PATH), CURRENT_TARIFF_OVERRIDE)
-                         or tariff_job.BASELINE_TARIFF),
+            'baseline': _baseline_tariff(),
             'import_by_hour': tariff_job.import_series(battery_store.load_hours(BATTERY_HOURS_PATH)),
             'catalog': _tcat.load_catalog(),
             'settings': tariff_settings_store.to_catalog_settings(
@@ -1059,13 +1069,11 @@ def main() -> None:
                         float(rates['peak_gross']),
                         float(rates['offpeak_gross']) if rates.get('offpeak_gross') is not None else None)
 
-            from . import tariff_catalog as _tcat_h, tariff_history as _th_h, tariff_zones as _tz_h
-            _periods_h = _th_h.load(TARIFF_PERIODS_PATH)
             payload = heatpump.compute(
                 hours, rates_by_month, rcem_by_month,
                 battery_efficiency=live_reader._BATTERY_RT_EFF,
                 today=today, hdd_base=HEATPUMP_HDD_BASE_TEMP,
-                is_peak_fn=_tz_h.peak_fn(_periods_h, _tcat_h.load_catalog()) if _periods_h else None)
+                is_peak_fn=_periods_peak_fn())
             _web.update_heatpump(payload)
             _record_job('heatpump', True)
             if payload:

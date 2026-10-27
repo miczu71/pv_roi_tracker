@@ -82,7 +82,10 @@ def load(path) -> list:
     except Exception:
         logger.warning('tariff_history: nie można wczytać %s — historia pusta', path, exc_info=True)
         return []
-    periods = [_valid(item) for item in doc] if isinstance(doc, list) else [None]
+    if not isinstance(doc, list):
+        logger.warning('tariff_history: %s nie jest listą — historia pusta', path)
+        return []
+    periods = [_valid(item) for item in doc]
     if any(p is None for p in periods):
         logger.warning('tariff_history: niepoprawny wpis w %s — historia pusta', path)
         return []

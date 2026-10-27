@@ -1118,7 +1118,7 @@ def api_tariff_periods_put():
     """Zapisz historię taryf (walidacja) i przelicz symulację w tle (callback z main.py)."""
     from . import tariff_history as _th
     if not _tariff_periods_path or _tariff_periods_callback is None:
-        return jsonify({'ok': False, 'error': 'tariff periods not wired'}), 500
+        return _tariff_error('tariff periods not wired', 500)
     try:
         raw = request.get_json(force=True, silent=True)
         if not isinstance(raw, dict):
@@ -1127,10 +1127,10 @@ def api_tariff_periods_put():
         _tariff_periods_callback(periods)
         return jsonify({'ok': True, 'periods': periods})
     except ValueError as exc:
-        return jsonify({'ok': False, 'error': str(exc)}), 400
+        return _tariff_error(str(exc))
     except Exception as exc:
         log.exception('tariff_periods PUT failed')
-        return jsonify({'ok': False, 'error': str(exc)}), 500
+        return _tariff_error(str(exc), 500)
 
 
 _tariff_inputs_callback = None
