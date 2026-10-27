@@ -121,3 +121,28 @@ def test_publish_roi_publikuje_23_tematy_tariffsim(result):
     pub.publish_roi(result, tariff_sim=_SIM)
     topics = [c.args[0] for c in pub._client.publish.call_args_list]
     assert sum('/tariffsim_' in t for t in topics) == 23
+
+
+# ── bieżąca taryfa (current_tariff) ──────────────────────────────────────────
+
+def test_current_tariff_sensor_is_plain_text():
+    s = _sensor('current_tariff')
+    assert s.name == 'PV Current Tariff'
+    assert s.unit is None and s.device_class is None and s.state_class is None
+
+
+def test_render_current_tariff(result):
+    assert _render_value(_sensor('current_tariff'), result, current_tariff='G13') == 'G13'
+    assert _render_value(_sensor('current_tariff'), result) == 'unknown'
+
+
+def test_publish_roi_publishes_current_tariff(result):
+    from unittest.mock import MagicMock
+    from pv_roi_tracker.publisher import MQTTPublisher
+    pub = MQTTPublisher('localhost', 1883, '', '')
+    pub._client = MagicMock()
+    pub._connected = True
+    pub.publish_roi(result, current_tariff='G12w')
+    published = {c.args[0]: c.args[1] for c in pub._client.publish.call_args_list}
+    topic = next(t for t in published if t.endswith('/current_tariff/state'))
+    assert published[topic] == 'G12w'

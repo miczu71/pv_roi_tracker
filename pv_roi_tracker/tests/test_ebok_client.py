@@ -30,12 +30,17 @@ from pv_roi_tracker.ebok_client import (
     known_signatures,
     parse_client_checksum,
     parse_documents_json,
+    parse_home_contract,
+    parse_point_details,
 )
 
 _FIX = Path(__file__).parent / 'fixtures'
 _ARCHIWUM_HTML = (_FIX / 'ebok_archiwum.html').read_text(encoding='utf-8')
 _DOCS_JSON = json.loads((_FIX / 'ebok_documents.json').read_text(encoding='utf-8'))
 _PDF_JSON = (_FIX / 'ebok_pdf.json').read_text(encoding='utf-8')
+_HOME_HTML = (_FIX / 'ebok_home.html').read_text(encoding='utf-8')
+_PUNKT_HTML = (_FIX / 'ebok_punkt.html').read_text(encoding='utf-8')
+_UMOWA_HTML = '<a href="/Home/Pages/punkty-poboru?sid=T18&amp;pp=11111111">Punkty poboru</a>'
 _PAYER = '11111111'
 _CHECKSUM = 'a' * 64
 
@@ -503,3 +508,79 @@ def test_select_payer_empty_picks_sole_client():
     session.when('/archiwum-dokumentow', _FakeResponse(text=html))
     client.select_payer('')
     assert client._payer_id == '11111111' and client._checksum == 'a' * 64
+
+
+# ── kontrakt: parse_home_contract / parse_point_details / read_contract ─────
+
+def test_parse_home_contract_reads_dl_horizontal_pairs():
+    assert parse_home_contract(_HOME_HTML) == {
+        'umowa': 'UMOWA-TEST-1', 'taryfa': 'G12W', 'faktura': 'Elektroniczna'}
+
+
+def test_parse_home_contract_missing_field_has_no_key():
+    html = '<dl class="dl-horizontal"><dt>Taryfa</dt><dd>G11</dd></dl>'
+    assert parse_home_contract(html) == {'taryfa': 'G11'}
+
+
+def test_parse_home_contract_ignores_other_dl_and_empty_page():
+    assert parse_home_contract('<dl><dt>Taryfa</dt><dd>G11</dd></dl>') == {}
+    assert parse_home_contract('') == {}
+
+
+def test_parse_point_details_reads_four_labels_only():
+    assert parse_point_details(_PUNKT_HTML) == {
+        'taryfa': 'G12W', 'moc_umowna': '5 kW',
+        'rozliczenie': 'co 1 mies.', 'osd': 'OSD Test'}
+
+
+def test_parse_point_details_skips_unknown_labels():
+    html = '<dt>Numer licznika</dt><dd>X1</dd><dt>Taryfa</dt><dd>G13</dd>'
+    assert parse_point_details(html) == {'taryfa': 'G13'}
+
+
+def _contract_client(umowa_html: str = _UMOWA_HTML, punkt=None, home_html: str = _HOME_HTML):
+    client, session = _client_with_successful_login()
+    session.when('moj.tauron.pl/Home/Pages/Umowa', _FakeResponse(text=umowa_html))
+    session.when('moj.tauron.pl/Home/Pages/punkty-poboru',
+                 punkt if punkt is not None else _FakeResponse(text=_PUNKT_HTML))
+    session.when('moj.tauron.pl/', _FakeResponse(text=home_html))
+    client._payer_id = _PAYER
+    return client, session
+
+
+def test_read_contract_merges_home_and_point_details_details_win():
+    client, session = _contract_client()
+    contract = client.read_contract()
+    assert contract == {'umowa': 'UMOWA-TEST-1', 'taryfa': 'G12W', 'faktura': 'Elektroniczna',
+                        'moc_umowna': '5 kW', 'rozliczenie': 'co 1 mies.', 'osd': 'OSD Test'}
+    umowa = [c[1] for c in session.calls if 'Home/Pages/Umowa' in c[1]]
+    assert umowa == [f'https://moj.tauron.pl/Home/Pages/Umowa?sid=T18&pp={_PAYER}']
+    punkt = [c[1] for c in session.calls if 'punkty-poboru' in c[1]]
+    assert punkt == ['https://moj.tauron.pl/Home/Pages/punkty-poboru?sid=T18&pp=11111111']
+
+
+def test_read_contract_details_taryfa_overrides_home():
+    punkt = _FakeResponse(text='<dt>Taryfa</dt><dd>G13</dd>')
+    client, _ = _contract_client(punkt=punkt)
+    assert client.read_contract()['taryfa'] == 'G13'
+
+
+def test_read_contract_point_details_error_keeps_home_result(caplog):
+    client, session = _contract_client()
+    original = session._respond
+
+    def _respond(method, url, **kwargs):
+        if 'punkty-poboru' in url:
+            raise ValueError('boom szczegółów')
+        return original(method, url, **kwargs)
+    session._respond = _respond
+    with caplog.at_level('WARNING'):
+        contract = client.read_contract()
+    assert contract == {'umowa': 'UMOWA-TEST-1', 'taryfa': 'G12W', 'faktura': 'Elektroniczna'}
+    assert any(r.levelname == 'WARNING' for r in caplog.records)
+
+
+def test_read_contract_without_taryfa_anywhere_raises_layout_changed():
+    client, _ = _contract_client(umowa_html='<p>brak linku</p>', home_html='<p>pusto</p>')
+    with pytest.raises(EbokLayoutChanged, match='taryfy'):
+        client.read_contract()

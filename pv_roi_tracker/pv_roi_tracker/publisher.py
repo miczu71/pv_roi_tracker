@@ -105,6 +105,7 @@ _SENSORS: list[_Sensor] = [
     _Sensor('tariffsim_best_saving', 'PV Tariff Sim Best Saving', None, 'PLN', 'monetary', None, 'mdi:piggy-bank-outline'),
     _Sensor('tariffsim_cheapest', 'PV Tariff Sim Cheapest', None, None, None, None, 'mdi:medal'),
     _Sensor('tariffsim_saving_vs_g12w', 'PV Tariff Sim Saving vs G12w', None, 'PLN', 'monetary', None, 'mdi:piggy-bank-outline'),
+    _Sensor('current_tariff', 'PV Current Tariff', None, None, None, None, 'mdi:flash'),
     # Latest-invoice rates (v0.20.0) — single source of truth for energy_simulation.yaml
     # and the tariff UI; values come from invoice_rates (see _render_value), not RoiResult.
     # NOTE: per-kWh rates are NOT device_class 'monetary' — HA's monetary class requires a
@@ -194,7 +195,8 @@ def _render_value(sensor: _Sensor, result: RoiResult,
                   deposit_expiring_30d: Optional[float] = None,
                   invoice_rates: Optional[dict] = None,
                   battery_expansion: Optional[dict] = None,
-                  tariff_sim: Optional[dict] = None) -> str:
+                  tariff_sim: Optional[dict] = None,
+                  current_tariff: Optional[str] = None) -> str:
     if sensor.slug == 'net_investment':
         v: Any = round(result.gross_investment - result.subsidy, 2)
     elif sensor.slug == 'current_month_savings':
@@ -215,6 +217,8 @@ def _render_value(sensor: _Sensor, result: RoiResult,
         v = (battery_expansion or {}).get('payback_years')
     elif sensor.slug.startswith('tariffsim_'):
         v = _tariff_sim_value(sensor.slug, tariff_sim)
+    elif sensor.slug == 'current_tariff':
+        v = current_tariff
     elif sensor.slug in _INVOICE_RATE_SENSORS:
         v = (invoice_rates or {}).get(_INVOICE_RATE_SENSORS[sensor.slug])
     else:
@@ -320,7 +324,8 @@ class MQTTPublisher:
                     deposit_expiring_30d: Optional[float] = None,
                     invoice_rates: Optional[dict] = None,
                     battery_expansion: Optional[dict] = None,
-                    tariff_sim: Optional[dict] = None) -> None:
+                    tariff_sim: Optional[dict] = None,
+                    current_tariff: Optional[str] = None) -> None:
         if not self._connected:
             logger.debug('MQTT not connected — skipping publish')
             return
@@ -328,7 +333,7 @@ class MQTTPublisher:
             payload = _render_value(s, result, current_month_savings, rcem_scrape_status,
                                     projected_month_kwh, projected_month_savings,
                                     deposit_balance, deposit_expiring_30d, invoice_rates,
-                                    battery_expansion, tariff_sim)
+                                    battery_expansion, tariff_sim, current_tariff)
             self._client.publish(_state_topic(s.slug), payload, retain=True)
         logger.debug('Published ROI state to MQTT (roi_pct=%.2f%%)', result.roi_pct)
 

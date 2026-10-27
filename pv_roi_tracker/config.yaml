@@ -46,6 +46,7 @@ options:
   ebok_username: ""
   ebok_password: ""
   ebok_payer_id: ""
+  current_tariff_override: ""
 schema:
   gross_investment: float
   subsidy: float
@@ -75,3 +76,4 @@ schema:
   ebok_username: str?
   ebok_password: password?
   ebok_payer_id: str?
+  current_tariff_override: str?

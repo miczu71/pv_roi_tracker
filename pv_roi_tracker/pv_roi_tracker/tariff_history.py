@@ -1,0 +1,98 @@
+"""
+Historia taryf (/data/tariff_periods.json): okresy obowiązywania taryf wykryte z portalu
+moj.tauron.pl (EbokClient.read_contract) oraz ręczny override z opcji add-onu.
+Zapis atomowy (tmp + rename), jak tariff_settings_store.
+"""
+from __future__ import annotations
+
+import json
+import logging
+from datetime import date
+from pathlib import Path
+from typing import Optional
+
+from .battery_store import _atomic_write
+from .tariff_catalog import TARIFFS
+
+logger = logging.getLogger(__name__)
+
+_BY_FOLD = {t.casefold(): t for t in TARIFFS}
+
+
+def normalize(name) -> Optional[str]:
+    """Nazwa taryfy ze stałej TARIFFS (bez względu na wielkość liter) albo None."""
+    if not isinstance(name, str):
+        return None
+    return _BY_FOLD.get(name.strip().casefold())
+
+
+def _valid(item) -> Optional[dict]:
+    if not isinstance(item, dict):
+        return None
+    tariff = normalize(item.get('tariff'))
+    start = item.get('from')
+    if tariff is None:
+        return None
+    if start is not None:
+        try:
+            date.fromisoformat(start)
+        except (TypeError, ValueError):
+            return None
+    return {'tariff': tariff, 'from': start}
+
+
+def load(path) -> list:
+    """Okresy z pliku; brak pliku albo uszkodzona zawartość → []."""
+    try:
+        with open(path, encoding='utf-8') as f:
+            doc = json.load(f)
+    except FileNotFoundError:
+        return []
+    except Exception:
+        logger.warning('tariff_history: nie można wczytać %s — historia pusta', path, exc_info=True)
+        return []
+    periods = [_valid(item) for item in doc] if isinstance(doc, list) else [None]
+    if any(p is None for p in periods):
+        logger.warning('tariff_history: niepoprawny wpis w %s — historia pusta', path)
+        return []
+    return periods
+
+
+def save(periods: list, path) -> None:
+    _atomic_write(Path(path), periods)
+    logger.info('tariff_history: zapisano %d okres(y) do %s', len(periods), path)
+
+
+def current(periods: list, override=None) -> Optional[str]:
+    """Override (jeśli poprawna nazwa) wygrywa; inaczej taryfa ostatniego okresu; inaczej None."""
+    forced = normalize(override)
+    if forced:
+        return forced
+    if periods:
+        return normalize(periods[-1].get('tariff'))
+    return None
+
+
+def tariff_on(periods: list, day: date) -> Optional[str]:
+    """Taryfa obowiązująca w dniu: ostatni okres z `from` <= day (`from` null = od zawsze)."""
+    found = None
+    for p in periods:
+        start = p.get('from')
+        if start is None or date.fromisoformat(start) <= day:
+            found = p.get('tariff')
+    return found
+
+
+def record_detection(periods: list, detected, today: date) -> tuple:
+    """Dopisuje wykrytą taryfę, gdy różni się od ostatniej. Zwraca (historia, zmiana),
+    zmiana = (poprzednia, nowa) albo None. Nieznana/None wykryta taryfa — bez zmian."""
+    name = normalize(detected)
+    if name is None:
+        return periods, None
+    if not periods:
+        return [{'tariff': name, 'from': None}], None
+    last = normalize(periods[-1].get('tariff'))
+    if name == last:
+        return periods, None
+    new = [*periods, {'tariff': name, 'from': today.isoformat()}]
+    return new, (last, name)

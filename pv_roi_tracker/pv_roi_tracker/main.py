@@ -64,6 +64,8 @@ EBOK_PASSWORD      = os.environ.get('EBOK_PASSWORD', '')
 EBOK_PAYER_ID      = os.environ.get('EBOK_PAYER_ID', '')
 EBOK_STATE_PATH    = Path(os.environ.get('EBOK_STATE_PATH', '/data/ebok_state.json'))
 EBOK_PAYMENT_STATE_PATH = Path(os.environ.get('EBOK_PAYMENT_STATE_PATH', '/data/ebok_payment_state.json'))
+TARIFF_PERIODS_PATH = Path(os.environ.get('TARIFF_PERIODS_PATH', '/data/tariff_periods.json'))
+CURRENT_TARIFF_OVERRIDE = os.environ.get('CURRENT_TARIFF_OVERRIDE', '')
 ASSET_LIFETIME_YEARS       = float(os.environ.get('ASSET_LIFETIME_YEARS', '25.0'))
 PANEL_DEGRADATION_PCT_YEAR = float(os.environ.get('PANEL_DEGRADATION_PCT_YEAR', '0.5'))
 
@@ -717,11 +719,30 @@ def main() -> None:
         terminu (docs/ROADMAP_EBOK_PAYMENT_STATUS.md Etap 2). Nigdy nie rzuca —
         błędy trafiają do wyniku i health, tak jak ebok_sync()."""
         from . import payment_reminders as _pr
+        from . import tariff_history as _th
         from datetime import date as _date
 
         def body(client, docs, state, date_from, date_to) -> dict:
+            from datetime import datetime as _dt
             notifications = _pr.apply_refresh(docs, EBOK_PAYMENT_STATE_PATH, _date.today())
             _send_payment_notes(notifications)
+
+            # Taryfa z portalu → stan umowy + historia taryf (błąd odczytu nie psuje joba).
+            try:
+                contract = client.read_contract()
+                state['contract'] = {**contract, 'checked_at': _dt.now().isoformat()}
+                _save_ebok_state(state)
+                periods, change = _th.record_detection(_th.load(TARIFF_PERIODS_PATH),
+                                                       _th.normalize(contract.get('taryfa')),
+                                                       _date.today())
+                _th.save(periods, TARIFF_PERIODS_PATH)
+                if change:
+                    _notify_ha('PV ROI Tracker — taryfa',
+                               f'Wykryto zmianę taryfy: {change[0]} → {change[1]}. '
+                               'Porównania w add-onie przejdą na nową bazę.',
+                               target='kacper')
+            except Exception:
+                logger.exception('eBOK: odczyt taryfy z umowy nie powiódł się')
 
             _record_job('ebok_payment', True, f'wysłano {len(notifications)} przypomnień')
             return {'ok': True, 'sent': len(notifications)}
@@ -757,11 +778,16 @@ def main() -> None:
             return {'ok': False, 'error': mask(str(exc))}
 
     def _ebok_status() -> dict:
+        from . import tariff_history as _th
         state = _load_ebok_state()
+        periods = _th.load(TARIFF_PERIODS_PATH)
         return {'configured': bool(EBOK_USERNAME and EBOK_PASSWORD),
                 'last_sync': state.get('last_sync'),
                 'blocked_until': state.get('blocked_until'),
-                'health': _job_health.get('ebok')}
+                'health': _job_health.get('ebok'),
+                'contract': state.get('contract'),
+                'current_tariff': _th.current(periods, CURRENT_TARIFF_OVERRIDE),
+                'tariff_periods': periods}
 
     def _ebok_payment_status() -> dict:
         """Cached (job-refreshed) payment status for the status bar — never hits
@@ -1136,6 +1162,8 @@ def main() -> None:
             # both happen in this same poll cycle against the same invoice data.
             _invoice_rates = _web.latest_invoice_rates()
 
+            from . import tariff_history as _th
+            _current_tariff = _th.current(_th.load(TARIFF_PERIODS_PATH), CURRENT_TARIFF_OVERRIDE)
             pub.publish_roi(result,
                             current_month_savings=current_month_savings,
                             rcem_scrape_status=scrape_status,
@@ -1147,7 +1175,8 @@ def main() -> None:
                             deposit_expiring_30d=deposit_result.expiring_1m if deposit_result else None,
                             invoice_rates=_invoice_rates,
                             battery_expansion=_battery_state['summary'],
-                            tariff_sim=_tariff_state['payload'])
+                            tariff_sim=_tariff_state['payload'],
+                            current_tariff=_current_tariff)
             _web.update_state(result, all_records, rcem_price, month_closed=month_closed,
                               rcem_scrape_status=scrape_status)
             _web.update_deposit(deposit_result)

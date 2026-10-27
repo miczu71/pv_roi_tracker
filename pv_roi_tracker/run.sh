@@ -31,6 +31,7 @@ export HEATPUMP_HDD_BASE_TEMP=$(jq -r '.heatpump_hdd_base_temp // "15.0"' "$CONF
 export EBOK_USERNAME=$(jq -r '.ebok_username // ""' "$CONFIG")
 export EBOK_PASSWORD=$(jq -r '.ebok_password // ""' "$CONFIG")
 export EBOK_PAYER_ID=$(jq -r '.ebok_payer_id // ""' "$CONFIG")
+export CURRENT_TARIFF_OVERRIDE=$(jq -r '.current_tariff_override // ""' "$CONFIG")
 
 export HISTORIC_PATH="/data/historic.json"
 export RCEM_HISTORY_PATH="/data/rcem_history.json"

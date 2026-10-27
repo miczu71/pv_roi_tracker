@@ -33,6 +33,7 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import date, datetime
+from html import unescape
 from typing import Callable, Optional
 from urllib.parse import urlencode
 
@@ -226,6 +227,28 @@ class EbokClient:
             raise EbokError('Pobranie PDF: odpowiedź nie jest plikiem PDF')
         return pdf
 
+    def read_contract(self) -> dict:
+        """Umowa z portalu: strona główna (umowa, taryfa, faktura) uzupełniona szczegółami
+        punktu poboru (taryfa, moc, rozliczenie, OSD). Błąd szczegółów nie psuje wyniku;
+        brak taryfy w obu miejscach = EbokLayoutChanged."""
+        contract = parse_home_contract(self._get(f'{SERVICE}/', REQUEST_TIMEOUT).text)
+        try:
+            umowa = self._get(f'{SERVICE}/Home/Pages/Umowa?'
+                              + urlencode({'sid': SYSTEM, 'pp': self._payer_id or ''}),
+                              REQUEST_TIMEOUT)
+            link = _POINT_LINK_RE.search(umowa.text)
+            if link:
+                href = link.group(1).replace('&amp;', '&')
+                url = href if href.startswith('http') else SERVICE + (href if href.startswith('/') else '/' + href)
+                contract = {**contract, **parse_point_details(self._get(url, REQUEST_TIMEOUT).text)}
+            else:
+                logger.warning('eBOK: brak linku do punktów poboru na stronie umowy')
+        except Exception as exc:
+            logger.warning('eBOK: szczegóły punktu poboru niedostępne (%s)', type(exc).__name__)
+        if not contract.get('taryfa'):
+            raise EbokLayoutChanged('Nie znaleziono taryfy na stronie umowy')
+        return contract
+
 
 def _is_login_page(r) -> bool:
     return b'id="kc-form-login"' in (r.content or b'')
@@ -262,6 +285,46 @@ def parse_clients(html: str) -> dict:
 def parse_client_checksum(html: str, payer_id: str) -> Optional[str]:
     """Checksum of `payer_id` on the documents archive page; None when the payer is not listed."""
     return parse_clients(html).get(str(payer_id))
+
+
+_POINT_LINK_RE = re.compile(r'href="([^"]*punkty-poboru[^"]*)"')
+_DL_HORIZONTAL_RE = re.compile(r'<dl[^>]*\bdl-horizontal\b[^>]*>(.*?)</dl>', re.S | re.I)
+_DT_DD_RE = re.compile(r'<dt[^>]*>(.*?)</dt>\s*<dd[^>]*>(.*?)</dd>', re.S | re.I)
+_POINT_LABELS = {'taryfa': 'taryfa', 'moc umowna': 'moc_umowna',
+                 'sposób rozliczenia': 'rozliczenie', 'nazwa osd': 'osd'}
+
+
+def _dt_dd_pairs(html: str):
+    """(etykieta, wartość) z par <dt>/<dd>; tagi usunięte, białe znaki zwinięte."""
+    for label, value in _DT_DD_RE.findall(html or ''):
+        yield (_plain(label), _plain(value))
+
+
+def _plain(raw: str) -> str:
+    return ' '.join(unescape(re.sub(r'<[^>]+>', ' ', raw)).split())
+
+
+def parse_home_contract(html: str) -> dict:
+    """{'umowa', 'taryfa', 'faktura'} z listy <dl class="dl-horizontal"> strony głównej;
+    pole, którego brak na stronie, nie trafia do wyniku."""
+    out: dict = {}
+    for block in _DL_HORIZONTAL_RE.findall(html or ''):
+        for label, value in _dt_dd_pairs(block):
+            key = label.casefold()
+            if key in ('umowa', 'taryfa', 'faktura') and value and key not in out:
+                out[key] = value
+    return out
+
+
+def parse_point_details(html: str) -> dict:
+    """{'taryfa', 'moc_umowna', 'rozliczenie', 'osd'} ze strony punktu poboru
+    (etykiety Taryfa, Moc umowna, Sposób rozliczenia, Nazwa OSD); numer licznika i PPE pomijamy."""
+    out: dict = {}
+    for label, value in _dt_dd_pairs(html):
+        key = _POINT_LABELS.get(label.casefold())
+        if key and value and key not in out:
+            out[key] = value
+    return out
 
 
 def _parse_date(raw) -> Optional[date]:
