@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.52.0] — w przygotowaniu
+## [0.52.0] — 2026-10-27
 
 Harmonogram mostów JIT dla taryf strefowych — dane dla automatyzacji ładowania baterii w HA.
 
