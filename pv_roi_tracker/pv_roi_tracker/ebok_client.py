@@ -184,7 +184,14 @@ class EbokClient:
     def probe_home(self, payer_id: str) -> dict:
         """Tylko odczyt: zarys strony głównej po zalogowaniu (zob. summarize_home_page)."""
         r = self._get(f'{SERVICE}/wyborKlienta', REQUEST_TIMEOUT)
-        return {'status': r.status_code, **summarize_home_page(r.text, payer_id)}
+        out = {'status': r.status_code, **summarize_home_page(r.text, payer_id)}
+        out['payer_html'] = payer_html_context(r.text, payer_id)
+        today = date.today()
+        c = self._get(f'{SERVICE}/content/platnosci/csv/dataOd/2022-01-01/dataDo/'
+                      f'{(today + timedelta(days=365)).isoformat()}/type/archiwumFaktur', ARCHIVE_TIMEOUT)
+        out['csv_probe'] = {'status': c.status_code, 'bytes': len(c.content),
+                            'head': _mask(c.content[:400].decode('windows-1250', errors='replace'), payer_id)}
+        return out
 
     # ── listing ──────────────────────────────────────────────────────────────
 
@@ -404,7 +411,7 @@ def summarize_home_page(html: str, payer_id: str) -> dict:
     title = re.search(r'<title[^>]*>\s*([^<]{0,80}?)\s*</title>', html, re.I)
     links = sorted(set(re.findall(r'href="(/[^"#?\s]{2,80})"', html)))[:60]
     text = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', ' ', re.sub(r'(?is)<(script|style).*?</\1>', ' ', html)))
-    text = text.replace(str(payer_id), '<płatnik>')
+    text = _mask(text, payer_id)
     snippets = []
     for m in _TARIFF_WORDS_RE.finditer(text):
         snip = text[max(0, m.start() - 50):m.end() + 70].strip()
@@ -414,3 +421,19 @@ def summarize_home_page(html: str, payer_id: str) -> dict:
             break
     return {'title': title.group(1) if title else '-', 'length': len(html),
             'links': links, 'snippets': snippets}
+
+
+def _mask(text: str, payer_id: str) -> str:
+    """Wycina numer płatnika i adresy e-mail z fragmentu diagnostycznego."""
+    text = text.replace(str(payer_id), '<płatnik>')
+    return re.sub(r'[\w.+-]+@[\w-]+\.[\w.]+', '<email>', re.sub(r'\s+', ' ', text))
+
+
+def payer_html_context(html: str, payer_id: str, radius: int = 500) -> list:
+    """Surowy HTML (≤2 fragmenty) wokół numeru płatnika — jak strona linkuje do wyboru umowy."""
+    out = []
+    for m in re.finditer(re.escape(str(payer_id)), html):
+        out.append(_mask(html[max(0, m.start() - radius):m.end() + radius], payer_id))
+        if len(out) >= 2:
+            break
+    return out

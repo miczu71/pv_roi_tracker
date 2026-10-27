@@ -543,3 +543,14 @@ def test_summarize_home_page_lists_title_links_and_keyword_snippets_without_paye
     assert '/mojeDane/umowa' in out['links']
     assert any('G12w' in s for s in out['snippets'])
     assert '60567872' not in str(out)
+
+
+def test_probe_home_returns_masked_payer_context_and_csv_head():
+    client, session = _seq_client()
+    session.when_seq('/wyborKlienta', [_FakeResponse(
+        text='<a href="/wybierz?x=1">Nr płatnika 60567872 jan@example.com</a>')])
+    session.when('/content/platnosci/csv/', _FakeResponse(content='<html>Strona</html>'.encode('windows-1250')))
+    out = client.probe_home('60567872')
+    assert '/wybierz?x=1' in out['payer_html'][0]
+    assert '60567872' not in str(out) and 'jan@example.com' not in str(out)
+    assert out['csv_probe']['status'] == 200 and 'Strona' in out['csv_probe']['head']
