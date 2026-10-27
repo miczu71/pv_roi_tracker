@@ -33,7 +33,13 @@ def bridges(tariff: str, day: date, catalog: dict, cfg: BatteryConfig,
     """{'peaks': [{'start','end','avg_pln_kwh'}], 'bridges': [{'charge_start','charge_end','gap_end',
     'cheap_pln_kwh','peak_pln_kwh','margin_pln_kwh','profitable'}]} dla szczytów zaczynających się w `day`.
     Czasy: naiwny lokalny `datetime` (konwersja na ISO z TZ robi build_schedule)."""
-    price_fn = make_price_fn(tariff, catalog, None, None, overrides)
+    raw_price_fn = make_price_fn(tariff, catalog, None, None, overrides)
+
+    def price_fn(key: str):
+        try:
+            return raw_price_fn(key)
+        except LookupError:   # poza zakresem katalogu — godzina bez ceny
+            return None
     midnight = datetime(day.year, day.month, day.day)
     peaks: list = []
     out: list = []

@@ -220,3 +220,13 @@ def test_build_schedule_ksztalt_i_iso_z_tz(cat):
 def test_build_schedule_lato_offset_plus_2(cat):
     out = js.build_schedule(date(2026, 6, 10), cat, CFG)
     assert out['schedules']['G13']['2026-06-10']['peaks'][0]['start'] == '2026-06-10T07:00:00+02:00'
+
+
+def test_koniec_katalogu_nie_psuje_harmonogramu(cat):
+    """31.12 ostatniego okresu katalogu: 'jutro' (poza katalogiem) nie wywala całego harmonogramu."""
+    last = max(e['valid_to'] for e in cat['periods'] if e.get('valid_to'))
+    day = date.fromisoformat(last)
+    res = js.build_schedule(day, cat, CFG)
+    today_sched = res['schedules']['G13'][day.isoformat()]
+    assert today_sched['peaks']                      # dziś nadal policzone
+    assert res['schedules']['G13'][(day + timedelta(days=1)).isoformat()]['peaks'] == []
