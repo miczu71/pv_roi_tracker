@@ -40,6 +40,7 @@ _tariff_config_path = None
 _ebok_sync_callback = None
 _ebok_status_callback = None
 _ebok_diag_callback = None
+_ebok_diag_page_callback = None
 _ebok_payment_status_callback = None
 
 
@@ -99,6 +100,11 @@ def set_ebok_diag_callback(fn) -> None:
     """fn(needle: str) -> dict — read-only probe of where eBOK shows a given document."""
     global _ebok_diag_callback
     _ebok_diag_callback = fn
+
+
+def set_ebok_diag_page_callback(fn) -> None:
+    global _ebok_diag_page_callback
+    _ebok_diag_page_callback = fn
 
 
 def set_ebok_status_callback(fn) -> None:
@@ -1276,6 +1282,14 @@ def ebok_diag():
     if _ebok_diag_callback is None:
         return jsonify({'ok': False, 'error': 'eBOK nie skonfigurowany (brak danych logowania)'}), 503
     return jsonify(_ebok_diag_callback(request.args.get('needle', '').strip() or '0018/26'))
+
+
+@app.route('/api/ebok/diag-page')
+def ebok_diag_page():
+    """Read-only: zarys strony głównej eBOK po zalogowaniu (szukanie taryfy)."""
+    if _ebok_diag_page_callback is None:
+        return jsonify({'ok': False, 'error': 'eBOK nie skonfigurowany (brak danych logowania)'}), 503
+    return jsonify(_ebok_diag_page_callback())
 
 
 @app.route('/api/ebok/status')

@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.49.1] — 2026-10-27
+
+Naprawa logowania do eBOK Taurona.
+
+- **Wybór płatnika:** Tauron zwraca teraz po zalogowaniu stronę główną zamiast listy klientów (klient wybierany automatycznie), przez co joby eBOK padały z „Płatnik … nie znaleziony na /wyborKlienta” (stan `degraded`). Gdy listy nie ma, a strona zawiera numer płatnika, klient jest uznawany za wybrany.
+- **Diagnostyka:** `GET /api/ebok/diag-page` (tylko odczyt) zwraca zarys strony głównej eBOK (tytuł, linki, fragmenty o taryfie i liczniku, bez numeru płatnika) — do sprawdzenia, skąd odczytać aktualną taryfę.
+
 ## [0.49.0] — 2026-10-27
 
 Sugestie ładowania magazynu z sieci, wyjaśnienie wariantów A/B/C i poprawka wariantu C.

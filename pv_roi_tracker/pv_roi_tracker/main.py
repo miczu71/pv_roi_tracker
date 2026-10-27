@@ -570,10 +570,7 @@ def main() -> None:
         try:
             client.login()
             if EBOK_PAYER_ID:
-                client_id = client.find_client_id(EBOK_PAYER_ID)
-                if not client_id:
-                    raise _ec.EbokError(f'Płatnik {EBOK_PAYER_ID} nie znaleziony na /wyborKlienta')
-                client.select_client(client_id)
+                client.select_payer(EBOK_PAYER_ID)
 
             date_from = _date(2022, 1, 1)  # przed 2023-08 (start konta wg spike'a Etapu 1)
             # Tauron filtruje po terminie płatności, nie po dacie wystawienia: z dataDo=jutro
@@ -737,10 +734,7 @@ def main() -> None:
         try:
             client.login()
             if EBOK_PAYER_ID:
-                client_id = client.find_client_id(EBOK_PAYER_ID)
-                if not client_id:
-                    return {'ok': False, 'error': 'płatnik nie znaleziony'}
-                client.select_client(client_id)
+                client.select_payer(EBOK_PAYER_ID)
             result = client.diagnose(needle, _date.today())
             # które dokumenty z CSV dedup uznaje za nieznane (czyli wróciłyby do importu)
             from datetime import timedelta as _td
@@ -750,6 +744,16 @@ def main() -> None:
             result['csv_unknown'] = [f'{d.issued_on} {d.signature} | {d.doc_name}'
                                      for d in docs if not _ec.is_known(d.signature, known)]
             return {'ok': True, **result}
+        except Exception as exc:
+            return {'ok': False, 'error': str(exc)}
+
+    def ebok_diag_page() -> dict:
+        """Tylko odczyt: zarys strony głównej eBOK (taryfa, linki menu)."""
+        from . import ebok_client as _ec
+        client = _ec.EbokClient(EBOK_USERNAME, EBOK_PASSWORD)
+        try:
+            client.login()
+            return {'ok': True, **client.probe_home(EBOK_PAYER_ID)}
         except Exception as exc:
             return {'ok': False, 'error': str(exc)}
 
@@ -771,6 +775,7 @@ def main() -> None:
     if EBOK_USERNAME and EBOK_PASSWORD:
         _web.set_ebok_sync_callback(ebok_sync)
         _web.set_ebok_diag_callback(ebok_diag)
+        _web.set_ebok_diag_page_callback(ebok_diag_page)
     _web.set_ebok_status_callback(_ebok_status)
     _web.set_ebok_payment_status_callback(_ebok_payment_status)
 

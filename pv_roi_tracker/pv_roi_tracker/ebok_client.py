@@ -164,6 +164,28 @@ class EbokClient:
             logger.warning('eBOK: /wyborKlienta bez płatnika — %s', summarize_client_page(r.text, payer_id))
         return client_id
 
+    def select_payer(self, payer_id: str) -> None:
+        """Wybiera płatnika. Gdy /wyborKlienta nie ma listy klientów, tylko stronę
+        główną z numerem płatnika (od 26.10.2026 Tauron sam wybiera jedynego klienta
+        i przekierowuje), uznaje go za już wybranego."""
+        r = self._get(f'{SERVICE}/wyborKlienta', REQUEST_TIMEOUT)
+        if r.status_code != 200:
+            raise EbokError(f'Pobranie /wyborKlienta nie powiodło się (status {r.status_code})')
+        client_id = parse_client_id_for_payer(r.text, payer_id)
+        if client_id is not None:
+            self.select_client(client_id)
+            return
+        if '/wyborKlienta/id/' not in r.text and str(payer_id) in r.text:
+            logger.info('eBOK: klient wybrany automatycznie (strona główna zamiast listy)')
+            return
+        logger.warning('eBOK: /wyborKlienta bez płatnika — %s', summarize_client_page(r.text, payer_id))
+        raise EbokError(f'Płatnik {payer_id} nie znaleziony na /wyborKlienta')
+
+    def probe_home(self, payer_id: str) -> dict:
+        """Tylko odczyt: zarys strony głównej po zalogowaniu (zob. summarize_home_page)."""
+        r = self._get(f'{SERVICE}/wyborKlienta', REQUEST_TIMEOUT)
+        return {'status': r.status_code, **summarize_home_page(r.text, payer_id)}
+
     # ── listing ──────────────────────────────────────────────────────────────
 
     def list_documents(self, date_from: date, date_to: date) -> list[EbokDocument]:
@@ -370,3 +392,25 @@ def parse_client_id_for_payer(html: str, payer_id: str) -> Optional[str]:
         if m and idm and m.group(1) == str(payer_id):
             return idm.group(1)
     return None
+
+
+_TARIFF_WORDS_RE = re.compile(r'(?:taryf|G1[123][a-z]?\b|G13\w*|licznik|umow|punkt poboru|moc umown)', re.I)
+
+
+def summarize_home_page(html: str, payer_id: str) -> dict:
+    """Zarys strony po zalogowaniu pod kątem taryfy: tytuł, linki, fragmenty ze słowami
+    kluczowymi. Numer płatnika jest wycinany; bez kwot i adresów (fragmenty ≤120 znaków
+    tekstu, bez znaczników)."""
+    title = re.search(r'<title[^>]*>\s*([^<]{0,80}?)\s*</title>', html, re.I)
+    links = sorted(set(re.findall(r'href="(/[^"#?\s]{2,80})"', html)))[:60]
+    text = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', ' ', re.sub(r'(?is)<(script|style).*?</\1>', ' ', html)))
+    text = text.replace(str(payer_id), '<płatnik>')
+    snippets = []
+    for m in _TARIFF_WORDS_RE.finditer(text):
+        snip = text[max(0, m.start() - 50):m.end() + 70].strip()
+        if snip not in snippets:
+            snippets.append(snip)
+        if len(snippets) >= 15:
+            break
+    return {'title': title.group(1) if title else '-', 'length': len(html),
+            'links': links, 'snippets': snippets}

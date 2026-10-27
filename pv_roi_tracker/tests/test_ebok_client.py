@@ -32,6 +32,7 @@ from pv_roi_tracker.ebok_client import (
     parse_archive_html,
     parse_client_id_for_payer,
     parse_documents_csv,
+    summarize_home_page,
 )
 
 _REAL_FIXTURES_DIR = Path('/data/home/.claude/uploads/ebok_fixtures')
@@ -507,3 +508,38 @@ class TestRealFixtures:
         assert data.warnings == []
         assert data.year == 2026 and data.month == 8
         assert data.amount_due_pln == pytest.approx(63.3)
+
+
+_HOME_HTML = ('<html><head><title>Strona G&#243;wna | M&#243;j TAURON</title></head><body>'
+              '<nav><a href="/content/platnosci">Płatności</a><a href="/mojeDane/umowa">Umowa</a></nav>'
+              '<h2>Punkt poboru</h2><p>Nr płatnika 60567872</p><p>Grupa taryfowa: G12w</p></body></html>')
+
+
+def test_select_payer_selects_from_landing_list():
+    client, session = _seq_client()
+    session.when_seq('/wyborKlienta', [_FakeResponse(text=_LANDING_HTML), _FakeResponse(text='ok')])
+    client.select_payer('60567872')
+    assert any('/wyborKlienta/id/111111' in c[1] for c in session.calls if c[0] == 'GET')
+
+
+def test_select_payer_accepts_home_page_when_client_preselected():
+    client, session = _seq_client()
+    session.when_seq('/wyborKlienta', [_FakeResponse(text=_HOME_HTML)])
+    client.select_payer('60567872')
+    gets = [c[1] for c in session.calls if c[0] == 'GET' and '/wyborKlienta' in c[1]]
+    assert gets == ['https://ebok.tauron.pl/wyborKlienta']  # bez /id/…
+
+
+def test_select_payer_raises_when_payer_absent_everywhere():
+    client, session = _seq_client()
+    session.when_seq('/wyborKlienta', [_FakeResponse(text='<html><title>Regulamin</title></html>')])
+    with pytest.raises(EbokError, match='nie znaleziony'):
+        client.select_payer('60567872')
+
+
+def test_summarize_home_page_lists_title_links_and_keyword_snippets_without_payer_number():
+    out = summarize_home_page(_HOME_HTML, '60567872')
+    assert 'TAURON' in out['title']
+    assert '/mojeDane/umowa' in out['links']
+    assert any('G12w' in s for s in out['snippets'])
+    assert '60567872' not in str(out)
