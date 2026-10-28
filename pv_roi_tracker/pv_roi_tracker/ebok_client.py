@@ -124,8 +124,8 @@ class EbokClient:
         """session.get z ponowieniami po timeoucie / błędzie połączenia (kolejne
         próby po RETRY_DELAYS; incydent 2026-10-19: jednorazowy ReadTimeout
         przy wyborze płatnika zostawił health `degraded` do następnego joba). Tylko GET —
-        POST logowania nigdy nie jest ponawiany, bo powtórki zbliżają konto do
-        blokady Taurona."""
+        POST logowania ponawia wyłącznie login()
+        (raz, po zerwanym połączeniu) — powtórki zbliżają konto do blokady Taurona."""
         for delay in RETRY_DELAYS:
             try:
                 return self._session.get(*args, **kwargs)
@@ -140,15 +140,27 @@ class EbokClient:
         """Log in once; safe to call again (no-op) once already logged in."""
         if self._logged_in:
             return
-        r = self._get_retrying(LOGIN_URL, params={'service': SERVICE},
-                               headers={'User-Agent': USER_AGENT}, timeout=REQUEST_TIMEOUT)
-        m = re.search(r'<form[^>]+id="kc-form-login"[^>]+action="([^"]+)"', r.text)
-        if not m:
-            raise EbokLayoutChanged('Nie znaleziono formularza logowania (kc-form-login)')
-        action = m.group(1).replace('&amp;', '&')
         payload = {'username': self._username, 'password': self._password, 'credentialId': ''}
-        r2 = self._session.post(action, data=payload, headers={'User-Agent': USER_AGENT},
-                                 timeout=REQUEST_TIMEOUT, allow_redirects=True)
+        for attempt in (1, 2):
+            r = self._get_retrying(LOGIN_URL, params={'service': SERVICE},
+                                   headers={'User-Agent': USER_AGENT}, timeout=REQUEST_TIMEOUT)
+            m = re.search(r'<form[^>]+id="kc-form-login"[^>]+action="([^"]+)"', r.text)
+            if not m:
+                raise EbokLayoutChanged('Nie znaleziono formularza logowania (kc-form-login)')
+            action = m.group(1).replace('&amp;', '&')
+            try:
+                r2 = self._session.post(action, data=payload, headers={'User-Agent': USER_AGENT},
+                                         timeout=REQUEST_TIMEOUT, allow_redirects=True)
+                break
+            except requests.exceptions.ConnectionError as exc:
+                # Zerwane połączenie bez odpowiedzi (incydent 2026-10-28: RemoteDisconnected):
+                # najpewniej to zamknięte keep-alive, więc jedno ponowienie z nowym formularzem
+                # (nie da się wykluczyć, że serwer policzył próbę — dlatego max 2 POST-y).
+                # ReadTimeout i kolejne zerwanie → błąd, żeby nie zbliżać konta do blokady Taurona.
+                if attempt == 2:
+                    raise
+                logger.warning('eBOK: %s przy logowaniu — ponawiam za %d s', exc, RETRY_DELAYS[0])
+                self._sleep(RETRY_DELAYS[0])
         text = r2.text
         if 'Przekroczono maksymalną liczbę logowań' in text:
             raise EbokLoginBlocked('Tauron zablokował logowania — spróbuj ponownie za 24h')

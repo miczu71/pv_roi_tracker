@@ -26,6 +26,7 @@ from pv_roi_tracker.ebok_client import (
     EbokLoginFailed,
     EbokLayoutChanged,
     PAID_STATUSES,
+    RETRY_DELAYS,
     is_known,
     known_signatures,
     parse_client_checksum,
@@ -264,7 +265,7 @@ def test_get_gives_up_after_three_retries():
     assert len(attempts) == 4  # próba + 3 ponowienia
 
 
-def test_login_post_is_never_retried():
+def test_login_post_is_not_retried_after_read_timeout():
     """Ponowny POST logowania po timeoucie zbliża do blokady konta przez Tauron."""
     class _TimeoutOnPost(FakeSession):
         def post(self, url, **kwargs):
@@ -281,6 +282,61 @@ def test_login_post_is_never_retried():
     assert [c[0] for c in session.calls].count('POST') == 1
     assert sleeps == []
 
+
+
+class _DropOnPost(FakeSession):
+    """POST logowania zrywa połączenie `drops` razy (RemoteDisconnected), potem działa."""
+    def __init__(self, drops: int, exc=None):
+        super().__init__()
+        self._drops = drops
+        self._exc = exc or requests.exceptions.ConnectionError(
+            'Connection aborted.', 'RemoteDisconnected')
+        self._forms = 0
+
+    def get(self, url, **kwargs):
+        if 'cas/login' in url:  # każdy formularz ma inny action (świeży token)
+            self._forms += 1
+            self.calls.append(('GET', url, kwargs))
+            return _FakeResponse(text=_LOGIN_FORM_HTML.replace('x=1', f'x={self._forms}'))
+        return super().get(url, **kwargs)
+
+    def post(self, url, **kwargs):
+        if self._drops > 0:
+            self._drops -= 1
+            self.calls.append(('POST', url, kwargs))
+            raise self._exc
+        return super().post(url, **kwargs)
+
+
+def _drop_on_post_client(drops: int):
+    session = _DropOnPost(drops)
+    session.when('logowanie.tauron.pl/realms/ext/protocol/cas/login',
+                 _FakeResponse(text=_LOGIN_FORM_HTML))
+    session.when('logowanie.tauron.pl/action', _FakeResponse(text=_LOGGED_IN_HTML))
+    sleeps: list = []
+    client = EbokClient('user@example.com', 'secret', session=session, sleep=sleeps.append)
+    return client, session, sleeps
+
+
+def test_login_post_retried_once_after_dropped_connection():
+    """Zerwane połączenie bez odpowiedzi = serwer nie przetworzył logowania → jedno
+    ponowienie z nowym formularzem (świeży action)."""
+    client, session, sleeps = _drop_on_post_client(drops=1)
+    client.login()
+    assert client._logged_in is True
+    methods = [c[0] for c in session.calls]
+    assert methods == ['GET', 'POST', 'GET', 'POST']
+    assert sleeps == [RETRY_DELAYS[0]]
+    posts = [c[1] for c in session.calls if c[0] == 'POST']
+    assert posts == ['https://logowanie.tauron.pl/action?x=1', 'https://logowanie.tauron.pl/action?x=2']
+
+
+def test_login_post_gives_up_after_second_dropped_connection():
+    client, session, sleeps = _drop_on_post_client(drops=2)
+    with pytest.raises(requests.exceptions.ConnectionError):
+        client.login()
+    assert [c[0] for c in session.calls].count('POST') == 2  # nigdy więcej niż 2
+    assert client._logged_in is False
 
 
 # ── parse_client_checksum() ─────────────────────────────────────────────────

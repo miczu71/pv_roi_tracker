@@ -622,6 +622,7 @@ def main() -> None:
         płatnika, lista dokumentów (JSON API), potem body(client, docs, state, date_from,
         date_to) -> dict. Nigdy nie rzuca — błędy trafiają do wyniku, health (`job`)
         i pusha (`what`/`failed` to tekst komunikatu)."""
+        import requests as _requests
         from . import ebok_client as _ec
         from datetime import date as _date, datetime as _dt, timedelta as _td
 
@@ -656,6 +657,13 @@ def main() -> None:
         except _ec.EbokError as exc:
             _record_job(job, False, str(exc))
             _notify_ha('PV ROI Tracker — eBOK', f'{failed}: {exc}', target='kacper')
+            return {'ok': False, 'error': str(exc)}
+        except _requests.exceptions.ConnectionError as exc:
+            logger.warning('%s — zerwane połączenie z eBOK: %s', what, exc, exc_info=True)
+            _record_job(job, False, f'zerwane połączenie z eBOK: {exc}')
+            _notify_ha('PV ROI Tracker — eBOK',
+                       f'{what}: eBOK chwilowo niedostępny (zerwane połączenie) — '
+                       'spróbuję przy następnym jobie.', target='kacper')
             return {'ok': False, 'error': str(exc)}
         except Exception as exc:
             logger.exception('%s — nieoczekiwany błąd', what)
