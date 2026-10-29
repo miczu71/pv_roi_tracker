@@ -2218,7 +2218,7 @@ function renderBatteryTab(bs) {
   }
   document.getElementById('batTbl').innerHTML = html + '</tbody>';
   document.getElementById('batFoot').textContent =
-    'Ceny stref z zakładki Taryfa (tariff_config), RCEm z historii add-onu; „≈" = miesiąc bez opublikowanej RCEm. ' +
+    'Ceny stref z modułu taryf (katalog + korekty z zakładki Taryfa), RCEm z historii add-onu; „≈" = miesiąc bez opublikowanej RCEm. ' +
     'S2 liczone tylko dla miesięcy z cenami godzinowymi RCE (od 2024-07).';
 
   if (!_batCfgLoaded) {
@@ -3408,7 +3408,7 @@ const _DOCS_HTML = `
 <tr><td><code>/data/rce_hourly.json</code></td><td>Cache godzinowych cen RCE + zamrożone wyniki RCE-vs-RCEm</td></tr>
 <tr><td><code>/data/invoices.json</code></td><td>Przetworzone faktury Tauron (metadane, stawki, kwoty)</td></tr>
 <tr><td><code>/data/pdfs/</code></td><td>Oryginalne pliki PDF faktur (trwałe przechowywanie)</td></tr>
-<tr><td><code>/data/tariff_config.json</code></td><td>Ręczne wpisy stawek taryfy (zakładka Taryfa)</td></tr>
+<tr><td><code>/data/tariff_overrides.json</code></td><td>Ręczne korekty stawek taryfy (zakładka Taryfa) — nakładane na katalog modułu taryf</td></tr>
 <tr><td><code>/data/invoice_layouts.json</code></td><td>Wyuczone wzorce parsera faktur</td></tr>
 <tr><td><code>/data/cpi_history.json</code></td><td>Łańcuchowy indeks CPI z GUS</td></tr>
 </tbody></table>
@@ -3594,6 +3594,661 @@ async function loadTaryfaTab() {
   // Pozostałe bloki są niezależne — błąd jednego nie blokuje reszty.
   _loadTaryfaCatalog();
   _loadTaryfaWeek();
+  loadTariffGuard();
+  tfxInit();
+}
+
+/* -- Taryfa T6: przejrzystość (podsekcje, stawki, rozbicie, porównania, źródła); prefiks tfx -- */
+const TFX_SECTIONS = [['now', 'Teraz'], ['rates', 'Stawki'], ['break', 'Rozbicie'], ['cmp', 'Porównania'], ['src', 'Źródła i aktualizacje']];
+const TFX_COMP = [
+  ['energy', 'Energia czynna', 'variable'], ['dist', 'Dystrybucja zmienna', 'variable'], ['quality', 'Jakościowa', 'variable'],
+  ['oze', 'OZE', 'variable'], ['cogeneration', 'Kogeneracja', 'variable'], ['excise', 'Akcyza', 'variable'],
+  ['network', 'Sieciowa', 'fixed'], ['subscription_dist', 'Abonament dystrybucyjny', 'fixed'], ['capacity', 'Mocowa', 'fixed'],
+  ['transitional', 'Przejściowa', 'fixed'], ['sales_fee', 'Handlowa', 'fixed'], ['vat', 'VAT', 'vat'],
+];
+const TFX_COLORS = ['#2563eb', '#16a34a', '#d97706', '#9333ea', '#0891b2', '#db2777', '#4b5563', '#65a30d', '#ea580c', '#0d9488', '#7c3aed', '#dc2626'];
+const TFX_ZONE = { peak: 'szczyt', offpeak: 'poza szczytem', day: 'dzień', night: 'noc', all: 'cała doba', morning_peak: 'szczyt poranny',
+  evening_peak: 'szczyt wieczorny', other: 'pozostałe' };
+const TFX_LEVEL = { cheap: ['tanio', 'down'], mid: ['średnio', 'flat'], expensive: ['drogo', 'up'], flat: ['stała', 'flat'] };
+const TFX_CONF = { document: ['dokument', 'ok'], invoice: ['faktura', 'ok'], manual: ['ręczna', 'edit'],
+  assumed: ['założona', 'warn'], unconfirmed: ['niepotwierdzona', 'warn'] };
+const TFX_SCOPES = [['hour', 'Godzina'], ['day', 'Doba'], ['month', 'Miesiąc'], ['invoice', 'Faktura']];
+const TFX_CSCOPES = [['hour', 'Godzina'], ['day', 'Doba'], ['month', 'Miesiąc'], ['year', 'Rok']];
+const TFX_MODES = [['tariff', 'Taryfa ↔ taryfa'], ['period', 'Okres ↔ okres'], ['invoice', 'Dokument ↔ faktura']];
+const TFX_LS = 'pvroi.tfx';
+let tfxState = { sec: 'now', incl: {}, basis: 'gross', bScope: 'day', cMode: 'tariff', cScope: 'month' };
+let tfxInited = false, tfxCharts = {}, tfxSeq = {}, tfxDeb = null, tfxCmpDef = {};
+try { Object.assign(tfxState, JSON.parse(localStorage.getItem(TFX_LS) || '{}')); } catch (e) { /* brak localStorage */ }
+function tfxSave() { try { localStorage.setItem(TFX_LS, JSON.stringify(tfxState)); } catch (e) { /* ignoruj */ } }
+
+function tfxIco(kind) {
+  const p = { ok: '<circle cx="8" cy="8" r="6.5"/><path d="M5 8.3l2 2 4-4.3"/>', warn: '<path d="M8 2l6.5 11.5h-13z"/><path d="M8 6.5v3M8 11.3v.1"/>',
+    edit: '<path d="M3 13l.7-3L10.5 3.2l2.3 2.3L6 12.3z"/>', up: '<path d="M8 13V3M3.5 7.5L8 3l4.5 4.5"/>',
+    down: '<path d="M8 3v10M3.5 8.5L8 13l4.5-4.5"/>', flat: '<path d="M3 8h10"/>', bad: '<circle cx="8" cy="8" r="6.5"/><path d="M5.5 5.5l5 5M10.5 5.5l-5 5"/>',
+    miss: '<circle cx="8" cy="8" r="6.5"/><path d="M5.5 8h5"/>' }[kind] || '';
+  return '<svg class="tfx-ico" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + p + '</svg>';
+}
+function tfxBadge(map, key) {
+  const m = map[key] || [key == null ? '—' : String(key), 'flat'];
+  return '<span class="tfx-badge tfx-b-' + _esc(String(key)) + '">' + tfxIco(m[1]) + _esc(m[0]) + '</span>';
+}
+function tfxZone(z) { return z == null ? '—' : (TFX_ZONE[z] || z); }
+function tfxCompLabel(k) { const c = TFX_COMP.find(x => x[0] === k); return c ? c[1] : k; }
+function tfxFmt(v, dp) { return v == null ? '—' : Number(v).toLocaleString('pl-PL', { minimumFractionDigits: dp ?? 2, maximumFractionDigits: dp ?? 2 }); }
+async function tfxGet(url) {
+  const r = await fetch(url);
+  let d = null;
+  try { d = await r.json(); } catch (e) { /* brak JSON */ }
+  if (!r.ok || !d || d.ok === false) throw new Error((d && d.error) || ('HTTP ' + r.status));
+  return d;
+}
+function tfxLoading(el, txt) { el.innerHTML = '<p class="tf-muted">' + _esc(txt || 'Ładowanie…') + '</p>'; }
+function tfxError(el, msg, retry) {
+  el.innerHTML = '<div class="tfx-err" role="alert">' + tfxIco('bad') + 'Błąd: ' + _esc(msg) +
+    ' <button type="button" class="btn" onclick="' + retry + '()">Ponów</button></div>';
+}
+function tfxNext(key) { tfxSeq[key] = (tfxSeq[key] || 0) + 1; return tfxSeq[key]; }
+function tfxChart(key, cv, cfg) {
+  if (tfxCharts[key]) { tfxCharts[key].destroy(); delete tfxCharts[key]; }
+  if (cv && cfg) tfxCharts[key] = new Chart(cv, cfg);
+}
+function tfxFill(id, opts, cur) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const keep = cur !== undefined ? cur : el.value;
+  el.innerHTML = opts.map(o => '<option value="' + _esc(o[0]) + '">' + _esc(o[1]) + '</option>').join('');
+  if (opts.some(o => o[0] === keep)) el.value = keep;
+}
+function tfxSeg(id, items, cur, fn) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.innerHTML = items.map(i => '<button type="button" aria-pressed="' + (i[0] === cur) + '" onclick="' + fn + '(\'' + i[0] + '\')">' + _esc(i[1]) + '</button>').join('');
+}
+function tfxTariffs() {
+  const z = (_taryfaCatalog && _taryfaCatalog.zones) || {};
+  const l = Object.keys(z).filter(t => t !== 'dynamic_distribution_zones');
+  return l.length ? l : ['G11', 'G12', 'G12w', 'G13'];
+}
+async function tfxEnsureCatalog() {
+  if (_taryfaCatalog) return _taryfaCatalog;
+  const d = await tfxGet('api/tariff_catalog');
+  _taryfaCatalog = d;
+  return d;
+}
+function tfxZonesFor(tariff) {
+  const s = new Set();
+  ((_taryfaCatalog && _taryfaCatalog.periods) || []).forEach(p => {
+    const e = p.energy_net || {};
+    (tariff ? [tariff] : Object.keys(e)).forEach(t => Object.keys(e[t] || {}).forEach(z => s.add(z)));
+  });
+  return [...s];
+}
+function tfxVal(id) { const e = document.getElementById(id); return e ? e.value : ''; }
+
+/* nawigacja podsekcji */
+function tfxInit() {
+  const nav = document.getElementById('tfxNav');
+  if (!nav) return;
+  if (!tfxInited) {
+    tfxInited = true;
+    nav.innerHTML = TFX_SECTIONS.map(s => '<button type="button" role="tab" id="tfxT-' + s[0] + '" aria-controls="tfxP-' + s[0] +
+      '" onclick="tfxShow(\'' + s[0] + '\')">' + _esc(s[1]) + '</button>').join('');
+    nav.addEventListener('keydown', e => {
+      const i = TFX_SECTIONS.findIndex(s => s[0] === tfxState.sec);
+      const n = e.key === 'ArrowRight' ? i + 1 : e.key === 'ArrowLeft' ? i - 1 : null;
+      if (n == null) return;
+      e.preventDefault();
+      tfxShow(TFX_SECTIONS[(n + TFX_SECTIONS.length) % TFX_SECTIONS.length][0], true);
+    });
+    const rf = document.getElementById('tfxRTariff') && ['tfxRTariff', 'tfxRZone', 'tfxRComp', 'tfxRFrom', 'tfxRTo', 'tfxRSource', 'tfxRConf', 'tfxRQ'];
+    (rf || []).forEach(id => {
+      const el = document.getElementById(id);
+      el.addEventListener(id === 'tfxRQ' ? 'input' : 'change', () => {
+        clearTimeout(tfxDeb); tfxDeb = setTimeout(tfxLoadRates, 250);
+      });
+    });
+  }
+  if (!TFX_SECTIONS.some(s => s[0] === tfxState.sec)) tfxState.sec = 'now';
+  tfxShow(tfxState.sec);
+}
+function tfxShow(sec, focus) {
+  tfxState.sec = sec; tfxSave();
+  TFX_SECTIONS.forEach(s => {
+    const b = document.getElementById('tfxT-' + s[0]), p = document.getElementById('tfxP-' + s[0]);
+    const on = s[0] === sec;
+    if (b) { b.setAttribute('aria-selected', on); b.tabIndex = on ? 0 : -1; if (on && focus) b.focus(); }
+    if (p) p.hidden = !on;
+  });
+  if (sec === 'now' && _taryfaWeekChart) _taryfaWeekChart.resize();
+  tfxLoadSec(sec);
+}
+function tfxLoadSec(sec) {
+  ({ now: tfxLoadNow, rates: tfxLoadRates, break: tfxLoadBreak, cmp: tfxLoadCmp, src: tfxLoadSources })[sec]();
+}
+
+/* 1. Teraz */
+function tfxLoadNow() {
+  tfxLoadNowTile();
+  tfxLoadSchedule();
+}
+async function tfxLoadNowTile() {
+  const el = document.getElementById('tfxNowTile');
+  const seq = tfxNext('nowTile');
+  tfxLoading(el);
+  try {
+    const d = await tfxGet('api/tariff_now');
+    if (seq !== tfxSeq.nowTile) return;
+    const nc = d.next_change;
+    const nxt = nc ? 'od ' + _esc(String(nc.at).slice(11, 13)) + ':00 strefa: ' + _esc(tfxZone(nc.zone)) : 'brak zmiany w horyzoncie';
+    el.innerHTML = '<div class="tfx-grid">' +
+      '<div><div class="tfx-k">Strefa</div><div class="tfx-v">' + _esc(tfxZone(d.zone)) + '</div><div class="tf-muted">taryfa ' + _esc(d.tariff) + '</div></div>' +
+      '<div><div class="tfx-k">Cena brutto</div><div class="tfx-v">' + tfxFmt(d.gross_per_kwh, 4) + ' zł/kWh</div><div class="tf-muted">netto ' + tfxFmt(d.net_per_kwh, 4) + '</div></div>' +
+      '<div><div class="tfx-k">Poziom</div><div class="tfx-v">' + tfxBadge(TFX_LEVEL, d.level) + '</div></div>' +
+      '<div><div class="tfx-k">Następna zmiana</div><div class="tfx-v tfx-sm">' + nxt + '</div></div>' +
+      '<div><div class="tfx-k">Pewność i źródło</div><div class="tfx-v tfx-sm">' + tfxBadge(TFX_CONF, d.confidence) + '</div><div class="tf-muted">okres cennika od ' + _esc(d.period_from || '—') + '</div></div>' +
+      '</div>';
+  } catch (e) { if (seq === tfxSeq.nowTile) tfxError(el, e.message, 'tfxLoadNowTile'); }
+}
+async function tfxLoadSchedule() {
+  const note = document.getElementById('tfxScheduleNote'), cv = document.getElementById('tfxScheduleChart');
+  const seq = tfxNext('sched');
+  note.textContent = 'Ładowanie…';
+  try {
+    const d = await tfxGet('api/tariff/schedule?hours=48');
+    if (seq !== tfxSeq.sched) return;
+    const s = d.schedule || [];
+    if (!s.length) { tfxChart('sched'); note.textContent = 'Brak danych harmonogramu.'; return; }
+    const col = { cheap: '#16a34a', mid: '#d97706', expensive: '#dc2626', flat: '#6b7280' };
+    tfxChart('sched', cv, {
+      type: 'bar',
+      data: { labels: s.map(x => x.hour), datasets: [{ label: 'Cena brutto', data: s.map(x => x.gross),
+        backgroundColor: s.map(x => col[x.level] || col.flat), borderColor: s.map((x, i) => i === 0 ? '#111827' : 'transparent'),
+        borderWidth: s.map((x, i) => i === 0 ? 3 : 0), categoryPercentage: 1, barPercentage: 1 }] },
+      options: { responsive: true, maintainAspectRatio: false, animation: false,
+        plugins: { legend: { display: false }, tooltip: { callbacks: {
+          title: it => { const k = it[0].label; return k.slice(8, 10) + '.' + k.slice(5, 7) + ' ' + k.slice(11, 13) + ':00'; },
+          label: c => { const x = s[c.dataIndex]; return [(x.gross == null ? '—' : x.gross.toFixed(4)) + ' zł/kWh', 'strefa: ' + tfxZone(x.zone), 'poziom: ' + (TFX_LEVEL[x.level] || [x.level])[0]]; } } } },
+        scales: { x: { ticks: { autoSkip: false, maxRotation: 0, font: { size: 10 },
+          callback: function (v) { const k = this.getLabelForValue(v); return k.slice(11, 13) === '00' || v === 0 ? k.slice(8, 10) + '.' + k.slice(5, 7) + ' ' + k.slice(11, 13) + 'h' : (+k.slice(11, 13) % 6 === 0 ? k.slice(11, 13) + 'h' : ''); } } },
+          y: { beginAtZero: true, ticks: { callback: v => v.toFixed(2), font: { size: 10 } } } } },
+    });
+    document.getElementById('tfxScheduleLegend').innerHTML = ['cheap', 'mid', 'expensive'].map(k =>
+      '<span><i style="background:' + col[k] + '"></i>' + tfxBadge(TFX_LEVEL, k) + '</span>').join('') + '<span>Czarny obrys: bieżąca godzina</span>';
+    note.textContent = 'Taryfa ' + d.tariff + ', ' + s.length + ' godz. od bieżącej.';
+  } catch (e) { if (seq === tfxSeq.sched) { tfxChart('sched'); tfxError(note, e.message, 'tfxLoadSchedule'); } }
+}
+
+/* 2. Stawki */
+async function tfxLoadRates() {
+  const cnt = document.getElementById('tfxRCount'), tbl = document.getElementById('tfxRTable');
+  const seq = tfxNext('rates');
+  try { await tfxEnsureCatalog(); } catch (e) { /* filtry zostaną puste, zapytanie nadal działa */ }
+  if (!tfxLoadRates.filled) {
+    tfxLoadRates.filled = true;
+    const src = Object.keys(((_taryfaCatalog || {}).meta || {}).sources || {});
+    tfxFill('tfxRTariff', [['', 'Wszystkie']].concat(tfxTariffs().map(t => [t, t])));
+    tfxFill('tfxRZone', [['', 'Wszystkie']].concat(tfxZonesFor().map(z => [z, tfxZone(z)])));
+    tfxFill('tfxRComp', [['', 'Wszystkie']].concat(TFX_COMP.filter(c => c[2] !== 'vat').map(c => [c[0], c[1]])));
+    tfxFill('tfxRSource', [['', 'Wszystkie']].concat(src.map(k => [k, k])));
+    tfxFill('tfxRConf', [['', 'Wszystkie']].concat(Object.keys(TFX_CONF).map(k => [k, TFX_CONF[k][0]])));
+  }
+  const q = new URLSearchParams();
+  [['tariff', 'tfxRTariff'], ['zone', 'tfxRZone'], ['component', 'tfxRComp'], ['from', 'tfxRFrom'], ['to', 'tfxRTo'],
+    ['source', 'tfxRSource'], ['confidence', 'tfxRConf'], ['q', 'tfxRQ']].forEach(p => { const v = tfxVal(p[1]).trim(); if (v) q.set(p[0], v); });
+  tfxLoading(tbl);
+  try {
+    const d = await tfxGet('api/tariff/rates?' + q.toString());
+    if (seq !== tfxSeq.rates) return;
+    const rows = d.rows || [];
+    cnt.textContent = 'Wyniki: ' + (d.count != null ? d.count : rows.length) + (d.truncated ? ' (lista ucięta do 2000 wierszy — zawęź filtry)' : '');
+    if (!rows.length) { tbl.innerHTML = '<p class="tf-muted">Brak stawek dla wybranych filtrów.</p>'; return; }
+    tbl.innerHTML = '<table class="tfx-tbl"><thead><tr><th class="l">Okres</th><th class="l">Taryfa</th><th class="l">Strefa</th><th class="l">Składnik</th>' +
+      '<th class="num">Netto</th><th class="num">Brutto</th><th class="l">Jedn.</th><th class="l">Pewność</th><th class="l">Dokument / faktura</th></tr></thead><tbody>' +
+      rows.map(r => {
+        const doc = r.source_url ? '<a href="' + _esc(r.source_url) + '" target="_blank" rel="noopener">' + _esc(r.doc_label || r.source_key || 'dokument') + '</a>'
+          : _esc(r.doc_label || r.source_key || '');
+        const inv = r.invoice_no ? '<div class="tf-muted">faktura ' + _esc(r.invoice_no) + '</div>' : '';
+        return '<tr><td class="l">' + _esc(r.period_from || '') + ' … ' + _esc(r.period_to || '') + '</td><td class="l">' + _esc(r.tariff) +
+          '</td><td class="l">' + _esc(tfxZone(r.zone)) + '</td><td class="l" title="' + _esc(r.note || '') + '">' + _esc(r.label) + '</td><td class="num">' + tfxFmt(r.net, 4) +
+          '</td><td class="num">' + tfxFmt(r.gross, 4) + '</td><td class="l">' + _esc(r.unit || '') + '</td><td class="l">' + tfxBadge(TFX_CONF, r.confidence) +
+          '</td><td class="l">' + (doc || '—') + inv + '</td></tr>';
+      }).join('') + '</tbody></table>';
+  } catch (e) { if (seq === tfxSeq.rates) { cnt.textContent = ''; tfxError(tbl, e.message, 'tfxLoadRates'); } }
+}
+
+/* wspólne: wlicz + podstawa */
+function tfxRenderIncl() {
+  const html = TFX_COMP.map(c => {
+    const on = tfxState.incl[c[0]] !== false;
+    const dis = c[0] === 'vat' && tfxState.basis !== 'gross';
+    return '<label class="tfx-chk"><input type="checkbox" ' + (on ? 'checked ' : '') + (dis ? 'disabled ' : '') + 'onchange="tfxToggleComp(\'' + c[0] + '\', this.checked)"> ' +
+      _esc(c[1]) + (c[2] === 'fixed' ? ' <span class="tf-muted">(stały)</span>' : '') + '</label>';
+  }).join('');
+  ['tfxIncl', 'tfxIncl2'].forEach(id => { const b = document.getElementById(id); if (b) b.innerHTML = html; });
+}
+function tfxToggleComp(k, on) { tfxState.incl[k] = on; tfxSave(); tfxReloadActive(); }
+function tfxSetBasis(b) { tfxState.basis = b; tfxSave(); tfxRenderIncl(); tfxReloadActive(); }
+function tfxReloadActive() {
+  tfxSeg('tfxBBasis', [['gross', 'Brutto'], ['net', 'Netto']], tfxState.basis, 'tfxSetBasis');
+  if (tfxState.sec === 'break') tfxLoadBreak(true); else if (tfxState.sec === 'cmp') tfxLoadCmp(true);
+}
+function tfxInclParam() {
+  const on = TFX_COMP.filter(c => tfxState.incl[c[0]] !== false && !(c[0] === 'vat' && tfxState.basis !== 'gross')).map(c => c[0]);
+  return on.length === TFX_COMP.length ? '' : on.join(',');
+}
+function tfxNoneIncluded() {
+  return !TFX_COMP.some(c => c[0] !== 'vat' && tfxState.incl[c[0]] !== false);
+}
+function tfxAmount(c) { return tfxState.basis === 'gross' ? c.gross : c.net; }
+function tfxPad(n) { return String(n).padStart(2, '0'); }
+function tfxDefaultAt(scope) {
+  const n = new Date(), y = new Date(Date.now() - 86400000);
+  const d = x => x.getFullYear() + '-' + tfxPad(x.getMonth() + 1) + '-' + tfxPad(x.getDate());
+  if (scope === 'hour') return d(n) + 'T' + tfxPad(n.getHours());
+  if (scope === 'day') return d(y);
+  if (scope === 'month') return d(n).slice(0, 7);
+  if (scope === 'year') return String(n.getFullYear());
+  const inv = (typeof _lastInvoices !== 'undefined' ? _lastInvoices : []).filter(i => i.month).map(i => i.month).sort().pop();
+  return inv || '';
+}
+function tfxAtInput(id, scope, cur, onch) {
+  const v = cur || tfxDefaultAt(scope);
+  const lbl = ' aria-label="Termin"';
+  if (scope === 'hour') return '<input type="datetime-local" step="3600" id="' + id + '"' + lbl + ' value="' + _esc(v + ':00') + '" onchange="' + onch + '">';
+  if (scope === 'day') return '<input type="date" id="' + id + '"' + lbl + ' value="' + _esc(v) + '" onchange="' + onch + '">';
+  if (scope === 'month') return '<input type="month" id="' + id + '"' + lbl + ' value="' + _esc(v) + '" onchange="' + onch + '">';
+  if (scope === 'year') return '<input type="number" id="' + id + '"' + lbl + ' min="2020" max="2100" value="' + _esc(v) + '" onchange="' + onch + '">';
+  const inv = (typeof _lastInvoices !== 'undefined' ? _lastInvoices : []).filter(i => i.month).map(i => i.month).sort().reverse();
+  if (!inv.length) return '<select id="' + id + '"' + lbl + '><option value="">brak faktur</option></select>';
+  return '<select id="' + id + '"' + lbl + ' onchange="' + onch + '">' + inv.map(m => '<option value="' + _esc(m) + '"' + (m === v ? ' selected' : '') + '>' + _esc(m) + '</option>').join('') + '</select>';
+}
+function tfxAtValue(id, scope) {
+  const v = tfxVal(id);
+  return scope === 'hour' ? v.slice(0, 13) : v;
+}
+
+/* 3. Rozbicie */
+let tfxBAt = {};
+function tfxSetBScope(s) {
+  tfxBAt[tfxState.bScope] = tfxAtValue('tfxBAt', tfxState.bScope);
+  tfxState.bScope = s; tfxSave(); tfxLoadBreak(true);
+}
+async function tfxLoadBreak(keep) {
+  const st = document.getElementById('tfxBState');
+  try { await tfxEnsureCatalog(); } catch (e) { /* lista taryf spadnie na domyślną */ }
+  const sc = tfxState.bScope;
+  if (!keep || !document.getElementById('tfxBAt')) {
+    tfxFill('tfxBTariff', tfxTariffs().map(t => [t, t]), tfxVal('tfxBTariff') || _tfBase());
+  }
+  const bt = document.getElementById('tfxBTariff');
+  if (bt && !bt.dataset.bound) { bt.dataset.bound = '1'; bt.addEventListener('change', () => tfxLoadBreak(true)); }
+  tfxSeg('tfxBScope', TFX_SCOPES, sc, 'tfxSetBScope');
+  tfxSeg('tfxBBasis', [['gross', 'Brutto'], ['net', 'Netto']], tfxState.basis, 'tfxSetBasis');
+  const wrap = document.getElementById('tfxBAtWrap');
+  if (!wrap.dataset.scope || wrap.dataset.scope !== sc) {
+    wrap.dataset.scope = sc;
+    wrap.innerHTML = 'Termin ' + tfxAtInput('tfxBAt', sc, tfxBAt[sc], 'tfxLoadBreak(true)');
+  }
+  tfxRenderIncl();
+  const out = document.getElementById('tfxBTable'), tot = document.getElementById('tfxBTotal');
+  const seq = tfxNext('break');
+  const at = tfxAtValue('tfxBAt', sc);
+  if (!at) { st.textContent = sc === 'invoice' ? 'Brak faktur do wyboru.' : 'Wybierz termin.'; out.innerHTML = ''; tot.innerHTML = ''; tfxChart('break'); return; }
+  if (tfxNoneIncluded()) { st.textContent = 'Wybierz co najmniej jeden składnik.'; out.innerHTML = ''; tot.innerHTML = ''; tfxChart('break'); return; }
+  const q = new URLSearchParams({ tariff: tfxVal('tfxBTariff'), basis: tfxState.basis });
+  q.set({ hour: 'at', day: 'day', month: 'month', invoice: 'invoice' }[sc], at);
+  const inc = tfxInclParam(); if (inc) q.set('include', inc);
+  tfxLoading(st);
+  try {
+    const d = await tfxGet('api/tariff/breakdown?' + q.toString());
+    if (seq !== tfxSeq.break) return;
+    st.textContent = (d.label || '') + (d.note ? ' — ' + d.note : '');
+    tfxRenderBreak(d);
+  } catch (e) { if (seq === tfxSeq.break) { tfxChart('break'); out.innerHTML = ''; tot.innerHTML = ''; tfxError(st, e.message, 'tfxLoadBreak'); } }
+}
+function tfxRenderBreak(d) {
+  const comps = d.components || [];
+  // Składniki mają już brutto z VAT; wiersz `vat` to sam podatek „w tym” — poza paskiem i udziałami (inaczej VAT liczony 2x).
+  const inc = comps.filter(c => c.included && c.key !== 'vat');
+  const vatOn = comps.some(c => c.key === 'vat' && c.included);
+  const bLbl = d.basis === 'gross' ? (vatOn ? 'brutto' : 'brutto bez VAT') : 'netto';
+  const tot = d.basis === 'gross' ? d.total_gross : d.total_net;
+  const idx = k => Math.max(0, TFX_COMP.findIndex(c => c[0] === k));
+  const items = inc.filter(c => tfxAmount(c) != null && tfxAmount(c) !== 0);
+  tfxChart('break', document.getElementById('tfxBreakChart'), {
+    type: 'bar',
+    data: { labels: [d.label || ''], datasets: items.map(c => ({ label: c.label, data: [tfxAmount(c)], backgroundColor: TFX_COLORS[idx(c.key) % TFX_COLORS.length],
+      borderColor: (getComputedStyle(document.body).getPropertyValue('--card').trim() || '#ffffff'), borderWidth: 2, borderSkipped: false })) },
+    options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, animation: false,
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => c.dataset.label + ': ' + tfxFmt(c.parsed.x, 4) + ' zł' } } },
+      scales: { x: { stacked: true, ticks: { font: { size: 10 }, callback: v => tfxFmt(v, 2) } }, y: { stacked: true, display: false } } },
+  });
+  document.getElementById('tfxBLegend').innerHTML = items.map(c => '<span><i style="background:' + TFX_COLORS[idx(c.key) % TFX_COLORS.length] + '"></i>' + _esc(c.label) + '</span>').join('');
+  document.getElementById('tfxBTable').innerHTML = '<table class="tfx-tbl"><thead><tr><th class="l">Składnik</th><th class="num">Stawka netto</th><th class="num">Kwota (' +
+    bLbl + ')</th><th class="num">Udział</th></tr></thead><tbody>' + comps.map(c => {
+    const a = tfxAmount(c);
+    const isVat = c.key === 'vat';
+    const share = isVat ? (c.included ? 'w tym' : '—') : (c.included && tot ? tfxFmt(a / tot * 100, 1) + ' %' : '—');
+    const rate = c.rate_net == null ? '—' : tfxFmt(c.rate_net, 4) + ' ' + _esc(c.unit || '');
+    return '<tr' + (c.included ? '' : ' class="tfx-off"') + '><td class="l">' + _esc(c.label) + (c.included ? '' : ' <span class="tf-muted">(wyłączony)</span>') + '</td><td class="num">' + rate +
+      '</td><td class="num">' + (c.included ? tfxFmt(a, 4) : '—') + '</td><td class="num">' + share + '</td></tr>';
+  }).join('') + '</tbody></table>';
+  document.getElementById('tfxBTotal').innerHTML = '<b>Razem ' + bLbl + ': ' + tfxFmt(tot, 2) + ' zł</b>' +
+    ' <span class="tf-muted">· ' + tfxFmt(d.kwh, 2) + ' kWh' + (d.per_kwh_gross != null ? ' · ' + tfxFmt(d.per_kwh_gross, 4) + ' zł/kWh brutto' : '') + '</span>';
+}
+
+/* 4. Porównania */
+function tfxSetCMode(m) { tfxState.cMode = m; tfxSave(); tfxCmpDef = {}; tfxLoadCmp(); }
+function tfxSetCScope(s) {
+  tfxCmpDef.at = undefined; tfxState.cScope = s; tfxSave(); tfxLoadCmp();
+}
+function tfxCmpTariffChanged() {
+  tfxFill('tfxCZ', tfxZonesFor(tfxVal('tfxCT')).map(z => [z, tfxZone(z)]), '');
+  tfxLoadCmp(true);
+}
+async function tfxLoadCmp(keep) {
+  try { await tfxEnsureCatalog(); } catch (e) { /* domyślna lista taryf */ }
+  tfxSeg('tfxCMode', TFX_MODES, tfxState.cMode, 'tfxSetCMode');
+  tfxRenderIncl();
+  const ctl = document.getElementById('tfxCCtl');
+  const m = tfxState.cMode;
+  if (!keep || ctl.dataset.mode !== m + (m === 'tariff' ? tfxState.cScope : '')) {
+    ctl.dataset.mode = m + (m === 'tariff' ? tfxState.cScope : '');
+    const tr = tfxTariffs();
+    const selTariff = (id, lbl, def) => '<label>' + lbl + ' <select id="' + id + '" onchange="' + (id === 'tfxCT' ? 'tfxCmpTariffChanged()' : 'tfxLoadCmp(true)') + '">' + tr.map(t => '<option' + (t === def ? ' selected' : '') + '>' + _esc(t) + '</option>').join('') + '</select></label>';
+    if (m === 'tariff') {
+      const base = _tfBase(), other = tr.find(t => t !== base) || base;
+      ctl.innerHTML = selTariff('tfxCA', 'Taryfa A', tfxVal('tfxCA') || base) + selTariff('tfxCB', 'Taryfa B', tfxVal('tfxCB') || other) +
+        '<div><div class="tfx-lbl">Zakres</div><div class="tsim-seg" role="group" aria-label="Zakres porównania" id="tfxCScope"></div></div>' +
+        '<label>Termin ' + tfxAtInput('tfxCAt', tfxState.cScope, tfxCmpDef.at, 'tfxLoadCmp(true)') + '</label>' +
+        '<div><div class="tfx-lbl">Podstawa</div><div class="tsim-seg" role="group" aria-label="Podstawa" id="tfxCBasis"></div></div>';
+      tfxSeg('tfxCScope', TFX_CSCOPES, tfxState.cScope, 'tfxSetCScope');
+    } else if (m === 'period') {
+      const y = new Date().getFullYear();
+      ctl.innerHTML = selTariff('tfxCT', 'Taryfa', tfxVal('tfxCT') || _tfBase()) +
+        '<label>Strefa <select id="tfxCZ" onchange="tfxLoadCmp(true)"></select></label>' +
+        '<label>Składnik <select id="tfxCC" onchange="tfxLoadCmp(true)">' + TFX_COMP.filter(c => c[2] !== 'vat').map(c => '<option value="' + c[0] + '">' + _esc(c[1]) + '</option>').join('') + '</select></label>' +
+        '<label>Od <input type="date" id="tfxCF" value="' + (y - 1) + '-01-01" onchange="tfxLoadCmp(true)"></label>' +
+        '<label>Do <input type="date" id="tfxCTo" value="' + y + '-12-31" onchange="tfxLoadCmp(true)"></label>' +
+        '<div><div class="tfx-lbl">Podstawa</div><div class="tsim-seg" role="group" aria-label="Podstawa" id="tfxCBasis"></div></div>';
+      tfxFill('tfxCZ', tfxZonesFor(tfxVal('tfxCT')).map(z => [z, tfxZone(z)]));
+    } else {
+      ctl.innerHTML = '<label>Miesiąc ' + tfxAtInput('tfxCAt', 'month', tfxCmpDef.at || tfxDefaultAt('invoice') || tfxDefaultAt('month'), 'tfxLoadCmp(true)') + '</label>';
+    }
+  }
+  tfxSeg('tfxCBasis', [['gross', 'Brutto'], ['net', 'Netto']], tfxState.basis, 'tfxSetBasis');
+  document.getElementById('tfxCChartWrap').style.display = m === 'invoice' ? 'none' : '';
+  document.getElementById('tfxIncl2').parentNode.style.display = m === 'invoice' ? 'none' : '';
+  if (m === 'tariff') tfxCmpTariff(); else if (m === 'period') tfxCmpPeriod(); else tfxCmpInvoice();
+}
+function tfxCmpBase(seqKey) {
+  const st = document.getElementById('tfxCState');
+  ['tfxCKpi', 'tfxCTable', 'tfxCZones', 'tfxCLegend'].forEach(i => { document.getElementById(i).innerHTML = ''; });
+  return { st, seq: tfxNext(seqKey) };
+}
+async function tfxCmpTariff() {
+  const { st, seq } = tfxCmpBase('cmp');
+  const sc = tfxState.cScope;
+  const at = tfxAtValue('tfxCAt', sc);
+  tfxCmpDef.at = at;
+  if (!at) { st.textContent = 'Wybierz termin.'; tfxChart('cmp'); return; }
+  if (tfxNoneIncluded()) { st.textContent = 'Wybierz co najmniej jeden składnik.'; tfxChart('cmp'); return; }
+  const q = new URLSearchParams({ mode: 'tariff', a: tfxVal('tfxCA'), b: tfxVal('tfxCB'), scope: sc, at, basis: tfxState.basis });
+  const inc = tfxInclParam(); if (inc) q.set('include', inc);
+  tfxLoading(st);
+  try {
+    const d = await tfxGet('api/tariff/compare?' + q.toString());
+    if (seq !== tfxSeq.cmp) return;
+    st.textContent = '';
+    const A = d.a, B = d.b;
+    const keys = TFX_COMP.map(c => c[0]).filter(k => [A, B].some(x => (x.components || []).some(c => c.key === k && c.included)));
+    const val = (x, k) => { const c = (x.components || []).find(z => z.key === k); return c && c.included ? tfxAmount(c) : 0; };
+    const diff = d.diff;
+    const dir = diff == null ? ['flat', 'brak danych'] : diff > 0 ? ['up', 'A drożej niż B'] : diff < 0 ? ['down', 'A taniej niż B'] : ['flat', 'bez różnicy'];
+    document.getElementById('tfxCKpi').innerHTML = '<div class="tfx-tile"><div class="tfx-k">Różnica A − B (' + (d.basis === 'gross' ? 'brutto' : 'netto') + ')</div><div class="tfx-v">' + tfxIco(dir[0]) + ' ' + tfxFmt(diff, 2) + ' zł' +
+      (d.diff_pct != null ? ' (' + tfxFmt(d.diff_pct, 1) + ' %)' : '') + '</div><div class="tf-muted">' + _esc(dir[1]) + ' · A ' + _esc(A.tariff) + ': ' + tfxFmt(A.total, 2) + ' zł · B ' + _esc(B.tariff) + ': ' + tfxFmt(B.total, 2) + ' zł · zużycie ' + tfxFmt(A.kwh, 2) + ' kWh</div></div>';
+    tfxChart('cmp', document.getElementById('tfxCmpChart'), {
+      type: 'bar',
+      data: { labels: keys.map(tfxCompLabel), datasets: [
+        { label: 'A: ' + A.tariff, data: keys.map(k => val(A, k)), backgroundColor: '#2563eb' },
+        { label: 'B: ' + B.tariff, data: keys.map(k => val(B, k)), backgroundColor: '#d97706' }] },
+      options: { responsive: true, maintainAspectRatio: false, animation: false,
+        plugins: { legend: { display: true, position: 'bottom' }, tooltip: { callbacks: { label: c => c.dataset.label + ': ' + tfxFmt(c.parsed.y, 4) + ' zł' } } },
+        scales: { x: { ticks: { font: { size: 10 }, maxRotation: 60 } }, y: { ticks: { font: { size: 10 } } } } },
+    });
+    document.getElementById('tfxCLegend').innerHTML = '<span><i style="background:#2563eb"></i>A: ' + _esc(A.tariff) + '</span><span><i style="background:#d97706"></i>B: ' + _esc(B.tariff) + '</span>';
+    document.getElementById('tfxCTable').innerHTML = '<table class="tfx-tbl"><thead><tr><th class="l">Składnik</th><th class="num">A: ' + _esc(A.tariff) + '</th><th class="num">B: ' + _esc(B.tariff) +
+      '</th><th class="num">A − B</th></tr></thead><tbody>' + keys.map(k => '<tr><td class="l">' + _esc(tfxCompLabel(k)) + '</td><td class="num">' + tfxFmt(val(A, k), 4) + '</td><td class="num">' + tfxFmt(val(B, k), 4) +
+      '</td><td class="num">' + tfxFmt(val(A, k) - val(B, k), 4) + '</td></tr>').join('') + '</tbody></table>';
+    const zr = (t, zs) => (zs || []).map(z => '<tr><td class="l">' + _esc(t) + '</td><td class="l">' + _esc(tfxZone(z.zone)) + '</td><td class="l">' + tfxBadge(TFX_LEVEL, z.level) + '</td><td class="num">' + tfxFmt(z.gross, 4) + '</td></tr>').join('');
+    document.getElementById('tfxCZones').innerHTML = '<h4 class="tf-h tf-gap">Stawki per strefa (brutto, zł/kWh)</h4><table class="tfx-tbl"><thead><tr><th class="l">Taryfa</th><th class="l">Strefa</th><th class="l">Poziom</th><th class="num">Cena brutto</th></tr></thead><tbody>' +
+      zr(A.tariff, (d.zones || {}).a) + zr(B.tariff, (d.zones || {}).b) + '</tbody></table>';
+  } catch (e) { if (seq === tfxSeq.cmp) { tfxChart('cmp'); tfxError(st, e.message, 'tfxCmpTariff'); } }
+}
+async function tfxCmpPeriod() {
+  const { st, seq } = tfxCmpBase('cmp');
+  const comp = tfxVal('tfxCC');
+  const q = new URLSearchParams({ mode: 'period', tariff: tfxVal('tfxCT'), from: tfxVal('tfxCF'), to: tfxVal('tfxCTo') });
+  if (tfxVal('tfxCZ')) q.set('zone', tfxVal('tfxCZ'));
+  tfxLoading(st);
+  try {
+    const d = await tfxGet('api/tariff/compare?' + q.toString());
+    if (seq !== tfxSeq.cmp) return;
+    const ps = d.periods || [];
+    if (!ps.length) { tfxChart('cmp'); st.textContent = 'Brak okresów cennika w wybranym zakresie.'; return; }
+    st.textContent = 'Taryfa ' + d.tariff + (d.zone ? ', strefa: ' + tfxZone(d.zone) : '') + '.';
+    const f = p => { const c = (p.components || {})[comp]; return c ? (tfxState.basis === 'gross' ? c.gross : c.net) : null; };
+    tfxChart('cmp', document.getElementById('tfxCmpChart'), {
+      type: 'line',
+      data: { labels: ps.map(p => p.from), datasets: [{ label: tfxCompLabel(comp) + ' (' + (tfxState.basis === 'gross' ? 'brutto' : 'netto') + ')', data: ps.map(f), stepped: true,
+        borderColor: '#2563eb', backgroundColor: 'rgba(37,99,235,.1)', pointRadius: 4, borderWidth: 2, spanGaps: false }] },
+      options: { responsive: true, maintainAspectRatio: false, animation: false,
+        plugins: { legend: { display: true, position: 'bottom' }, tooltip: { callbacks: { title: it => 'od ' + it[0].label, label: c => c.dataset.label + ': ' + tfxFmt(c.parsed.y, 4) } } },
+        scales: { x: { ticks: { font: { size: 10 } } }, y: { ticks: { font: { size: 10 } } } } },
+    });
+    document.getElementById('tfxCLegend').innerHTML = '<span><i style="background:#2563eb"></i>' + _esc(tfxCompLabel(comp)) + '</span>';
+    document.getElementById('tfxCTable').innerHTML = '<table class="tfx-tbl"><thead><tr><th class="l">Od</th><th class="l">Do</th><th class="l">Pewność</th><th class="num">' + _esc(tfxCompLabel(comp)) +
+      '</th></tr></thead><tbody>' + ps.map(p => '<tr><td class="l">' + _esc(p.from) + '</td><td class="l">' + _esc(p.to) + '</td><td class="l">' + tfxBadge(TFX_CONF, p.confidence) + '</td><td class="num">' + tfxFmt(f(p), 4) + '</td></tr>').join('') + '</tbody></table>';
+  } catch (e) { if (seq === tfxSeq.cmp) { tfxChart('cmp'); tfxError(st, e.message, 'tfxCmpPeriod'); } }
+}
+async function tfxCmpInvoice() {
+  const { st, seq } = tfxCmpBase('cmp');
+  tfxChart('cmp');
+  const month = tfxVal('tfxCAt');
+  tfxCmpDef.at = month;
+  if (!month) { st.textContent = 'Wybierz miesiąc.'; return; }
+  tfxLoading(st);
+  try {
+    const d = await tfxGet('api/tariff/compare?mode=invoice&month=' + encodeURIComponent(month));
+    if (seq !== tfxSeq.cmp) return;
+    const S = { match: ['ok', 'zgodne z fakturą'], diff: ['warn', 'różnice powyżej progu'], no_invoice: ['miss', 'brak faktury za ten miesiąc'] }[d.status] || ['flat', d.status];
+    st.innerHTML = '<span class="tfx-badge">' + tfxIco(S[0]) + _esc(S[1]) + '</span> <span class="tf-muted">faktura: ' + _esc(d.invoice_no || '—') + ' · próg ' + _esc(String(d.tolerance_pct)) + ' %</span>';
+    const RS = { ok: ['ok', 'zgodne'], diff: ['warn', 'różnica'], missing: ['miss', 'brak na fakturze'] };
+    const rows = d.rows || [];
+    document.getElementById('tfxCTable').innerHTML = rows.length ? '<table class="tfx-tbl"><thead><tr><th class="l">Składnik</th><th class="l">Strefa</th><th class="num">Dokument</th><th class="num">Faktura</th><th class="num">Różnica</th><th class="l">Status</th></tr></thead><tbody>' +
+      rows.map(r => { const s = RS[r.status] || ['flat', r.status]; const bs = ' <span class="tf-muted">' + (r.basis === 'gross' ? 'brutto' : 'netto') + '</span>'; return '<tr><td class="l">' + _esc(r.label) + '</td><td class="l">' + _esc(tfxZone(r.zone)) + '</td><td class="num">' + tfxFmt(r.doc_net, 4) + bs +
+        '</td><td class="num">' + tfxFmt(r.invoice_net, 4) + bs + '</td><td class="num">' + (r.diff_pct == null ? '—' : tfxFmt(r.diff_pct, 1) + ' %') + '</td><td class="l"><span class="tfx-badge">' + tfxIco(s[0]) + _esc(s[1]) + '</span></td></tr>'; }).join('') + '</tbody></table>'
+      : '<p class="tf-muted">Brak składników do porównania.</p>';
+  } catch (e) { if (seq === tfxSeq.cmp) tfxError(st, e.message, 'tfxCmpInvoice'); }
+}
+
+/* 5. Źródła i aktualizacje (strażnik, historia, nowy okres są wyżej w tym samym panelu) */
+async function tfxLoadSources() {
+  const el = document.getElementById('tfxSources');
+  tfxLoading(el);
+  try {
+    const d = await tfxEnsureCatalog();
+    const src = ((d.meta || {}).sources) || {};
+    const keys = Object.keys(src);
+    el.innerHTML = keys.length ? '<table class="tfx-tbl"><thead><tr><th class="l">Klucz</th><th class="l">Dokument</th></tr></thead><tbody>' + keys.map(k => {
+      const v = src[k], url = typeof v === 'string' ? v : (v && v.url) || '', lbl = typeof v === 'object' && v && v.label ? v.label : url;
+      return '<tr><td class="l">' + _esc(k) + '</td><td class="l">' + (url ? '<a href="' + _esc(url) + '" target="_blank" rel="noopener">' + _esc(lbl) + '</a>' : _esc(lbl)) + '</td></tr>';
+    }).join('') + '</tbody></table>' : '<p class="tf-muted">Brak zarejestrowanych dokumentów źródłowych.</p>';
+  } catch (e) { tfxError(el, e.message, 'tfxLoadSources'); }
+}
+
+/* -- Taryfa: strażnik cenników (baner) i formularz nowego okresu -- */
+async function loadTariffGuard() {
+  const box = document.getElementById('tariffGuardBanner');
+  if (!box) return;
+  let d;
+  try {
+    const r = await fetch('api/tariff_guard');
+    d = await r.json();
+    if (!d.ok) throw new Error(d.error || ('HTTP ' + r.status));
+  } catch (e) {
+    box.innerHTML = '<div class="tf-muted tf-gap">Strażnik cenników: błąd ładowania (' + _esc(e.message) + ')</div>';
+    _initTariffPeriodForm();
+    return;
+  }
+  const st = d.state || {};
+  let html = '';
+  if (d.assumed && d.assumed.active) {
+    html += '<div style="margin-bottom:10px;padding:10px 14px;border-radius:4px;font-size:13px;background:#fff8e1;border-left:4px solid #f0ad4e">'
+      + '&#9888; <strong>Brak okresu cennika na dziś</strong> — używam ostatniego (do '
+      + _esc(d.assumed.period_valid_to || '?') + '), stawki mogą być nieaktualne.</div>';
+  }
+  const docs = st.new_documents || [];
+  if (docs.length) {
+    html += '<div style="margin-bottom:10px;padding:10px 14px;border-radius:4px;font-size:13px;background:#e8f4fd;border-left:4px solid #2196F3">'
+      + '<strong>Nowe dokumenty na stronach cenników:</strong><ul style="margin:6px 0 8px 18px;padding:0">'
+      + docs.map(x => '<li>' + _esc((x.page || '').toUpperCase()) + ': <a href="' + _esc(x.url || '')
+          + '" target="_blank" rel="noopener">' + _esc(x.url || '') + '</a></li>').join('')
+      + '</ul><button type="button" class="btn" onclick="ackTariffGuard()">Odłóż</button></div>';
+  }
+  const pages = st.pages || {};
+  Object.keys(pages).forEach(id => {
+    if (pages[id] && pages[id].error) {
+      html += '<div class="tf-muted" style="margin-bottom:6px">Strażnik: ' + _esc(id.toUpperCase())
+        + ' nie odpowiada (' + _esc(pages[id].error) + ')</div>';
+    }
+  });
+  box.innerHTML = html;
+  _initTariffPeriodForm();
+}
+
+async function ackTariffGuard() {
+  try {
+    const r = await fetch('api/tariff_guard/ack', { method: 'POST' });
+    const d = await r.json();
+    if (!d.ok) { alert('Błąd: ' + (d.error || r.status)); return; }
+  } catch (e) { alert('Błąd: ' + e.message); return; }
+  loadTariffGuard();
+}
+
+const _TP_TARIFFS = ['G11', 'G12', 'G12w', 'G13'];
+const _TP_SCALARS = [['quality_net', 'Jakościowa (zł/kWh netto)'], ['oze_net', 'OZE (zł/kWh netto)'],
+  ['cogeneration_net', 'Kogeneracja (zł/kWh netto)'], ['excise_net', 'Akcyza (zł/kWh netto)']];
+const _TP_FIXED = [['network_1ph', 'Sieciowa 1-faz. (zł/mies. netto)'], ['network_3ph', 'Sieciowa 3-faz. (zł/mies. netto)'],
+  ['subscription_dist', 'Abonament dystrybucyjny (zł/mies. netto)']];
+let _tpFormTariff = null;
+
+function _tpNum(id, label, val, extra) {
+  return '<label class="tf-muted" style="display:block;margin:4px 0">' + _esc(label)
+    + ' <input type="number" step="0.0001" min="0" id="' + _esc(id) + '" value="' + _esc(String(val ?? ''))
+    + '" style="width:100px" ' + (extra || '') + '></label>';
+}
+
+function _initTariffPeriodForm() {
+  const box = document.getElementById('tariffPeriodForm');
+  if (!box) return;
+  if (!box.dataset.ready) {
+    box.dataset.ready = '1';
+    box.innerHTML = '<label class="tf-muted">Taryfa: <select id="tpTariff" onchange="_loadTariffPeriodForm()">'
+      + _TP_TARIFFS.map(t => '<option value="' + t + '">' + t + '</option>').join('')
+      + '</select></label><div id="tpFields" class="tf-gap"></div>'
+      + '<div id="tpPreview" class="tbl-wrap tf-gap"></div><div id="tpMsg" class="tf-muted tf-gap"></div>';
+    document.getElementById('tpTariff').value = 'G12w';
+    _loadTariffPeriodForm();
+  }
+}
+
+async function _loadTariffPeriodForm() {
+  const fields = document.getElementById('tpFields');
+  const tariff = document.getElementById('tpTariff').value;
+  document.getElementById('tpPreview').innerHTML = '';
+  document.getElementById('tpMsg').textContent = '';
+  fields.innerHTML = '<span class="tf-muted">Ładowanie…</span>';
+  try {
+    const r = await fetch('api/tariff_period/form?tariff=' + encodeURIComponent(tariff));
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    _tpFormTariff = d.tariff;
+    const v = d.values || {};
+    let h = '<label class="tf-muted">Od: <input type="month" id="tpFrom" value="' + _esc((d.from_default || '').slice(0, 7))
+      + '"></label> <label class="tf-muted">Uwagi: <input type="text" id="tpNote" maxlength="120" style="width:220px"></label>';
+    [['energy_net', 'Energia czynna (zł/kWh netto)'], ['dist_var_net', 'Dystrybucja zmienna (zł/kWh netto)']].forEach(([key, title]) => {
+      h += '<div class="tf-gap"><strong style="font-size:12px">' + _esc(title) + '</strong>';
+      ((d.zones || {})[key] || []).forEach(z => {
+        const val = ((v[key] || {})[d.tariff] || {})[z];
+        h += _tpNum('tp_' + key + '_' + z, z, val, 'data-key="' + _esc(key) + '" data-zone="' + _esc(z) + '"');
+      });
+      h += '</div>';
+    });
+    h += '<div class="tf-gap"><strong style="font-size:12px">Opłaty zmienne</strong>';
+    _TP_SCALARS.forEach(([k, l]) => { h += _tpNum('tp_' + k, l, v[k], 'data-scalar="' + k + '"'); });
+    h += '</div><div class="tf-gap"><strong style="font-size:12px">Opłaty stałe</strong>';
+    _TP_FIXED.forEach(([k, l]) => { h += _tpNum('tp_fixed_' + k, l, (v.fixed_net || {})[k], 'data-fixed="' + k + '"'); });
+    h += '</div><div class="tf-gap"><button type="button" class="btn" onclick="previewTariffPeriod()">Podgląd</button> '
+      + '<button type="button" class="btn" onclick="saveTariffPeriod()">Zapisz</button></div>';
+    fields.innerHTML = h;
+  } catch (e) {
+    fields.innerHTML = '<span class="tf-muted">Błąd ładowania formularza: ' + _esc(e.message) + '</span>';
+  }
+}
+
+function _collectTariffPeriod() {
+  const fromVal = (document.getElementById('tpFrom') || {}).value || '';
+  if (!/^\d{4}-\d{2}$/.test(fromVal)) throw new Error('Podaj miesiąc obowiązywania (Od).');
+  const patch = {energy_net: {}, dist_var_net: {}, fixed_net: {}};
+  patch.energy_net[_tpFormTariff] = {};
+  patch.dist_var_net[_tpFormTariff] = {};
+  document.querySelectorAll('#tpFields input[type=number]').forEach(el => {
+    if (el.value === '') return;
+    const n = parseFloat(el.value);
+    if (!isFinite(n) || n < 0) throw new Error('Stawka musi być liczbą >= 0.');
+    if (el.dataset.key) patch[el.dataset.key][_tpFormTariff][el.dataset.zone] = n;
+    else if (el.dataset.scalar) patch[el.dataset.scalar] = n;
+    else if (el.dataset.fixed) patch.fixed_net[el.dataset.fixed] = n;
+  });
+  return {from: fromVal + '-01', tariff: _tpFormTariff, note: (document.getElementById('tpNote').value || '').trim(), patch};
+}
+
+async function previewTariffPeriod() {
+  const msg = document.getElementById('tpMsg'), out = document.getElementById('tpPreview');
+  msg.style.color = ''; msg.textContent = '';
+  try {
+    const body = _collectTariffPeriod();
+    const r = await fetch('api/tariff_period/preview', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    out.innerHTML = '<table><thead><tr><th>Godzina</th><th>Strefa</th><th>Poziom</th><th>zł/kWh brutto</th></tr></thead><tbody>'
+      + (d.samples || []).map(s => '<tr><td>' + _esc(s.label) + '</td><td>' + _esc(s.zone) + '</td><td>' + _esc(s.level)
+          + '</td><td>' + _esc(Number(s.gross_per_kwh).toFixed(4)) + '</td></tr>').join('')
+      + '</tbody></table>';
+  } catch (e) {
+    out.innerHTML = '';
+    msg.style.color = '#dc3545';
+    msg.textContent = '⚠ ' + e.message;
+  }
+}
+
+async function saveTariffPeriod() {
+  const msg = document.getElementById('tpMsg');
+  msg.style.color = ''; msg.textContent = 'Zapisywanie...';
+  try {
+    const body = _collectTariffPeriod();
+    delete body.tariff;
+    const r = await fetch('api/tariff_period', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    await loadTaryfaTab();
+    const m2 = document.getElementById('tpMsg');
+    if (m2) { m2.style.color = '#28a745'; m2.textContent = '✓ Zapisano nowy okres cennika.'; }
+  } catch (e) {
+    msg.style.color = '#dc3545';
+    msg.textContent = '⚠ Błąd: ' + e.message;
+  }
 }
 
 /* -- Taryfa: stawki G12w, skład ceny, cennik (z /api/tariff_catalog) -- */
@@ -4808,6 +5463,29 @@ function _renderTsimRecon() {
         (unconf ? ' <small>cennik niepotwierdzony</small>' : '') + '</td><td>' +
         fmt(r.kwh_sim) + '</td><td>' + fmt(r.kwh_invoice) + '</td></tr>';
     }).join('') + '</tbody>';
+  const ic = d.invoice_check || {};
+  const icEl = document.getElementById('tsimInvoiceCheck');
+  const badMonths = Object.keys(ic).sort().filter(ym => ic[ym].ok === false);
+  if (!badMonths.length) {
+    icEl.innerHTML = Object.keys(ic).length ? '<p class="tsim-variant-note">Stawki z faktur zgodne z cennikiem (±2%).</p>' : '';
+    return;
+  }
+  const fmt4 = v => v == null ? '—' : v.toFixed(4).replace('.', ',');
+  const icRows = [];
+  badMonths.forEach(ym => {
+    const m = ic[ym];
+    Object.keys(m.fields || {}).forEach(f => {
+      const x = m.fields[f];
+      if (x.ok !== false) return;
+      icRows.push('<tr><td>' + _esc(ym) + '</td><td>' + _esc(m.tariff) + '</td><td>' + _esc(f) + '</td><td>' +
+        fmt4(x.invoice) + '</td><td>' + fmt4(x.module) + '</td><td class="tsim-worse">' +
+        (x.diff_pct == null ? '—' : (x.diff_pct >= 0 ? '+' : '−') + Math.abs(x.diff_pct).toFixed(1).replace('.', ',') + '%') +
+        '</td></tr>');
+    });
+  });
+  icEl.innerHTML = '<p class="tsim-variant-note">Stawki z faktur rozjeżdżają się z cennikiem o więcej niż 2%:</p>' +
+    '<div class="tbl-wrap"><table class="tsim-tbl"><thead><tr><th>Miesiąc</th><th>Taryfa</th><th>Pole</th><th>Faktura zł</th>' +
+    '<th>Cennik zł</th><th>Różnica</th></tr></thead><tbody>' + icRows.join('') + '</tbody></table></div>';
 }
 
 // Okno {start,end} (godziny, end wyłączny) → "22:00–06:00".

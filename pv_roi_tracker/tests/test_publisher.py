@@ -226,3 +226,41 @@ def test_publish_jit_schedule_zwraca_bool():
     pub._client.publish.reset_mock()
     assert pub.publish_jit_schedule('unknown', {}) is False
     pub._client.publish.assert_not_called()
+
+
+# ── encje modułu taryf (T5) ──────────────────────────────────────────────────
+
+def test_discovery_tariff_sensory():
+    import json
+    pub = _pub_connected()
+    pub._publish_discovery()
+    published = {c.args[0]: c.args[1] for c in pub._client.publish.call_args_list}
+    z = json.loads(published[next(t for t in published if t.endswith('/tariff_zone/config'))])
+    assert z['name'] == 'PV Tariff Zone' and z['icon'] == 'mdi:clock-time-four-outline'
+    assert z['json_attributes_topic'].endswith('/tariff_zone/attributes')
+    p = json.loads(published[next(t for t in published if t.endswith('/tariff_price/config'))])
+    assert p['name'] == 'PV Tariff Price' and p['unit_of_measurement'] == 'PLN/kWh'
+    assert p['state_class'] == 'measurement' and 'device_class' not in p
+    assert p['icon'] == 'mdi:cash-clock'
+
+
+def test_publish_tariff_stan_atrybuty_cena():
+    import json
+    pub = _pub_connected()
+    payload = {'state': 'peak', 'price': 1.2345, 'attributes': {'tariff': 'G12w', 'nota': 'zażółć'}}
+    assert pub.publish_tariff(payload) is True
+    calls = {c.args[0]: c for c in pub._client.publish.call_args_list}
+    zone = calls[next(t for t in calls if t.endswith('/tariff_zone/state'))]
+    assert zone.args[1] == 'peak' and zone.kwargs['retain'] is True
+    attr = calls[next(t for t in calls if t.endswith('/tariff_zone/attributes'))]
+    assert 'zażółć' in attr.args[1] and json.loads(attr.args[1])['tariff'] == 'G12w'
+    assert attr.kwargs['retain'] is True
+    price = calls[next(t for t in calls if t.endswith('/tariff_price/state'))]
+    assert price.args[1] == '1.2345' and price.kwargs['retain'] is True
+
+
+def test_publish_tariff_rozlaczony_false():
+    pub = _pub_connected()
+    pub._connected = False
+    assert pub.publish_tariff({'state': 'peak', 'price': 1.0, 'attributes': {}}) is False
+    pub._client.publish.assert_not_called()

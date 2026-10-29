@@ -34,7 +34,8 @@ INVOICE_LAYOUTS_PATH   = Path(os.environ.get('INVOICE_LAYOUTS_PATH', '/data/invo
 BACKUP_SHARE           = Path(os.environ.get('BACKUP_SHARE', '/share/pv_roi_tracker'))
 RCE_HOURLY_CACHE_PATH  = Path(os.environ.get('RCE_HOURLY_CACHE_PATH', '/data/rce_hourly.json'))
 MONTHLY_NOTIFY         = os.environ.get('MONTHLY_NOTIFY', 'true').lower() in ('1', 'true', 'yes')
-TARIFF_CONFIG_PATH     = Path(os.environ.get('TARIFF_CONFIG_PATH', '/data/tariff_config.json'))
+TARIFF_CONFIG_PATH     = Path(os.environ.get('TARIFF_CONFIG_PATH', '/data/tariff_config.json'))  # tylko migracja
+TARIFF_OVERRIDES_PATH  = Path(os.environ.get('TARIFF_OVERRIDES_PATH', '/data/tariff_overrides.json'))
 BATTERY_CONFIG_PATH    = Path(os.environ.get('BATTERY_CONFIG_PATH', '/data/battery_config.json'))
 BATTERY_HOURS_PATH     = Path(os.environ.get('BATTERY_HOURS_PATH', '/data/battery_sim.json'))
 TARIFF_SIM_PATH        = Path(os.environ.get('TARIFF_SIM_PATH', '/data/tariff_sim.json'))
@@ -65,6 +66,8 @@ EBOK_PAYER_ID      = os.environ.get('EBOK_PAYER_ID', '')
 EBOK_STATE_PATH    = Path(os.environ.get('EBOK_STATE_PATH', '/data/ebok_state.json'))
 EBOK_PAYMENT_STATE_PATH = Path(os.environ.get('EBOK_PAYMENT_STATE_PATH', '/data/ebok_payment_state.json'))
 TARIFF_PERIODS_PATH = Path(os.environ.get('TARIFF_PERIODS_PATH', '/data/tariff_periods.json'))
+TARIFF_INVOICE_NOTIFIED_PATH = Path(os.environ.get('TARIFF_INVOICE_NOTIFIED_PATH', '/data/tariff_invoice_notified.json'))
+TARIFF_GUARD_PATH = Path(os.environ.get('TARIFF_GUARD_PATH', '/data/tariff_guard.json'))
 CURRENT_TARIFF_OVERRIDE = os.environ.get('CURRENT_TARIFF_OVERRIDE', '')
 ASSET_LIFETIME_YEARS       = float(os.environ.get('ASSET_LIFETIME_YEARS', '25.0'))
 PANEL_DEGRADATION_PCT_YEAR = float(os.environ.get('PANEL_DEGRADATION_PCT_YEAR', '0.5'))
@@ -340,9 +343,9 @@ def _backup_data() -> None:
         BACKUP_SHARE.mkdir(parents=True, exist_ok=True)
         for src in [HISTORIC_PATH, RCEM_HISTORY_PATH, RCEM_CORRECTIONS_PATH,
                     INVOICE_PATH, INVOICE_LAYOUTS_PATH, RCE_HOURLY_CACHE_PATH,
-                    TARIFF_CONFIG_PATH, BATTERY_CONFIG_PATH, BATTERY_HOURS_PATH,
+                    TARIFF_CONFIG_PATH, TARIFF_OVERRIDES_PATH, BATTERY_CONFIG_PATH, BATTERY_HOURS_PATH,
                     TARIFF_SIM_PATH, TARIFF_SETTINGS_PATH, TARIFF_PRICE_CACHE_PATH,
-                    EBOK_STATE_PATH]:
+                    TARIFF_GUARD_PATH, EBOK_STATE_PATH]:
             if src.exists():
                 shutil.copy2(src, BACKUP_SHARE / src.name)
         logger.info('Data backed up to %s', BACKUP_SHARE)
@@ -886,20 +889,32 @@ def main() -> None:
 
     _web.set_ebok_payment_dismiss_callback(_ebok_payment_dismiss)
 
-    from . import tariff_config as _tc
-    _tc.seed_if_missing(TARIFF_CONFIG_PATH)
-    _web.set_tariff_config_path(TARIFF_CONFIG_PATH)
+    from . import tariff_module as _tm, tariff_overrides as _to
+    _to.migrate_legacy(TARIFF_CONFIG_PATH, TARIFF_OVERRIDES_PATH,
+                       _tm.build(TARIFF_PERIODS_PATH, CURRENT_TARIFF_OVERRIDE, None, TARIFF_SETTINGS_PATH))
+    _web.set_tariff_overrides_path(TARIFF_OVERRIDES_PATH)
+    _web.set_tariff_guard_path(TARIFF_GUARD_PATH)
 
-    from datetime import date
+    from datetime import date, datetime as _dt_cls
+
+    _tariff_feed_last = {'payload': None, 'ok': True}   # ostatnio opublikowane encje taryfy
+
+    def _dt_now():
+        return _dt_cls.now()
+
+    def _tariff_module_now():
+        invoice_ok = set((_tariff_state.get('payload') or {}).get('invoice_confirmed_periods', []))
+        return _tm.build(TARIFF_PERIODS_PATH, CURRENT_TARIFF_OVERRIDE, TARIFF_OVERRIDES_PATH,
+                         TARIFF_SETTINGS_PATH, invoice_ok=invoice_ok)
 
     def _tariff_rates_for(d: date) -> tuple:
-        """Stawki brutto peak/offpeak (PLN/kWh) z tariff_config na dany dzień.
+        """Stawki brutto peak/offpeak (PLN/kWh) z modułu taryf na dany dzień.
 
         Podmienia zaszyty fallback env TARIFF_PEAK_PRICE/TARIFF_OFFPEAK_PRICE
         (opcje usunięte z config.yaml w 0.22.0, więc dawny fallback nigdy nie
         widział realnej zmiany taryfy zanim nadeszła faktura). Ta sama ścieżka
         co battery_job i rekonsyliacja faktur — jeden pierwotny cennik."""
-        rates = _tc.effective_baseline(_tc.load(TARIFF_CONFIG_PATH), d)
+        rates = _tariff_module_now().legacy_rates_or_empty(d)   # {} gdy sprzed katalogu / brak widoku dwustrefowego
         return (
             float(rates.get('peak_gross', live_reader._TARIFF_PEAK_PRICE)),
             float(rates.get('offpeak_gross', live_reader._TARIFF_OFFPEAK_PRICE)),
@@ -937,11 +952,11 @@ def main() -> None:
                 _record_job('battery_sim', False, 'brak godzinowych statystyk liczników')
                 return
 
-            # Cennik stref per miesiąc z tariff_config (kumulatywny baseline)
-            tcfg = _tc.load(TARIFF_CONFIG_PATH)
+            # Cennik stref per miesiąc z modułu taryf (katalog + korekty)
+            _tmod = _tariff_module_now()
             zone_prices: dict = {}
             for ym in sorted({k[:7] for k in hours}):
-                rates = _tc.effective_baseline(tcfg, date(int(ym[:4]), int(ym[5:7]), 28))
+                rates = _tmod.legacy_rates_or_empty(date(int(ym[:4]), int(ym[5:7]), 28))   # {} dla miesiąca sprzed katalogu
                 zone_prices[ym] = (
                     float(rates.get('peak_gross', live_reader._TARIFF_PEAK_PRICE)),
                     float(rates.get('offpeak_gross', live_reader._TARIFF_OFFPEAK_PRICE)),
@@ -1000,6 +1015,21 @@ def main() -> None:
                             in rcem_scraper._load_history(RCEM_HISTORY_PATH).items()},
                 baseline=baseline, tariff_periods=periods)
             tariff_job.save_payload(payload, TARIFF_SIM_PATH)
+            try:
+                from . import tariff_invoice_check as _tic
+                notified = _tic.load_notified(TARIFF_INVOICE_NOTIFIED_PATH)
+                msgs, new_notified = _tic.pending_notifications(payload.get('invoice_check') or {}, notified)
+                send_failed = False
+                for msg in msgs:
+                    try:
+                        _notify_ha('PV ROI Tracker — taryfa', msg, target='kacper')
+                    except Exception:
+                        send_failed = True
+                        logger.exception('Powiadomienie o fakturze taryf nie zostało wysłane')
+                if new_notified != notified and not send_failed:     # po błędzie wysyłki ponów w następnym przebiegu
+                    _tic.save_notified(new_notified, TARIFF_INVOICE_NOTIFIED_PATH)
+            except Exception:
+                logger.exception('Powiadomienia o fakturach taryf nie powiodły się')
             _web.update_tariff_sim(payload)
             _tariff_state['payload'] = payload
             _record_job('tariff_sim', True)
@@ -1010,6 +1040,23 @@ def main() -> None:
             _record_job('tariff_sim', False, 'symulacja taryf nie powiodła się')
         finally:
             _tariff_lock.release()
+
+    def tariff_guard_job() -> None:
+        """Raz w tygodniu: nowe linki na stronach TD/URE → powiadomienie i baner w zakładce Taryfa."""
+        try:
+            from . import tariff_guard as _tg
+            state = _tg.load_state(TARIFF_GUARD_PATH)
+            new_state, msgs = _tg.run_guard(state)
+            for m in msgs:
+                try:
+                    _notify_ha('PV ROI Tracker — taryfa', m, target='kacper')
+                except Exception:
+                    logger.exception('Powiadomienie strażnika cenników nie zostało wysłane')
+            _tg.save_state(new_state, TARIFF_GUARD_PATH)
+            _record_job('tariff_guard', True)
+        except Exception:
+            logger.exception('Strażnik cenników nie powiódł się')
+            _record_job('tariff_guard', False, 'strażnik cenników nie powiódł się')
 
     def _tariff_settings_changed(settings: dict) -> None:
         tariff_settings_store.save(settings, TARIFF_SETTINGS_PATH)
@@ -1115,7 +1162,7 @@ def main() -> None:
                     rcem_by_month[current_ym] = _est['estimate']
 
             # Cennik sieci per miesiąc: faktura (peak/offpeak_gross realne) >
-            # rekord (buy_price_pln_kwh, spłaszczone) > tariff_config (bieżący
+            # rekord (buy_price_pln_kwh, spłaszczone) > moduł taryf (bieżący
             # baseline, dla miesięcy bez jeszcze żadnej faktury).
             stored_invoices = invoice_store.filter_billing(
                 invoice_store.filter_real(invoice_store.load(INVOICE_PATH)))
@@ -1128,11 +1175,11 @@ def main() -> None:
                 ym = f'{r.year}-{r.month:02d}'
                 if ym not in rates_by_month and r.buy_price_pln_kwh is not None:
                     rates_by_month[ym] = (r.buy_price_pln_kwh, None)
-            _tcfg_hp = _tc.load(TARIFF_CONFIG_PATH)
+            _tmod_hp = _tariff_module_now()
             for ym in sorted({k[:7] for k in hours}):
                 if ym in rates_by_month:
                     continue
-                rates = _tc.effective_baseline(_tcfg_hp, date(int(ym[:4]), int(ym[5:7]), 28))
+                rates = _tmod_hp.legacy_rates_or_empty(date(int(ym[:4]), int(ym[5:7]), 28))   # sprzed katalogu — bez cennika, jak dawniej
                 if rates.get('peak_gross') is not None:
                     rates_by_month[ym] = (
                         float(rates['peak_gross']),
@@ -1288,6 +1335,18 @@ def main() -> None:
             except Exception:
                 logger.exception('JIT schedule failed — continuing')
                 _record_job('jit_schedule', False, 'harmonogram JIT nie powiódł się')
+
+            # --- Encje modułu taryf (tariff_zone / tariff_price; publikacja tylko przy zmianie) ---
+            try:
+                _res, _new_last = _tm.tariff_feed_step(
+                    pub, _tariff_feed_last, _tariff_module_now(), _dt_now())
+                _tariff_feed_last.update(_new_last)
+                _record_job('tariff_feed', _res is not False,
+                            'MQTT rozłączony — taryfa nie opublikowana' if _res is False else '')
+            except Exception:
+                logger.exception('Tariff feed failed — continuing')
+                _tariff_feed_last['ok'] = False
+                _record_job('tariff_feed', False, 'publikacja taryfy nie powiodła się')
             _web.update_state(result, all_records, rcem_price, month_closed=month_closed,
                               rcem_scrape_status=scrape_status)
             _web.update_deposit(deposit_result)
@@ -1702,6 +1761,10 @@ def main() -> None:
     # Symulacja taryf: po battery_job (czyta jego cache godzinowy).
     scheduler.add_job(tariff_sim_job, CronTrigger(hour=5, minute=30),
                       id='tariff_sim', name='Tariff simulation', **_JOB_DEFAULTS)
+
+    # Strażnik cenników: poniedziałek rano, po cyklu nocnym; bez przebiegu przy starcie.
+    scheduler.add_job(tariff_guard_job, CronTrigger(day_of_week='mon', hour=6, minute=10),
+                      id='tariff_guard', name='Tariff price-list guard', **_JOB_DEFAULTS)
 
     # Pompa ciepła × PV: raz dziennie, jak battery_sim (LTS zmienia się co
     # godzinę, wynik miesięczny/sezonowy — wolno); pierwszy przebieg w tle.

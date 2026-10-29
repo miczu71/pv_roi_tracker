@@ -25,7 +25,7 @@ def close_month(
     Snapshot the current month (date.today()) into historic.json.
     Returns True if a new entry was appended, False if already present.
 
-    peak_gross/offpeak_gross: bieżące stawki taryfy (zwykle z tariff_config,
+    peak_gross/offpeak_gross: bieżące stawki taryfy (zwykle z modułu taryf,
     patrz live_reader._build_record) — bez nich snapshot użyłby zaszytego
     fallbacku 1,23/0,63 aż do nadejścia faktury.
     """

@@ -1,0 +1,922 @@
+{
+ "catalog": {
+  "fingerprints": {
+   "G11|2025-01": "44b2f92d1badb94ded239fa25509c8ac5e8ec204",
+   "G11|2025-02": "551d24136fd3c30951e3328f94199974b75a574e",
+   "G11|2025-03": "536ec437399f51878097e7eeb97289c24fc697c7",
+   "G11|2025-04": "27501d3f001a4af0fdf475d5d12b2d94626c3861",
+   "G11|2025-05": "ccb4f7b759ecc801f4dcf68ab12b56d1a6d86584",
+   "G11|2025-06": "c06aefb3b76a16fe2921f26fb866ad58f0cc29b5",
+   "G11|2025-07": "cf720370599cdb57dcd2b4b0ae7d336521734ae5",
+   "G11|2025-08": "0869ddce1aad5218e3200047df30ff14b4b575af",
+   "G11|2025-09": "33db08c1e93603ab1ca7e48e97a7a24dbff02ca9",
+   "G11|2025-10": "963d8011847ed92936cfe0e7c3a2642c689c41c9",
+   "G11|2025-11": "6edb233f10d31c3a570f3f8a6f17062508953dfa",
+   "G11|2025-12": "10e13abb997371775ef5c068f0ccba33fb37a893",
+   "G11|2026-01": "af000f1e0aaebc7d32699df921a0f4b5580ac2a3",
+   "G11|2026-02": "7e2ce6679b3e02c08edd9ddc3e6c02b35e5140ab",
+   "G11|2026-03": "02197435316f4ade5e386b2fa040dbcdecf13bc5",
+   "G11|2026-04": "1caba914d9fe1988e55bf62e51eb4453992a44b9",
+   "G11|2026-05": "b6937306f814603f98d01a9889ee3a0eb3653215",
+   "G11|2026-06": "172094ea202f20231e4d00ef8bb861f78bfe97e7",
+   "G11|2026-07": "fc5370c1b66db08905a5773144f9489505788f78",
+   "G11|2026-08": "850815bfbc642fe38a8a274017428e18e30f5461",
+   "G11|2026-09": "f8c4f6f619d6478aa31b92cb213a99fb1038d257",
+   "G11|2026-10": "b652dda2309ad84126850cdcff854148e5562f00",
+   "G11|2026-11": "674f5104c698f544dc4b0a6b07dc7b8c2c41a464",
+   "G11|2026-12": "4ef861fe0dd5dbac563c4ab03c0d2138d0346d4c",
+   "G12w|2025-01": "a96c265b5c4271fabd6de03266afa04c2e174eb7",
+   "G12w|2025-02": "dce006f244763e4c8ee3807e816e7b5793817c99",
+   "G12w|2025-03": "c168fc7a108da41827b5a60f6fe1123e09b876f8",
+   "G12w|2025-04": "716eeac21f1f72902d7fe75fdbed7cd46e6c54b2",
+   "G12w|2025-05": "fac15262312e93ffedf1b9f71d09ac9cc9819dab",
+   "G12w|2025-06": "5aff65f46f79398a67e94fddb7c1ee5018ef8213",
+   "G12w|2025-07": "60ed334a3a7809e018c0171f38c2eecef73ef77d",
+   "G12w|2025-08": "01914e1bf0e316cc5dd1db0684fbee34fe84c59a",
+   "G12w|2025-09": "1295e5e8311a32c80df4fb12e5018d04bd31b0ac",
+   "G12w|2025-10": "5887a445e79ea4f76486737956a62e4515d5020e",
+   "G12w|2025-11": "a20ca6c1d667768cc99ed834308a1bb477ee9e32",
+   "G12w|2025-12": "44116e8bf2afaaa4b563d2da1995d7e5d8de3fa9",
+   "G12w|2026-01": "ea10c141a4d0a34a5130359a9168525616408f89",
+   "G12w|2026-02": "28b6953886823212814da757b6c39f01dffab581",
+   "G12w|2026-03": "a10982650d96abc72a7a27c54b89d27ff9f6305c",
+   "G12w|2026-04": "3effeece8868c0f54a656dbf1335b8a728e8be1e",
+   "G12w|2026-05": "c3969662b1258928bc285896bd56864fdf65f800",
+   "G12w|2026-06": "daf5cad3132a6b2796e9be24d011e933162344f9",
+   "G12w|2026-07": "8f28314b7a6ab04cc801fdcdaff8a01a562973c2",
+   "G12w|2026-08": "97a96678390c8dfee1e378cabb8b21718f82f742",
+   "G12w|2026-09": "e014db26f88ef0546c1f02a601fecdfb024ffd59",
+   "G12w|2026-10": "3d742282a33a01a564ebc250dfcf6a4ca8024782",
+   "G12w|2026-11": "51a8f308faebe605937fb18bf737322e390a4c75",
+   "G12w|2026-12": "f314e501837e0591406522b527e583c9fb4b7607",
+   "G12|2025-01": "34c80b8ec92b1712a412df58b7df42cc4f15fe93",
+   "G12|2025-02": "afb4b7914e0039b8276c04f47a91f3333a9c6f14",
+   "G12|2025-03": "751a3dba14b4373af162de29e2db76b51896a92b",
+   "G12|2025-04": "b74359a9fe07d4f8cd195886fd1d321da0f85602",
+   "G12|2025-05": "030bc6a786fd556c7b92ad179e3c05d083d4cd80",
+   "G12|2025-06": "e942af83f3b114a56d40bcab4f8ad3a2ae3b55b1",
+   "G12|2025-07": "626f646e4371281db216d365633f1e442c03626d",
+   "G12|2025-08": "8abad43c16bb32cda77076549a971f50a8371d89",
+   "G12|2025-09": "9d28637d26b516163a097e15e5a9f1aabc3807fd",
+   "G12|2025-10": "2291c1602c8d16960efea7c0455bcfc17d19c7f0",
+   "G12|2025-11": "1da54657629f37616f564e0a9385bc7576a0264c",
+   "G12|2025-12": "41e4d68f4b4e644d0f868eb73ee20a7a79b5bcb9",
+   "G12|2026-01": "a5925f3e8b3ee81d2da9fc9d3d59c5fec47ab2d8",
+   "G12|2026-02": "2bfb7b7f205a6eba068248fb60bca498ecdf78ef",
+   "G12|2026-03": "7cc938ec3ff0807000daee3bc5f74bc945dafab5",
+   "G12|2026-04": "851e85334bc50b54e89dc2ae84df3b9dce8cd65b",
+   "G12|2026-05": "3197291ed509651f0f407530818a407067acef28",
+   "G12|2026-06": "f67da35cf93fb9d5344e9ab6b6119bcfce4d4a78",
+   "G12|2026-07": "1c824ee4a4c6f47ee137ddd81a24ec4a57da0c9c",
+   "G12|2026-08": "9766c24c8d069c9ccf64d3c68bf37b473f666e38",
+   "G12|2026-09": "42711e4523e2e99fdb35ee4782c3160b2ebbe506",
+   "G12|2026-10": "9d83598195d9515c4ac9ab585383a00590836bd9",
+   "G12|2026-11": "f25dfb5cbb7bb45a49e1dbcf6eb155c63552e09e",
+   "G12|2026-12": "9ed36ae1e0903fd02fff246917b6571cf4ac373c",
+   "G13s|2025-01": "8f12d98d7e5a0d270e681c84c253a2a3432405d5",
+   "G13s|2025-02": "d17f11098e6c3501f07723187ea75f6dafeb6350",
+   "G13s|2025-03": "2e2e1eb407134b77585e68d10c3b530b71593682",
+   "G13s|2025-04": "472c568f069a84ea1602845411b548ae53cd569b",
+   "G13s|2025-05": "d1247a4cd1254e497f0137ddd92c65b027f4ff9f",
+   "G13s|2025-06": "8853ab5c9138f08aa307d3d9ef24b0d2298fbb07",
+   "G13s|2025-07": "4c5d6bea24f267e24925e205b9f0584eba5c4ec6",
+   "G13s|2025-08": "7782e5921ca696cfb2070de44ea4fa649b239e31",
+   "G13s|2025-09": "f403377c4373c6b749fd3e66a209fe09cd99e5b2",
+   "G13s|2025-10": "faa77cdee679ade3ba20ce4662f45c8b6632a14c",
+   "G13s|2025-11": "7eb496588c8169fe220bf9e2bd99bd94a6370f90",
+   "G13s|2025-12": "9f7450fc8b945737c25dd2b44fc34eb831da2ac7",
+   "G13s|2026-01": "71adc1596f619edce822a3991a14cfe529f1171f",
+   "G13s|2026-02": "c1250ce38beebe56a78729bc863366ad7819390a",
+   "G13s|2026-03": "1fedbd5d2a23cf8bbfdbb284abac9e9f41dc07b4",
+   "G13s|2026-04": "bf46ed20b5d817ddc8e03ba2806974bd25c45477",
+   "G13s|2026-05": "33444360b3ae076bcf3dd3efc30d9151f14ee759",
+   "G13s|2026-06": "f417ef22ccbfee37b0dec713d32d88da7232c617",
+   "G13s|2026-07": "dfb4856d26f45c18cb555e92f97fa165cbc8e0bb",
+   "G13s|2026-08": "87a1fed2db23ed4696541ddf71d595810b0146fa",
+   "G13s|2026-09": "edc7668f70b333a1bfe61676b5c67e18eca96e72",
+   "G13s|2026-10": "7a8f5b0e12db071b059ad27ba6f7577147bb5720",
+   "G13s|2026-11": "ae17dc09c7c1fae0041e2ff76c5ecc924c0b5721",
+   "G13s|2026-12": "3eb81b34df0b292ebdf8c771eeeecd07668f818b",
+   "G13|2025-01": "5d62a31a3ea7f66dcc04aca88532b184d38bf8d2",
+   "G13|2025-02": "af71d0cbc8822041595e6d9321463bf3fc29824e",
+   "G13|2025-03": "f961a84fcd5793046ab8dc1f8966e7ac599e75ed",
+   "G13|2025-04": "798661d17eaf5226478a6bf3340873c1de2ae8e1",
+   "G13|2025-05": "cd4ae6bd098671a70f28fea809ce1994c4dea805",
+   "G13|2025-06": "f9901df8a32d4c21d66d41d326a9be2a16740c0b",
+   "G13|2025-07": "a86d2016176a2f30dac17826e0b3fea1a4c732d1",
+   "G13|2025-08": "aaf2363787ca986e191a717d3c5898e027f82a68",
+   "G13|2025-09": "5b3bfc88ebf0f1ef19588c97b03b56107a1ad87c",
+   "G13|2025-10": "9dbbc97e4a003b841e28e6996a0d5b6ec9c6f28f",
+   "G13|2025-11": "f9599200870a1aa998020b08f94f945b16925910",
+   "G13|2025-12": "3b5910236be498d92133421230b49cb63825c911",
+   "G13|2026-01": "e9a21eb007a33dba146dae037dd8788d83fdfe81",
+   "G13|2026-02": "659f488c12ccb10d417f86eb6eddd8d340832290",
+   "G13|2026-03": "ce564e54c96a31f7cc821f3fc761be4fd922b17d",
+   "G13|2026-04": "b91a51f54e33ef826b987b5a2612714275e59275",
+   "G13|2026-05": "c44aec77679c85aef3a1e9563fcd8a39602357fc",
+   "G13|2026-06": "590fb816c4ca4ac9c05247ec033eac3bfb83d3f7",
+   "G13|2026-07": "97a1297dc36f077680e9803d4014a973ee56f83a",
+   "G13|2026-08": "eecae7689c59cc7b4d9d77d06db09acdbf26dfcc",
+   "G13|2026-09": "a8a0237ba4f305d3553a25fc83cabdef267ee2a6",
+   "G13|2026-10": "d394149fe1a8efe7c85271c07ff3d7066fd28f8a",
+   "G13|2026-11": "959f6d35a3bd68a0538e9fcb1cb8065f5449a39e",
+   "G13|2026-12": "c35376ba64c1fdd1eb8235c66e99a1cdfb45cd4a"
+  },
+  "rates": {
+   "2025-01-01|G11|all": {
+    "gross": 0.981171,
+    "net": 0.7977
+   },
+   "2025-01-01|G12w|offpeak": {
+    "gross": 0.628161,
+    "net": 0.5107
+   },
+   "2025-01-01|G12w|peak": {
+    "gross": 1.389654,
+    "net": 1.1298
+   },
+   "2025-01-01|G12|day": {
+    "gross": 1.025205,
+    "net": 0.8335
+   },
+   "2025-01-01|G12|night": {
+    "gross": 0.696795,
+    "net": 0.5665
+   },
+   "2025-01-01|G13s|summer_dayoff_night": "ERR:energy_net: brak stawki G13s/summer_dayoff_night",
+   "2025-01-01|G13s|summer_dayoff_offpeak": "ERR:energy_net: brak stawki G13s/summer_dayoff_offpeak",
+   "2025-01-01|G13s|summer_dayoff_peak": "ERR:energy_net: brak stawki G13s/summer_dayoff_peak",
+   "2025-01-01|G13s|summer_workday_night": "ERR:energy_net: brak stawki G13s/summer_workday_night",
+   "2025-01-01|G13s|summer_workday_offpeak": "ERR:energy_net: brak stawki G13s/summer_workday_offpeak",
+   "2025-01-01|G13s|summer_workday_peak": "ERR:energy_net: brak stawki G13s/summer_workday_peak",
+   "2025-01-01|G13s|winter_dayoff_night": "ERR:energy_net: brak stawki G13s/winter_dayoff_night",
+   "2025-01-01|G13s|winter_dayoff_offpeak": "ERR:energy_net: brak stawki G13s/winter_dayoff_offpeak",
+   "2025-01-01|G13s|winter_dayoff_peak": "ERR:energy_net: brak stawki G13s/winter_dayoff_peak",
+   "2025-01-01|G13s|winter_workday_night": "ERR:energy_net: brak stawki G13s/winter_workday_night",
+   "2025-01-01|G13s|winter_workday_offpeak": "ERR:energy_net: brak stawki G13s/winter_workday_offpeak",
+   "2025-01-01|G13s|winter_workday_peak": "ERR:energy_net: brak stawki G13s/winter_workday_peak",
+   "2025-01-01|G13|evening_peak": {
+    "gross": 1.078464,
+    "net": 0.8768
+   },
+   "2025-01-01|G13|morning_peak": {
+    "gross": 0.900237,
+    "net": 0.7319
+   },
+   "2025-01-01|G13|other": {
+    "gross": 0.711555,
+    "net": 0.5785
+   },
+   "2025-07-01|G11|all": {
+    "gross": 0.981171,
+    "net": 0.7977
+   },
+   "2025-07-01|G12w|offpeak": {
+    "gross": 0.732342,
+    "net": 0.5954
+   },
+   "2025-07-01|G12w|peak": {
+    "gross": 1.070961,
+    "net": 0.8707
+   },
+   "2025-07-01|G12|day": {
+    "gross": 1.025205,
+    "net": 0.8335
+   },
+   "2025-07-01|G12|night": {
+    "gross": 0.696795,
+    "net": 0.5665
+   },
+   "2025-07-01|G13s|summer_dayoff_night": "ERR:energy_net: brak stawki G13s/summer_dayoff_night",
+   "2025-07-01|G13s|summer_dayoff_offpeak": "ERR:energy_net: brak stawki G13s/summer_dayoff_offpeak",
+   "2025-07-01|G13s|summer_dayoff_peak": "ERR:energy_net: brak stawki G13s/summer_dayoff_peak",
+   "2025-07-01|G13s|summer_workday_night": "ERR:energy_net: brak stawki G13s/summer_workday_night",
+   "2025-07-01|G13s|summer_workday_offpeak": "ERR:energy_net: brak stawki G13s/summer_workday_offpeak",
+   "2025-07-01|G13s|summer_workday_peak": "ERR:energy_net: brak stawki G13s/summer_workday_peak",
+   "2025-07-01|G13s|winter_dayoff_night": "ERR:energy_net: brak stawki G13s/winter_dayoff_night",
+   "2025-07-01|G13s|winter_dayoff_offpeak": "ERR:energy_net: brak stawki G13s/winter_dayoff_offpeak",
+   "2025-07-01|G13s|winter_dayoff_peak": "ERR:energy_net: brak stawki G13s/winter_dayoff_peak",
+   "2025-07-01|G13s|winter_workday_night": "ERR:energy_net: brak stawki G13s/winter_workday_night",
+   "2025-07-01|G13s|winter_workday_offpeak": "ERR:energy_net: brak stawki G13s/winter_workday_offpeak",
+   "2025-07-01|G13s|winter_workday_peak": "ERR:energy_net: brak stawki G13s/winter_workday_peak",
+   "2025-07-01|G13|evening_peak": {
+    "gross": 1.078464,
+    "net": 0.8768
+   },
+   "2025-07-01|G13|morning_peak": {
+    "gross": 0.900237,
+    "net": 0.7319
+   },
+   "2025-07-01|G13|other": {
+    "gross": 0.711555,
+    "net": 0.5785
+   },
+   "2025-10-01|G11|all": {
+    "gross": 0.981171,
+    "net": 0.7977
+   },
+   "2025-10-01|G12w|offpeak": {
+    "gross": 0.646242,
+    "net": 0.5254
+   },
+   "2025-10-01|G12w|peak": {
+    "gross": 1.385841,
+    "net": 1.1267
+   },
+   "2025-10-01|G12|day": {
+    "gross": 1.025205,
+    "net": 0.8335
+   },
+   "2025-10-01|G12|night": {
+    "gross": 0.743535,
+    "net": 0.6045
+   },
+   "2025-10-01|G13s|summer_dayoff_night": "ERR:energy_net: brak stawki G13s/summer_dayoff_night",
+   "2025-10-01|G13s|summer_dayoff_offpeak": "ERR:energy_net: brak stawki G13s/summer_dayoff_offpeak",
+   "2025-10-01|G13s|summer_dayoff_peak": "ERR:energy_net: brak stawki G13s/summer_dayoff_peak",
+   "2025-10-01|G13s|summer_workday_night": "ERR:energy_net: brak stawki G13s/summer_workday_night",
+   "2025-10-01|G13s|summer_workday_offpeak": "ERR:energy_net: brak stawki G13s/summer_workday_offpeak",
+   "2025-10-01|G13s|summer_workday_peak": "ERR:energy_net: brak stawki G13s/summer_workday_peak",
+   "2025-10-01|G13s|winter_dayoff_night": "ERR:energy_net: brak stawki G13s/winter_dayoff_night",
+   "2025-10-01|G13s|winter_dayoff_offpeak": "ERR:energy_net: brak stawki G13s/winter_dayoff_offpeak",
+   "2025-10-01|G13s|winter_dayoff_peak": "ERR:energy_net: brak stawki G13s/winter_dayoff_peak",
+   "2025-10-01|G13s|winter_workday_night": "ERR:energy_net: brak stawki G13s/winter_workday_night",
+   "2025-10-01|G13s|winter_workday_offpeak": "ERR:energy_net: brak stawki G13s/winter_workday_offpeak",
+   "2025-10-01|G13s|winter_workday_peak": "ERR:energy_net: brak stawki G13s/winter_workday_peak",
+   "2025-10-01|G13|evening_peak": {
+    "gross": 1.078464,
+    "net": 0.8768
+   },
+   "2025-10-01|G13|morning_peak": {
+    "gross": 0.900237,
+    "net": 0.7319
+   },
+   "2025-10-01|G13|other": {
+    "gross": 0.711555,
+    "net": 0.5785
+   },
+   "2025-11-01|G11|all": {
+    "gross": 0.981171,
+    "net": 0.7977
+   },
+   "2025-11-01|G12w|offpeak": {
+    "gross": 0.732342,
+    "net": 0.5954
+   },
+   "2025-11-01|G12w|peak": {
+    "gross": 1.070961,
+    "net": 0.8707
+   },
+   "2025-11-01|G12|day": {
+    "gross": 1.025205,
+    "net": 0.8335
+   },
+   "2025-11-01|G12|night": {
+    "gross": 0.743535,
+    "net": 0.6045
+   },
+   "2025-11-01|G13s|summer_dayoff_night": "ERR:energy_net: brak stawki G13s/summer_dayoff_night",
+   "2025-11-01|G13s|summer_dayoff_offpeak": "ERR:energy_net: brak stawki G13s/summer_dayoff_offpeak",
+   "2025-11-01|G13s|summer_dayoff_peak": "ERR:energy_net: brak stawki G13s/summer_dayoff_peak",
+   "2025-11-01|G13s|summer_workday_night": "ERR:energy_net: brak stawki G13s/summer_workday_night",
+   "2025-11-01|G13s|summer_workday_offpeak": "ERR:energy_net: brak stawki G13s/summer_workday_offpeak",
+   "2025-11-01|G13s|summer_workday_peak": "ERR:energy_net: brak stawki G13s/summer_workday_peak",
+   "2025-11-01|G13s|winter_dayoff_night": "ERR:energy_net: brak stawki G13s/winter_dayoff_night",
+   "2025-11-01|G13s|winter_dayoff_offpeak": "ERR:energy_net: brak stawki G13s/winter_dayoff_offpeak",
+   "2025-11-01|G13s|winter_dayoff_peak": "ERR:energy_net: brak stawki G13s/winter_dayoff_peak",
+   "2025-11-01|G13s|winter_workday_night": "ERR:energy_net: brak stawki G13s/winter_workday_night",
+   "2025-11-01|G13s|winter_workday_offpeak": "ERR:energy_net: brak stawki G13s/winter_workday_offpeak",
+   "2025-11-01|G13s|winter_workday_peak": "ERR:energy_net: brak stawki G13s/winter_workday_peak",
+   "2025-11-01|G13|evening_peak": {
+    "gross": 1.078464,
+    "net": 0.8768
+   },
+   "2025-11-01|G13|morning_peak": {
+    "gross": 0.900237,
+    "net": 0.7319
+   },
+   "2025-11-01|G13|other": {
+    "gross": 0.711555,
+    "net": 0.5785
+   },
+   "2026-01-01|G11|all": {
+    "gross": 0.973914,
+    "net": 0.7918
+   },
+   "2026-01-01|G12w|offpeak": {
+    "gross": 0.630498,
+    "net": 0.5126
+   },
+   "2026-01-01|G12w|peak": {
+    "gross": 1.230246,
+    "net": 1.0002
+   },
+   "2026-01-01|G12|day": {
+    "gross": 1.076865,
+    "net": 0.8755
+   },
+   "2026-01-01|G12|night": {
+    "gross": 0.636156,
+    "net": 0.5172
+   },
+   "2026-01-01|G13s|summer_dayoff_night": {
+    "gross": 0.809094,
+    "net": 0.6578
+   },
+   "2026-01-01|G13s|summer_dayoff_offpeak": {
+    "gross": 0.241572,
+    "net": 0.1964
+   },
+   "2026-01-01|G13s|summer_dayoff_peak": {
+    "gross": 0.550671,
+    "net": 0.4477
+   },
+   "2026-01-01|G13s|summer_workday_night": {
+    "gross": 0.809094,
+    "net": 0.6578
+   },
+   "2026-01-01|G13s|summer_workday_offpeak": {
+    "gross": 0.514632,
+    "net": 0.4184
+   },
+   "2026-01-01|G13s|summer_workday_peak": {
+    "gross": 1.275264,
+    "net": 1.0368
+   },
+   "2026-01-01|G13s|winter_dayoff_night": {
+    "gross": 0.796794,
+    "net": 0.6478
+   },
+   "2026-01-01|G13s|winter_dayoff_offpeak": {
+    "gross": 0.613032,
+    "net": 0.4984
+   },
+   "2026-01-01|G13s|winter_dayoff_peak": {
+    "gross": 0.820287,
+    "net": 0.6669
+   },
+   "2026-01-01|G13s|winter_workday_night": {
+    "gross": 0.796794,
+    "net": 0.6478
+   },
+   "2026-01-01|G13s|winter_workday_offpeak": {
+    "gross": 0.981909,
+    "net": 0.7983
+   },
+   "2026-01-01|G13s|winter_workday_peak": {
+    "gross": 1.335534,
+    "net": 1.0858
+   },
+   "2026-01-01|G13|evening_peak": {
+    "gross": 1.495926,
+    "net": 1.2162
+   },
+   "2026-01-01|G13|morning_peak": {
+    "gross": 0.904665,
+    "net": 0.7355
+   },
+   "2026-01-01|G13|other": {
+    "gross": 0.625578,
+    "net": 0.5086
+   },
+   "2026-02-01|G11|all": {
+    "gross": 0.974037,
+    "net": 0.7919
+   },
+   "2026-02-01|G12w|offpeak": {
+    "gross": 0.630621,
+    "net": 0.5127
+   },
+   "2026-02-01|G12w|peak": {
+    "gross": 1.230369,
+    "net": 1.0003
+   },
+   "2026-02-01|G12|day": {
+    "gross": 1.076988,
+    "net": 0.8756
+   },
+   "2026-02-01|G12|night": {
+    "gross": 0.636279,
+    "net": 0.5173
+   },
+   "2026-02-01|G13s|summer_dayoff_night": {
+    "gross": 0.809217,
+    "net": 0.6579
+   },
+   "2026-02-01|G13s|summer_dayoff_offpeak": {
+    "gross": 0.241695,
+    "net": 0.1965
+   },
+   "2026-02-01|G13s|summer_dayoff_peak": {
+    "gross": 0.550794,
+    "net": 0.4478
+   },
+   "2026-02-01|G13s|summer_workday_night": {
+    "gross": 0.809217,
+    "net": 0.6579
+   },
+   "2026-02-01|G13s|summer_workday_offpeak": {
+    "gross": 0.514755,
+    "net": 0.4185
+   },
+   "2026-02-01|G13s|summer_workday_peak": {
+    "gross": 1.275387,
+    "net": 1.0369
+   },
+   "2026-02-01|G13s|winter_dayoff_night": {
+    "gross": 0.796917,
+    "net": 0.6479
+   },
+   "2026-02-01|G13s|winter_dayoff_offpeak": {
+    "gross": 0.613155,
+    "net": 0.4985
+   },
+   "2026-02-01|G13s|winter_dayoff_peak": {
+    "gross": 0.82041,
+    "net": 0.667
+   },
+   "2026-02-01|G13s|winter_workday_night": {
+    "gross": 0.796917,
+    "net": 0.6479
+   },
+   "2026-02-01|G13s|winter_workday_offpeak": {
+    "gross": 0.982032,
+    "net": 0.7984
+   },
+   "2026-02-01|G13s|winter_workday_peak": {
+    "gross": 1.335657,
+    "net": 1.0859
+   },
+   "2026-02-01|G13|evening_peak": {
+    "gross": 1.496049,
+    "net": 1.2163
+   },
+   "2026-02-01|G13|morning_peak": {
+    "gross": 0.904788,
+    "net": 0.7356
+   },
+   "2026-02-01|G13|other": {
+    "gross": 0.625701,
+    "net": 0.5087
+   }
+  }
+ },
+ "money": {
+  "2025-01": {
+   "baseline": {
+    "dist_jakosciowa_net": 0.0321,
+    "dist_kogeneracja_net": 0.003,
+    "dist_oze_net": 0.0035,
+    "dist_var_offpeak_net": 0.0518,
+    "dist_var_peak_net": 0.3271,
+    "energy_offpeak_net": 0.4153,
+    "energy_peak_net": 0.7591,
+    "fixed_abonament_net": 4.56,
+    "fixed_mocowa_net": 0.0,
+    "fixed_stalysieciowy_net": 10.34,
+    "fixed_total_net": 14.899999999999999,
+    "offpeak_gross": 0.6281610000000001,
+    "peak_gross": 1.3896540000000002
+   },
+   "override_invoice_2026_09": {},
+   "override_no_invoice": {}
+  },
+  "2025-02": {
+   "baseline": {
+    "dist_jakosciowa_net": 0.0321,
+    "dist_kogeneracja_net": 0.003,
+    "dist_oze_net": 0.0035,
+    "dist_var_offpeak_net": 0.0518,
+    "dist_var_peak_net": 0.3271,
+    "energy_offpeak_net": 0.4153,
+    "energy_peak_net": 0.7591,
+    "fixed_abonament_net": 4.56,
+    "fixed_mocowa_net": 0.0,
+    "fixed_stalysieciowy_net": 10.34,
+    "fixed_total_net": 14.899999999999999,
+    "offpeak_gross": 0.6281610000000001,
+    "peak_gross": 1.3896540000000002
+   },
+   "override_invoice_2026_09": {},
+   "override_no_invoice": {}
+  },
+  "2025-03": {
+   "baseline": {
+    "dist_jakosciowa_net": 0.0321,
+    "dist_kogeneracja_net": 0.003,
+    "dist_oze_net": 0.0035,
+    "dist_var_offpeak_net": 0.0518,
+    "dist_var_peak_net": 0.3271,
+    "energy_offpeak_net": 0.4153,
+    "energy_peak_net": 0.7591,
+    "fixed_abonament_net": 4.56,
+    "fixed_mocowa_net": 0.0,
+    "fixed_stalysieciowy_net": 10.34,
+    "fixed_total_net": 14.899999999999999,
+    "offpeak_gross": 0.6281610000000001,
+    "peak_gross": 1.3896540000000002
+   },
+   "override_invoice_2026_09": {},
+   "override_no_invoice": {}
+  },
+  "2025-04": {
+   "baseline": {
+    "dist_jakosciowa_net": 0.0321,
+    "dist_kogeneracja_net": 0.003,
+    "dist_oze_net": 0.0035,
+    "dist_var_offpeak_net": 0.0518,
+    "dist_var_peak_net": 0.3271,
+    "energy_offpeak_net": 0.4153,
+    "energy_peak_net": 0.7591,
+    "fixed_abonament_net": 4.56,
+    "fixed_mocowa_net": 0.0,
+    "fixed_stalysieciowy_net": 10.34,
+    "fixed_total_net": 14.899999999999999,
+    "offpeak_gross": 0.6281610000000001,
+    "peak_gross": 1.3896540000000002
+   },
+   "override_invoice_2026_09": {},
+   "override_no_invoice": {}
+  },
+  "2025-05": {
+   "baseline": {
+    "dist_jakosciowa_net": 0.0321,
+    "dist_kogeneracja_net": 0.003,
+    "dist_oze_net": 0.0035,
+    "dist_var_offpeak_net": 0.0518,
+    "dist_var_peak_net": 0.3271,
+    "energy_offpeak_net": 0.4153,
+    "energy_peak_net": 0.7591,
+    "fixed_abonament_net": 4.56,
+    "fixed_mocowa_net": 0.0,
+    "fixed_stalysieciowy_net": 10.34,
+    "fixed_total_net": 14.899999999999999,
+    "offpeak_gross": 0.6281610000000001,
+    "peak_gross": 1.3896540000000002
+   },
+   "override_invoice_2026_09": {},
+   "override_no_invoice": {}
+  },
+  "2025-06": {
+   "baseline": {
+    "dist_jakosciowa_net": 0.0321,
+    "dist_kogeneracja_net": 0.003,
+    "dist_oze_net": 0.0035,
+    "dist_var_offpeak_net": 0.0518,
+    "dist_var_peak_net": 0.3271,
+    "energy_offpeak_net": 0.4153,
+    "energy_peak_net": 0.7591,
+    "fixed_abonament_net": 4.56,
+    "fixed_mocowa_net": 0.0,
+    "fixed_stalysieciowy_net": 10.34,
+    "fixed_total_net": 14.899999999999999,
+    "offpeak_gross": 0.6281610000000001,
+    "peak_gross": 1.3896540000000002
+   },
+   "override_invoice_2026_09": {},
+   "override_no_invoice": {}
+  },
+  "2025-07": {
+   "baseline": {
+    "dist_jakosciowa_net": 0.0321,
+    "dist_kogeneracja_net": 0.003,
+    "dist_oze_net": 0.0035,
+    "dist_var_offpeak_net": 0.0518,
+    "dist_var_peak_net": 0.3271,
+    "energy_offpeak_net": 0.5,
+    "energy_peak_net": 0.5,
+    "fixed_abonament_net": 4.56,
+    "fixed_mocowa_net": 16.01,
+    "fixed_stalysieciowy_net": 10.34,
+    "fixed_total_net": 30.91,
+    "offpeak_gross": 0.7323419999999999,
+    "peak_gross": 1.0709609999999998
+   },
+   "override_invoice_2026_09": {},
+   "override_no_invoice": {}
+  },
+  "2025-08": {
+   "baseline": {
+    "dist_jakosciowa_net": 0.0321,
+    "dist_kogeneracja_net": 0.003,
+    "dist_oze_net": 0.0035,
+    "dist_var_offpeak_net": 0.0518,
+    "dist_var_peak_net": 0.3271,
+    "energy_offpeak_net": 0.5,
+    "energy_peak_net": 0.5,
+    "fixed_abonament_net": 4.56,
+    "fixed_mocowa_net": 16.01,
+    "fixed_stalysieciowy_net": 10.34,
+    "fixed_total_net": 30.91,
+    "offpeak_gross": 0.7323419999999999,
+    "peak_gross": 1.0709609999999998
+   },
+   "override_invoice_2026_09": {},
+   "override_no_invoice": {}
+  },
+  "2025-09": {
+   "baseline": {
+    "dist_jakosciowa_net": 0.0321,
+    "dist_kogeneracja_net": 0.003,
+    "dist_oze_net": 0.0035,
+    "dist_var_offpeak_net": 0.0518,
+    "dist_var_peak_net": 0.3271,
+    "energy_offpeak_net": 0.5,
+    "energy_peak_net": 0.5,
+    "fixed_abonament_net": 4.56,
+    "fixed_mocowa_net": 16.01,
+    "fixed_stalysieciowy_net": 10.34,
+    "fixed_total_net": 30.91,
+    "offpeak_gross": 0.7323419999999999,
+    "peak_gross": 1.0709609999999998
+   },
+   "override_invoice_2026_09": {},
+   "override_no_invoice": {}
+  },
+  "2025-10": {
+   "baseline": {
+    "dist_jakosciowa_net": 0.0321,
+    "dist_kogeneracja_net": 0.003,
+    "dist_oze_net": 0.0035,
+    "dist_var_offpeak_net": 0.0518,
+    "dist_var_peak_net": 0.3271,
+    "energy_offpeak_net": 0.43,
+    "energy_peak_net": 0.756,
+    "fixed_abonament_net": 4.56,
+    "fixed_mocowa_net": 16.01,
+    "fixed_stalysieciowy_net": 10.34,
+    "fixed_total_net": 30.91,
+    "offpeak_gross": 0.646242,
+    "peak_gross": 1.385841
+   },
+   "override_invoice_2026_09": {},
+   "override_no_invoice": {}
+  },
+  "2025-11": {
+   "baseline": {
+    "dist_jakosciowa_net": 0.0321,
+    "dist_kogeneracja_net": 0.003,
+    "dist_oze_net": 0.0035,
+    "dist_var_offpeak_net": 0.0518,
+    "dist_var_peak_net": 0.3271,
+    "energy_offpeak_net": 0.5,
+    "energy_peak_net": 0.5,
+    "fixed_abonament_net": 4.56,
+    "fixed_mocowa_net": 16.01,
+    "fixed_stalysieciowy_net": 10.34,
+    "fixed_total_net": 30.91,
+    "offpeak_gross": 0.7323419999999999,
+    "peak_gross": 1.0709609999999998
+   },
+   "override_invoice_2026_09": {},
+   "override_no_invoice": {}
+  },
+  "2025-12": {
+   "baseline": {
+    "dist_jakosciowa_net": 0.0321,
+    "dist_kogeneracja_net": 0.003,
+    "dist_oze_net": 0.0035,
+    "dist_var_offpeak_net": 0.0518,
+    "dist_var_peak_net": 0.3271,
+    "energy_offpeak_net": 0.5,
+    "energy_peak_net": 0.5,
+    "fixed_abonament_net": 4.56,
+    "fixed_mocowa_net": 16.01,
+    "fixed_stalysieciowy_net": 10.34,
+    "fixed_total_net": 30.91,
+    "offpeak_gross": 0.7323419999999999,
+    "peak_gross": 1.0709609999999998
+   },
+   "override_invoice_2026_09": {},
+   "override_no_invoice": {}
+  },
+  "2026-01": {
+   "baseline": {
+    "dist_jakosciowa_net": 0.0331,
+    "dist_kogeneracja_net": 0.003,
+    "dist_oze_net": 0.0073,
+    "dist_var_offpeak_net": 0.0512,
+    "dist_var_peak_net": 0.3298,
+    "energy_offpeak_net": 0.413,
+    "energy_peak_net": 0.622,
+    "fixed_abonament_net": 4.56,
+    "fixed_mocowa_net": 24.05,
+    "fixed_stalysieciowy_net": 10.86,
+    "fixed_total_net": 39.47,
+    "offpeak_gross": 0.6304979999999999,
+    "peak_gross": 1.230246
+   },
+   "override_invoice_2026_09": {},
+   "override_no_invoice": {}
+  },
+  "2026-02": {
+   "baseline": {
+    "dist_jakosciowa_net": 0.0332,
+    "dist_kogeneracja_net": 0.003,
+    "dist_oze_net": 0.0073,
+    "dist_var_offpeak_net": 0.0512,
+    "dist_var_peak_net": 0.3298,
+    "energy_offpeak_net": 0.413,
+    "energy_peak_net": 0.622,
+    "fixed_abonament_net": 4.56,
+    "fixed_mocowa_net": 24.05,
+    "fixed_stalysieciowy_net": 10.86,
+    "fixed_total_net": 39.47,
+    "offpeak_gross": 0.6306210000000001,
+    "peak_gross": 1.230369
+   },
+   "override_invoice_2026_09": {},
+   "override_no_invoice": {}
+  },
+  "2026-03": {
+   "baseline": {
+    "dist_jakosciowa_net": 0.0332,
+    "dist_kogeneracja_net": 0.003,
+    "dist_oze_net": 0.0073,
+    "dist_var_offpeak_net": 0.0512,
+    "dist_var_peak_net": 0.3298,
+    "energy_offpeak_net": 0.413,
+    "energy_peak_net": 0.622,
+    "fixed_abonament_net": 4.56,
+    "fixed_mocowa_net": 24.05,
+    "fixed_stalysieciowy_net": 10.86,
+    "fixed_total_net": 39.47,
+    "offpeak_gross": 0.6306210000000001,
+    "peak_gross": 1.230369
+   },
+   "override_invoice_2026_09": {},
+   "override_no_invoice": {}
+  },
+  "2026-04": {
+   "baseline": {
+    "dist_jakosciowa_net": 0.0332,
+    "dist_kogeneracja_net": 0.003,
+    "dist_oze_net": 0.0073,
+    "dist_var_offpeak_net": 0.0512,
+    "dist_var_peak_net": 0.3298,
+    "energy_offpeak_net": 0.413,
+    "energy_peak_net": 0.622,
+    "fixed_abonament_net": 4.56,
+    "fixed_mocowa_net": 24.05,
+    "fixed_stalysieciowy_net": 10.86,
+    "fixed_total_net": 39.47,
+    "offpeak_gross": 0.6306210000000001,
+    "peak_gross": 1.230369
+   },
+   "override_invoice_2026_09": {},
+   "override_no_invoice": {}
+  },
+  "2026-05": {
+   "baseline": {
+    "dist_jakosciowa_net": 0.0332,
+    "dist_kogeneracja_net": 0.003,
+    "dist_oze_net": 0.0073,
+    "dist_var_offpeak_net": 0.0512,
+    "dist_var_peak_net": 0.3298,
+    "energy_offpeak_net": 0.413,
+    "energy_peak_net": 0.622,
+    "fixed_abonament_net": 4.56,
+    "fixed_mocowa_net": 24.05,
+    "fixed_stalysieciowy_net": 10.86,
+    "fixed_total_net": 39.47,
+    "offpeak_gross": 0.6306210000000001,
+    "peak_gross": 1.230369
+   },
+   "override_invoice_2026_09": {},
+   "override_no_invoice": {}
+  },
+  "2026-06": {
+   "baseline": {
+    "dist_jakosciowa_net": 0.0332,
+    "dist_kogeneracja_net": 0.003,
+    "dist_oze_net": 0.0073,
+    "dist_var_offpeak_net": 0.0512,
+    "dist_var_peak_net": 0.3298,
+    "energy_offpeak_net": 0.413,
+    "energy_peak_net": 0.622,
+    "fixed_abonament_net": 4.56,
+    "fixed_mocowa_net": 24.05,
+    "fixed_stalysieciowy_net": 10.86,
+    "fixed_total_net": 39.47,
+    "offpeak_gross": 0.6306210000000001,
+    "peak_gross": 1.230369
+   },
+   "override_invoice_2026_09": {},
+   "override_no_invoice": {}
+  },
+  "2026-07": {
+   "baseline": {
+    "dist_jakosciowa_net": 0.0332,
+    "dist_kogeneracja_net": 0.003,
+    "dist_oze_net": 0.0073,
+    "dist_var_offpeak_net": 0.0512,
+    "dist_var_peak_net": 0.3298,
+    "energy_offpeak_net": 0.413,
+    "energy_peak_net": 0.622,
+    "fixed_abonament_net": 4.56,
+    "fixed_mocowa_net": 24.05,
+    "fixed_stalysieciowy_net": 10.86,
+    "fixed_total_net": 39.47,
+    "offpeak_gross": 0.6306210000000001,
+    "peak_gross": 1.230369
+   },
+   "override_invoice_2026_09": {},
+   "override_no_invoice": {}
+  },
+  "2026-08": {
+   "baseline": {
+    "dist_jakosciowa_net": 0.0332,
+    "dist_kogeneracja_net": 0.003,
+    "dist_oze_net": 0.0073,
+    "dist_var_offpeak_net": 0.0512,
+    "dist_var_peak_net": 0.3298,
+    "energy_offpeak_net": 0.413,
+    "energy_peak_net": 0.622,
+    "fixed_abonament_net": 4.56,
+    "fixed_mocowa_net": 24.05,
+    "fixed_stalysieciowy_net": 10.86,
+    "fixed_total_net": 39.47,
+    "offpeak_gross": 0.6306210000000001,
+    "peak_gross": 1.230369
+   },
+   "override_invoice_2026_09": {},
+   "override_no_invoice": {}
+  },
+  "2026-09": {
+   "baseline": {
+    "dist_jakosciowa_net": 0.0332,
+    "dist_kogeneracja_net": 0.003,
+    "dist_oze_net": 0.0073,
+    "dist_var_offpeak_net": 0.0512,
+    "dist_var_peak_net": 0.3298,
+    "energy_offpeak_net": 0.413,
+    "energy_peak_net": 0.622,
+    "fixed_abonament_net": 4.56,
+    "fixed_mocowa_net": 24.05,
+    "fixed_stalysieciowy_net": 10.86,
+    "fixed_total_net": 39.47,
+    "offpeak_gross": 0.6306210000000001,
+    "peak_gross": 1.230369
+   },
+   "override_invoice_2026_09": {},
+   "override_no_invoice": {}
+  },
+  "2026-10": {
+   "baseline": {
+    "dist_jakosciowa_net": 0.0332,
+    "dist_kogeneracja_net": 0.003,
+    "dist_oze_net": 0.0073,
+    "dist_var_offpeak_net": 0.0512,
+    "dist_var_peak_net": 0.3298,
+    "energy_offpeak_net": 0.413,
+    "energy_peak_net": 0.622,
+    "fixed_abonament_net": 4.56,
+    "fixed_mocowa_net": 24.05,
+    "fixed_stalysieciowy_net": 10.86,
+    "fixed_total_net": 39.47,
+    "offpeak_gross": 0.6306210000000001,
+    "peak_gross": 1.230369
+   },
+   "override_invoice_2026_09": {},
+   "override_no_invoice": {}
+  },
+  "2026-11": {
+   "baseline": {
+    "dist_jakosciowa_net": 0.0332,
+    "dist_kogeneracja_net": 0.003,
+    "dist_oze_net": 0.0073,
+    "dist_var_offpeak_net": 0.0512,
+    "dist_var_peak_net": 0.3298,
+    "energy_offpeak_net": 0.413,
+    "energy_peak_net": 0.622,
+    "fixed_abonament_net": 4.56,
+    "fixed_mocowa_net": 24.05,
+    "fixed_stalysieciowy_net": 10.86,
+    "fixed_total_net": 39.47,
+    "offpeak_gross": 0.6306210000000001,
+    "peak_gross": 1.230369
+   },
+   "override_invoice_2026_09": {},
+   "override_no_invoice": {}
+  },
+  "2026-12": {
+   "baseline": {
+    "dist_jakosciowa_net": 0.0332,
+    "dist_kogeneracja_net": 0.003,
+    "dist_oze_net": 0.0073,
+    "dist_var_offpeak_net": 0.0512,
+    "dist_var_peak_net": 0.3298,
+    "energy_offpeak_net": 0.413,
+    "energy_peak_net": 0.622,
+    "fixed_abonament_net": 4.56,
+    "fixed_mocowa_net": 24.05,
+    "fixed_stalysieciowy_net": 10.86,
+    "fixed_total_net": 39.47,
+    "offpeak_gross": 0.6306210000000001,
+    "peak_gross": 1.230369
+   },
+   "override_invoice_2026_09": {},
+   "override_no_invoice": {}
+  }
+ }
+}

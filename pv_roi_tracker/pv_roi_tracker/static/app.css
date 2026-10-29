@@ -373,3 +373,44 @@ tbody td.l, thead th.l { text-align: left; }
 .tf-seg-f { background: var(--yellow); }
 .tf-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11px; color: var(--muted); }
 .tf-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+
+/* -- Taryfa T6: przejrzystość (tfx-) -- */
+.tfx-nav { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+.tfx-nav button { font: inherit; font-size: 13px; font-weight: 600; min-height: 44px; padding: 8px 14px; border: 1px solid var(--border);
+  border-radius: 6px; background: var(--card); color: var(--muted); cursor: pointer; }
+.tfx-nav button[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.tfx-nav button:focus-visible, .tfx-panel button:focus-visible, .tfx-panel select:focus-visible, .tfx-panel input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tfx-panel[hidden] { display: none; }
+.tfx-filters { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: flex-end; }
+.tfx-filters label, .tfx-lbl { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+.tfx-filters select, .tfx-filters input { font: inherit; font-size: 13px; min-height: 36px; padding: 4px 8px; border: 1px solid var(--border);
+  border-radius: 6px; background: var(--card); color: var(--text); max-width: 100%; }
+.tfx-grow { flex: 1 1 200px; }
+.tfx-panel .tsim-seg button { min-height: 36px; }
+.tfx-tile { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; }
+.tfx-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.tfx-k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
+.tfx-v { font-size: 18px; font-weight: 700; }
+.tfx-v.tfx-sm { font-size: 13px; font-weight: 600; }
+.tfx-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 600; padding: 1px 7px; border: 1px solid var(--border); border-radius: 10px; white-space: nowrap; }
+.tfx-ico { flex: none; }
+.tfx-tbl { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+.tfx-tbl th { text-align: left; padding: 6px 8px; font-size: 11px; color: var(--muted); border-bottom: 2px solid var(--border); position: sticky; top: 0; background: var(--card); }
+.tfx-tbl td { padding: 5px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.tfx-tbl .num { text-align: right; white-space: nowrap; }
+.tfx-tbl .l { text-align: left; }
+.tfx-off { color: var(--muted); }
+.tfx-incl { border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px 8px; margin-top: 10px; }
+.tfx-incl legend { font-size: 12px; color: var(--muted); padding: 0 4px; }
+.tfx-incl > div { display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.tfx-chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; min-height: 32px; cursor: pointer; }
+.tfx-chk input { width: 18px; height: 18px; }
+.tfx-total { font-size: 14px; }
+.tfx-err { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; color: var(--red); }
+@media (max-width: 700px), (pointer: coarse) {
+  .tfx-filters select, .tfx-filters input, .tfx-panel .tsim-seg button, .tfx-panel .btn { min-height: 44px; }
+  .tfx-chk { min-height: 44px; }
+  .tfx-filters > label, .tfx-filters > div { flex: 1 1 140px; }
+  .tfx-filters .tsim-seg { width: 100%; }
+  .tfx-filters .tsim-seg button { flex: 1; }
+}

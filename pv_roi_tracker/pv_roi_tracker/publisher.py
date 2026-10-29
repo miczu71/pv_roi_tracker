@@ -157,6 +157,10 @@ _HEALTH_SLUG = 'health'
 # Harmonogram mostów JIT (taryfy strefowe) — stan = bieżąca taryfa, atrybuty = JSON.
 _JIT_SLUG = 'jit_schedule'
 
+# Moduł taryf — strefa (atrybuty JSON z harmonogramem 48 h) i cena brutto bieżącej godziny.
+_TARIFF_ZONE_SLUG = 'tariff_zone'
+_TARIFF_PRICE_SLUG = 'tariff_price'
+
 
 def _state_topic(slug: str) -> str:
     return f'{_STATE_PREFIX}/{slug}/state'
@@ -331,9 +335,30 @@ class MQTTPublisher:
             'icon':                  'mdi:battery-clock',
         }
         self._client.publish(_disc_topic(_JIT_SLUG), json.dumps(jit_payload), retain=True)
+        tariff_zone_payload = {
+            'name':                  'PV Tariff Zone',
+            'unique_id':             f'{_DEVICE_ID}_{_TARIFF_ZONE_SLUG}',
+            'state_topic':           _state_topic(_TARIFF_ZONE_SLUG),
+            'json_attributes_topic': f'{_STATE_PREFIX}/{_TARIFF_ZONE_SLUG}/attributes',
+            'availability_topic':    _AVAIL_TOPIC,
+            'device':                device,
+            'icon':                  'mdi:clock-time-four-outline',
+        }
+        self._client.publish(_disc_topic(_TARIFF_ZONE_SLUG), json.dumps(tariff_zone_payload), retain=True)
+        tariff_price_payload = {
+            'name':                  'PV Tariff Price',
+            'unique_id':             f'{_DEVICE_ID}_{_TARIFF_PRICE_SLUG}',
+            'state_topic':           _state_topic(_TARIFF_PRICE_SLUG),
+            'availability_topic':    _AVAIL_TOPIC,
+            'device':                device,
+            'unit_of_measurement':   'PLN/kWh',
+            'state_class':           'measurement',
+            'icon':                  'mdi:cash-clock',
+        }
+        self._client.publish(_disc_topic(_TARIFF_PRICE_SLUG), json.dumps(tariff_price_payload), retain=True)
         for slug in _TOMBSTONED_SLUGS:
             self._client.publish(_disc_topic(slug), '', retain=True)
-        logger.info('MQTT discovery published for %d sensors', len(_SENSORS) + 2)
+        logger.info('MQTT discovery published for %d sensors', len(_SENSORS) + 4)
 
     # ── State publishing ──────────────────────────────────────────────────────
 
@@ -375,4 +400,15 @@ class MQTTPublisher:
         self._client.publish(_state_topic(_JIT_SLUG), state, retain=True)
         self._client.publish(f'{_STATE_PREFIX}/{_JIT_SLUG}/attributes',
                              json.dumps(attributes, ensure_ascii=False), retain=True)
+        return True
+
+    def publish_tariff(self, payload: dict) -> bool:
+        """Publikuje encje modułu taryf (`feed_payload`): strefa + atrybuty JSON oraz cena brutto.
+        Zwraca False, gdy klient jest rozłączony (nic nie publikuje), True po publikacji."""
+        if not self._connected:
+            return False
+        self._client.publish(_state_topic(_TARIFF_ZONE_SLUG), payload['state'], retain=True)
+        self._client.publish(f'{_STATE_PREFIX}/{_TARIFF_ZONE_SLUG}/attributes',
+                             json.dumps(payload['attributes'], ensure_ascii=False), retain=True)
+        self._client.publish(_state_topic(_TARIFF_PRICE_SLUG), str(payload['price']), retain=True)
         return True

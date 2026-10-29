@@ -13,9 +13,10 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
-from . import tariff_battery, tariff_grid_charge, tariff_history
+from . import tariff_battery, tariff_grid_charge, tariff_history, tariff_invoice_check
 from .battery_store import _atomic_write
 from .tariff_catalog import TariffSettings
+from .tariff_module import TariffModule
 from .tariff_sim import ALL_TARIFFS as TARIFFS, simulate_range
 
 logger = logging.getLogger(__name__)
@@ -249,6 +250,8 @@ def compute_payload(import_by_hour: dict, catalog: dict, settings: Optional[Tari
                          else None) for t in TARIFFS}
 
     recon = _reconcile(months, invoices or {}, tariff_periods)
+    module = TariffModule(catalog, tariff_periods or [], settings=settings)
+    invoice_check = tariff_invoice_check.check_invoices(module, invoices or {})
     confirmed = [r for r in recon.values() if r['confirmed']]
     diffs = [abs(r['diff_pct']) for r in confirmed]
     payload = {
@@ -262,6 +265,8 @@ def compute_payload(import_by_hour: dict, catalog: dict, settings: Optional[Tari
                    'cheapest': cheapest, 'saving_vs_baseline': saving,
                    **l12_extra},
         'reconciliation': recon,
+        'invoice_check': invoice_check,
+        'invoice_confirmed_periods': tariff_invoice_check.invoice_confirmed_periods(invoice_check),
         'reconciliation_summary': {
             'months': len(confirmed),
             'ok_months': sum(1 for r in confirmed if r['ok']),

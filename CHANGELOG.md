@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+## [0.55.0] — 2026-10-29
+
+Moduł taryf: jedno źródło cen dla pv_roi, Heiko i (po okresie zgodności) panelu Energia.
+
+- **Moduł taryf: kontrola faktur, strażnik cenników i formularz nowego okresu; zakładka Taryfa przebudowana** (Teraz / Stawki / Rozbicie / Porównania / Źródła, z dotychczasową zawartością). Kontrola faktur porównuje stawki z faktury per strefa z modułem (±2%, ustawienia użytkownika uwzględnione) i powiadamia o rozbieżności; powiadomienie jest ponawiane po błędzie wysyłki. Strażnik raz w tygodniu sprawdza listy dokumentów TD/URE (baner przy nowym dokumencie). Brak okresu na dziś → ostatni okres z pewnością „assumed”, widoczny w UI i w encji.
+- Poprawki po przeglądzie: pewność `invoice` trafia też do encji MQTT, `legacy_rates` loguje (raz) nieoczekiwany błąd katalogu zamiast cicho zwracać puste stawki, uproszczenia bez zmiany zachowania.
+- **Moduł taryf: przejrzystość (backend T6).** Trzy nowe endpointy tylko do odczytu: `GET /api/tariff/rates` (cennik wierszami: okresy katalogu i korekty ręczne, filtry taryfa/strefa/składnik/daty/źródło/pewność/`q`, limit 2000 wierszy, brak danych jako `null`, nigdy zero), `GET /api/tariff/breakdown` (rozbicie ceny godziny albo kosztu doby/miesiąca/faktury na składniki, z wyborem `include` i `basis=net|gross`) oraz `GET /api/tariff/compare` (porównanie taryf A↔B, oś czasu okresów cennika, dokument↔faktura składnik po składniku z progiem 2% jak w kontroli faktur). Stawki zawsze z modułu taryf; błędne parametry dają 400.
+- **Moduł taryf: encje MQTT i API harmonogramu.** Nowe sensory `sensor.pv_roi_tracker_pv_tariff_zone` (stan = strefa bieżącej godziny; atrybuty: `tariff`, `is_peak`, `level`, `gross_per_kwh`, `confidence`, `next_change`, `period_from`, `generated_at`, `schedule` na 48 godzin) i `sensor.pv_roi_tracker_pv_tariff_price` (cena brutto zł/kWh). Publikacja tylko przy zmianie (godzina, okres, ustawienia) lub po nieudanej próbie; zadanie `tariff_feed` w zdrowiu add-onu. `/api/tariff_now` liczy z modułu taryf (ten sam kształt + `level`, `confidence`, `period_from`); nowy `GET /api/tariff/schedule?hours=48&tariff=`.
+- **Moduł taryf: jedno źródło stawek (katalog + korekty), `tariff_config.json` zastąpiony `tariff_overrides.json`; stawki baseline 2025 z katalogu zamiast stałych 1,23/0,63.** Stawki bazowe dla ROI, baterii, pompy ciepła, rekonsyliacji faktur i zakładki Taryfa pochodzą z `TariffModule` (katalog dokumentów URE/TD); ręczne wpisy z zakładki Taryfa zapisują się jako korekty w `/data/tariff_overrides.json`. Przy pierwszym starcie stary `tariff_config.json` jest migrowany (kopia `tariff_config.json.pre-tariff-module`); wpis zasiany przy instalacji (1,23/0,63) jest pomijany, bo katalog daje praktycznie te same ceny. Kształty odpowiedzi API (`/api/tariff_config*`) i pola `latest_invoice_rates` bez zmian; GET dodatkowo zwraca wpis okresu katalogu (`source: catalog`).
+
 ## [0.54.0] — 2026-10-29
 
 - **Zignoruj rozbieżność wpłat:** przy każdej linii „⚠ Rozbieżność wpłat” w panelu jest przycisk „Zignoruj” (`POST /api/ebok/payment-status/dismiss`). Zignorowana rozbieżność znika z panelu i nie wraca w kolejnych przebiegach joba. Jeśli kwoty rozliczenia lub faktury się zmienią, pojawia się ponownie i daje nowe powiadomienie; odrzucenie przetrwa też przebieg, w którym rozbieżności chwilowo nie widać.

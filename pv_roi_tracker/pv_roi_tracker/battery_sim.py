@@ -36,7 +36,7 @@ from typing import Optional
 
 from .rce_hourly import _vat_factor
 from .roi import _npv, _irr, _residual_cv, _seasonal_factors, _walk_payback
-# Domyślne stawki G12w (brutto, PLN/kWh) — nadpisywane cennikiem z tariff_config.
+# Domyślne stawki G12w (brutto, PLN/kWh) — nadpisywane cennikiem z modułu taryf.
 from .tariff_analysis import _DEFAULT_OFFPEAK_GROSS, _DEFAULT_PEAK_GROSS
 
 

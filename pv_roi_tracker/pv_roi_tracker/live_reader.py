@@ -670,11 +670,11 @@ def _build_record(
     ``produced`` must be > 0 before calling this function.
 
     peak_gross/offpeak_gross: bieżące stawki taryfy (PLN/kWh, brutto),
-    zwykle z tariff_config.effective_baseline() — ta sama ścieżka co
+    zwykle z TariffModule.legacy_rates() — ta sama ścieżka co
     battery_job i rekonsyliacja faktur. None → fallback na zaszyte env
     TARIFF_PEAK_PRICE/TARIFF_OFFPEAK_PRICE poniżej (opcje usunięte
     z config.yaml w 0.22.0 — to tylko siatka bezpieczeństwa, np. dla cli.py
-    czy zanim tariff_config.json zostanie zasiany).
+    czy dla dat sprzed katalogu taryf).
 
     v0.35.0 kWh-rebase notes:
       consumed_kwh is NOT a parameter here anymore — this installation has no

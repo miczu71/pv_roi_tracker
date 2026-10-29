@@ -36,7 +36,8 @@ _simulate_rebase_callback = None
 _apply_rebase_callback = None
 _invoice_path = None
 _layouts_path = None
-_tariff_config_path = None
+_tariff_overrides_path = None
+_tariff_guard_path = None
 _ebok_sync_callback = None
 _ebok_status_callback = None
 _ebok_diag_callback = None
@@ -126,9 +127,14 @@ def set_layouts_path(path) -> None:
     _layouts_path = path
 
 
-def set_tariff_config_path(path) -> None:
-    global _tariff_config_path
-    _tariff_config_path = path
+def set_tariff_overrides_path(path) -> None:
+    global _tariff_overrides_path
+    _tariff_overrides_path = path
+
+
+def set_tariff_guard_path(path) -> None:
+    global _tariff_guard_path
+    _tariff_guard_path = path
 
 
 _battery_config_path = None
@@ -183,12 +189,58 @@ def set_tariff_periods_callback(fn) -> None:
     _tariff_periods_callback = fn
 
 
-def _load_tariff_cfg() -> dict:
-    from . import tariff_config as _tc
+def _tariff_module():
+    """Moduł taryf złożony z plików add-onu (historia, korekty ręczne, ustawienia)."""
+    from . import tariff_module as _tm
+    with _lock:
+        invoice_ok = set((_state.get('tariff_sim') or {}).get('invoice_confirmed_periods', []))
+    return _tm.build(_tariff_periods_path, _tariff_override, _tariff_overrides_path,
+                     _tariff_settings_path, invoice_ok=invoice_ok)
+
+
+def _base_module(module):
+    """Ten sam moduł bez ręcznych korekt (stawki samego katalogu)."""
+    from .tariff_module import TariffModule
+    return TariffModule(module.catalog, module.periods, [], module.default_tariff, module.settings,
+                        invoice_ok=module.invoice_ok)
+
+
+def _single_override_module(module, ov: dict):
+    from .tariff_module import TariffModule
+    return TariffModule(module.catalog, module.periods, [ov], module.default_tariff, module.settings,
+                        invoice_ok=module.invoice_ok)
+
+
+def _active_override(module, today):
+    """Najnowsza (po `from`) ręczna korekta obowiązująca w dniu `today`; None gdy brak."""
+    iso = today.isoformat()
+    active = [o for o in module.overrides
+              if o['from'] <= iso and (o.get('to') is None or iso <= o['to'])]
+    return max(active, key=lambda o: o['from']) if active else None
+
+
+def _catalog_layer_rates(module, today) -> dict:
+    """Warstwa 1: stawki modułu (katalog + korekty) w dniu `today`; {} gdy dzień poza katalogiem."""
     try:
-        return _tc.load(_tariff_config_path) if _tariff_config_path else _tc._empty()
-    except Exception:
-        return _tc._empty()
+        return module.legacy_rates(today)
+    except (LookupError, ValueError) as exc:
+        log.warning('Moduł taryf: brak stawek na %s (%s) — warstwa katalogu pusta', today, exc)
+        return {}
+
+
+def _override_layer_rates(module, real: dict, today) -> dict:
+    """Warstwa 3: pola aktywnej korekty ręcznej, GDY jej miesiąc `from` jest NOWSZY niż najnowsza
+    faktura (ogłoszona taryfa wypełnia lukę, zanim faktura nadejdzie). {} gdy faktura nadgoniła."""
+    from . import tariff_overrides as _to
+    ov = _active_override(module, today)
+    if ov is None:
+        return {}
+    if real and ov['from'][:7] <= max(real):
+        return {}
+    try:
+        return _to.patch_to_rates(_single_override_module(module, ov), _base_module(module), today)
+    except (LookupError, ValueError):
+        return {}
 
 
 def _load_real_billing() -> dict:
@@ -711,36 +763,35 @@ def latest_invoice_rates(real: Optional[dict] = None, _today=None) -> dict:
     """Canonical rate provider — jedno źródło prawdy dla stawek taryfy.
 
     Priorytet (rosnący, każdy poziom nadpisuje poprzedni):
-      1. Baseline z tariff_config (current_entry.rates) — ręcznie utrzymywana taryfa
-      2. Najnowsza faktura rozliczeniowa — automatycznie nadpisuje baseline
-      3. Override z tariff_config — gdy ogłoszona taryfa jest nowsza niż faktura
-         (wypełnia lukę styczeń→luty przy zmianie roku taryfowego); wygasa, gdy
-         faktura za dany okres dotrze i max(billing_key) >= effective_from.
+      1. Stawki modułu taryf (katalog + ręczne korekty, `legacy_rates`)
+      2. Najnowsza faktura rozliczeniowa — automatycznie nadpisuje warstwę 1
+      3. Pola ręcznej korekty z `tariff_overrides.json` — gdy jej miesiąc `from` jest nowszy
+         niż faktura (wypełnia lukę styczeń→luty przy zmianie roku taryfowego); wygasa, gdy
+         faktura za dany okres dotrze.
 
     `real` może być przekazane z zewnątrz (załadowane raz w tym samym cyklu) —
     pomija wtedy zbędny odczyt dysku. Gdy None, ładuje samodzielnie.
     `_today` jest wyłącznie dla testów; normalnie None → date.today().
-    Zwraca {} tylko gdy brak zarówno tariff_config jak i faktur.
+    Zwraca {} tylko gdy dzień jest poza katalogiem i brak faktur.
     """
-    from . import tariff_config as _tc
     from datetime import date as _date
     today = _today or _date.today()
 
-    cfg = _load_tariff_cfg()
+    module = _tariff_module()
 
     if real is None:
         real = _load_real_billing()
 
-    # 1. Kumulatywny baseline z tariff_config (wszystkie wpisy ≤ dziś scalone rosnąco)
-    rates: dict = _tc.effective_baseline(cfg, today)
+    # 1. Moduł taryf
+    rates: dict = _catalog_layer_rates(module, today)
 
-    # 2. Faktura nadpisuje baseline (dla pól, które faktycznie sparsowała)
+    # 2. Faktura nadpisuje warstwę 1 (dla pól, które faktycznie sparsowała)
     latest = _latest_real_invoice(real)
     if latest is not None:
         rates.update({k: latest[k] for k in _RATE_FIELDS if latest.get(k) is not None})
 
-    # 3. Override wygrywa w oknie luki (ogłoszona taryfa nowsza niż faktura)
-    ov = _tc.override_rates(cfg, real, today)
+    # 3. Korekta ręczna wygrywa w oknie luki (ogłoszona taryfa nowsza niż faktura)
+    ov = _override_layer_rates(module, real, today)
     if ov:
         rates.update(ov)
 
@@ -749,15 +800,17 @@ def latest_invoice_rates(real: Optional[dict] = None, _today=None) -> dict:
 
 def _build_tariff_drift(real: dict):
     """`real` is an already stub-filtered billing invoices dict.
-    Porównuje najnowszą fakturę do baseline z tariff_config.
+    Porównuje najnowszą fakturę do stawek modułu taryf.
     Zwraca None gdy brak dryftu lub brak faktury."""
     try:
         latest = _latest_real_invoice(real)
         if latest is None:
             return None
-        from . import tariff_config as _tc
         from datetime import date as _date
-        baseline_rates = _tc.effective_baseline(_load_tariff_cfg(), _date.today())
+        try:
+            baseline_rates = _tariff_module().legacy_rates(_date.today())
+        except (LookupError, ValueError):
+            baseline_rates = {}
         baseline_peak = baseline_rates.get('peak_gross', 1.23)
         baseline_offpeak = baseline_rates.get('offpeak_gross', 0.63)
         baseline_fixed = baseline_rates.get('fixed_total_net', 39.47)
@@ -1262,27 +1315,45 @@ def api_tariff_now():
     """Bieżąca strefa i cena taryfy użytkownika (baza porównań) + najbliższa zmiana strefy."""
     if _tariff_inputs_callback is None:
         return _tariff_error('tariff inputs not wired', 503)
-    from .tariff_catalog import period_for, rates_per_kwh, zone_for
     inp = _tariff_inputs_callback()
     tariff = inp.get('baseline') or 'G12w'
-    cat, ov = inp['catalog'], inp['overrides']
     now = _now().replace(minute=0, second=0, microsecond=0)
     try:
-        zone = zone_for(tariff, now, cat)
-        r = rates_per_kwh(tariff, period_for(cat, now.date(), ov), zone)
-        net = r['energy'] + r['dist'] + r['fees']
-        nxt = None
-        for i in range(1, 49):
-            t = now + timedelta(hours=i)
-            z = zone_for(tariff, t, cat)
-            if z != zone:
-                nxt = {'at': t.strftime('%Y-%m-%dT%H'), 'zone': z}
-                break
+        module = _tariff_module()
+        pt = module.price_at(now, tariff)
+        nxt = module.next_change(now, tariff=tariff)
     except (ValueError, LookupError) as exc:
         return _tariff_error(str(exc))
     return jsonify({'ok': True, 'now': now.strftime('%Y-%m-%dT%H'), 'tariff': tariff,
-                    'zone': zone, 'net_per_kwh': net,
-                    'gross_per_kwh': net * float(cat['_meta']['vat']), 'next_change': nxt})
+                    'zone': pt.zone, 'net_per_kwh': pt.net, 'gross_per_kwh': pt.gross,
+                    'next_change': nxt, 'level': pt.level, 'confidence': pt.confidence,
+                    'period_from': pt.period_from})
+
+
+@app.route('/api/tariff/schedule')
+def api_tariff_schedule():
+    """Harmonogram stref i cen od bieżącej pełnej godziny (`hours` 1–168, domyślnie 48)."""
+    from .tariff_catalog import load_catalog
+    try:
+        hours = int(request.args.get('hours', 48))
+    except ValueError:
+        return _tariff_error('hours musi być liczbą całkowitą 1–168')
+    if not 1 <= hours <= 168:
+        return _tariff_error('hours musi być w zakresie 1–168')
+    tariff = request.args.get('tariff') or None
+    if tariff is not None and (tariff == 'dynamic_distribution_zones'
+                               or tariff not in load_catalog()['zones']):
+        return _tariff_error(f'nieznana taryfa: {tariff}')
+    now = _now()
+    try:
+        pts = _tariff_module().schedule(now, hours, tariff)
+    except (ValueError, LookupError) as exc:
+        return _tariff_error(str(exc))
+    return jsonify({'ok': True, 'generated_at': now.isoformat(timespec='seconds'),
+                    'tariff': pts[0].tariff, 'hours': hours,
+                    'schedule': [{'hour': p.hour, 'tariff': p.tariff, 'zone': p.zone, 'is_peak': p.is_peak,
+                                  'level': p.level, 'gross': round(p.gross, 5), 'net': round(p.net, 5),
+                                  'confidence': p.confidence} for p in pts]})
 
 
 @app.route('/api/tariff_catalog')
@@ -1297,6 +1368,90 @@ def api_tariff_catalog():
     except (ValueError, LookupError) as exc:
         return _tariff_error(f'błędny katalog taryf: {exc}', 500)
     return jsonify({'ok': True, 'meta': cat['_meta'], 'zones': cat['zones'], 'periods': periods})
+
+
+def _explain_invoices() -> dict:
+    """Faktury z invoice_store do rozbicia/porównań (puste, gdy brak ścieżki albo błąd odczytu)."""
+    if _invoice_path is None:
+        return {}
+    try:
+        from . import invoice_store as _is
+        return _is.filter_real(_is.load(_invoice_path))
+    except Exception:
+        log.exception('tariff explain: odczyt faktur nieudany')
+        return {}
+
+
+def _explain_import() -> Optional[dict]:
+    if _tariff_inputs_callback is None:
+        return None
+    return _tariff_inputs_callback().get('import_by_hour') or {}
+
+
+@app.route('/api/tariff/rates')
+def api_tariff_rates():
+    """Cennik wierszami (katalog + korekty ręczne) z filtrami; tylko odczyt."""
+    from . import tariff_explain as _te
+    a = request.args.get
+    try:
+        return jsonify(_te.rates_rows(
+            _tariff_module(), _explain_invoices(), tariff=a('tariff') or None, zone=a('zone') or None,
+            component=a('component') or None, date_from=a('from') or None, date_to=a('to') or None,
+            source=a('source') or None, confidence=a('confidence') or None, q=a('q')))
+    except (ValueError, LookupError) as exc:
+        return _tariff_error(str(exc))
+    except Exception as exc:
+        log.exception('tariff rates failed')
+        return _tariff_error(str(exc), 500)
+
+
+@app.route('/api/tariff/breakdown')
+def api_tariff_breakdown():
+    """Rozbicie ceny/kosztu na składniki dla godziny, doby, miesiąca albo faktury."""
+    from . import tariff_explain as _te
+    a = request.args.get
+    imports = _explain_import()
+    if imports is None and not a('at'):
+        return _tariff_error('tariff inputs not wired', 503)
+    try:
+        return jsonify(_te.breakdown(
+            _tariff_module(), imports, _explain_invoices(), tariff=a('tariff') or None, at=a('at'),
+            day=a('day'), month=a('month'), invoice=a('invoice'), include=a('include'), basis=a('basis')))
+    except (ValueError, LookupError) as exc:
+        return _tariff_error(str(exc))
+    except Exception as exc:
+        log.exception('tariff breakdown failed')
+        return _tariff_error(str(exc), 500)
+
+
+@app.route('/api/tariff/compare')
+def api_tariff_compare():
+    """Porównania: taryfa↔taryfa, oś czasu okresów, dokument↔faktura."""
+    from . import tariff_explain as _te
+    a = request.args.get
+    mode = a('mode')
+    if mode not in ('tariff', 'period', 'invoice'):
+        return _tariff_error('mode musi być tariff, period albo invoice')
+    imports = _explain_import() if mode == 'tariff' else {}
+    if imports is None:
+        return _tariff_error('tariff inputs not wired', 503)
+    try:
+        module = _tariff_module()
+        if mode == 'tariff':
+            res = _te.compare_tariff(module, imports, a=a('a'), b=a('b'), scope=a('scope') or 'month',
+                                     at=a('at'), include=a('include'), basis=a('basis'))
+        elif mode == 'period':
+            res = _te.compare_period(module, tariff=a('tariff') or None, zone=a('zone') or None,
+                                     date_from=a('from') or None, date_to=a('to') or None,
+                                     include=a('include'), basis=a('basis'))
+        else:
+            res = _te.compare_invoice(module, _explain_invoices(), month=a('month'))
+        return jsonify(res)
+    except (ValueError, LookupError) as exc:
+        return _tariff_error(str(exc))
+    except Exception as exc:
+        log.exception('tariff compare failed')
+        return _tariff_error(str(exc), 500)
 
 
 @app.route('/api/invoice/upload', methods=['POST'])
@@ -1726,16 +1881,32 @@ def export_csv():
 
 @app.route('/api/tariff_config')
 def api_tariff_config_get():
-    """GET — zwraca listę wpisów taryfowych + status aktywnego override."""
-    from . import tariff_config as _tc
+    """GET — lista wpisów taryfowych (okres katalogu + korekty ręczne) + status aktywnej korekty."""
+    from . import tariff_overrides as _to
     from datetime import date as _date
-    cfg = _load_tariff_cfg()
+    module = _tariff_module()
     today = _date.today()
-    cur = _tc.current_entry(cfg, today)
-    cur_ef = cur.get('effective_from') if cur else None
+    tariffs: list = []
+    cat_ef = None
+    try:
+        cat_ef = module._period_info(today)[1][:7]
+        tariffs.append({'effective_from': cat_ef, 'note': 'Katalog (dokument URE/TD)',
+                        'rates': module.legacy_rates(today), 'source': 'catalog'})
+    except (LookupError, ValueError):
+        pass
+    base = _base_module(module)
+    for ov in module.overrides:
+        try:
+            rates = _to.patch_to_rates(_single_override_module(module, ov), base,
+                                       _date.fromisoformat(ov['from']))
+        except (LookupError, ValueError):
+            rates = {}
+        tariffs.append({'effective_from': ov['from'][:7], 'note': ov.get('note') or '',
+                        'rates': rates, 'source': 'manual'})
+    active = _active_override(module, today)
+    cur_ef = active['from'][:7] if active else cat_ef
     real = _load_real_billing()
-    ov = _tc.override_rates(cfg, real, today)
-    is_override = bool(ov)
+    is_override = bool(_override_layer_rates(module, real, today))
     max_inv = max(real) if real else None
     if is_override:
         reason = (f'Faktura nie nadeszła (ostatnia: {max_inv or "brak"}, '
@@ -1746,7 +1917,7 @@ def api_tariff_config_get():
     else:
         reason = 'Brak wpisów taryfowych — używane litery fallback w kodzie'
     return jsonify({
-        'tariffs': cfg.get('tariffs', []),
+        'tariffs': tariffs,
         'current_effective_from': cur_ef,
         'is_override_active': is_override,
         'active_reason': reason,
@@ -1755,16 +1926,24 @@ def api_tariff_config_get():
 
 @app.route('/api/tariff_config', methods=['POST'])
 def api_tariff_config_upsert():
-    """POST — upsert wpisu taryfowego. Body JSON: {effective_from, note?, rates{}}."""
-    from . import tariff_config as _tc
-    if not _tariff_config_path:
+    """POST — upsert korekty ręcznej. Body JSON: {effective_from, note?, rates{}} (stary kształt)."""
+    from . import tariff_overrides as _to
+    from .tariff_module import _TWO_ZONE_VIEW
+    from datetime import date as _date
+    if not _tariff_overrides_path:
         return jsonify({'ok': False, 'error': 'tariff_config_path not configured'}), 500
     data = request.get_json(silent=True) or {}
     try:
-        cfg = _tc.load(_tariff_config_path)
-        cfg = _tc.upsert_entry(cfg, data)
-        _tc.save(cfg, _tariff_config_path)
-    except ValueError as e:
+        _to.validate_rates_entry(data)
+        ef = data['effective_from']
+        day = _date(int(ef[:4]), int(ef[5:7]), 1)
+        module = _tariff_module()
+        tariff = module.tariff_on(day)
+        tariff = tariff if tariff in _TWO_ZONE_VIEW else 'G12w'
+        entry = {'from': day.isoformat(), 'to': None, 'note': data.get('note') or '',
+                 'patch': _to.entry_to_patch(data.get('rates') or {}, module, day, tariff)}
+        _to.save(_to.upsert(_to.load(_tariff_overrides_path), entry), _tariff_overrides_path)
+    except (ValueError, LookupError) as e:
         return jsonify({'ok': False, 'error': str(e)}), 400
     except Exception as e:
         log.exception('tariff_config upsert failed')
@@ -1774,21 +1953,154 @@ def api_tariff_config_upsert():
 
 @app.route('/api/tariff_config/delete', methods=['POST'])
 def api_tariff_config_delete():
-    """POST — usuń wpis. Body JSON: {effective_from: 'YYYY-MM'}."""
-    from . import tariff_config as _tc
-    if not _tariff_config_path:
+    """POST — usuń korektę ręczną. Body JSON: {effective_from: 'YYYY-MM'}."""
+    from . import tariff_overrides as _to
+    if not _tariff_overrides_path:
         return jsonify({'ok': False, 'error': 'tariff_config_path not configured'}), 500
     data = request.get_json(silent=True) or {}
     ef = data.get('effective_from', '')
     if not ef:
         return jsonify({'ok': False, 'error': 'effective_from wymagane'}), 400
     try:
-        cfg = _tc.load(_tariff_config_path)
-        cfg = _tc.remove_entry(cfg, ef)
-        _tc.save(cfg, _tariff_config_path)
+        _to.save(_to.remove(_to.load(_tariff_overrides_path), f'{ef}-01'), _tariff_overrides_path)
     except Exception as e:
         log.exception('tariff_config delete failed')
         return jsonify({'ok': False, 'error': str(e)}), 500
+    return jsonify({'ok': True})
+
+
+# ── strażnik cenników + formularz nowego okresu (T4) ─────────────────────────
+
+_PERIOD_FORM_TARIFFS = ('G11', 'G12', 'G12w', 'G13')
+_PERIOD_SCALARS = ('quality_net', 'oze_net', 'cogeneration_net', 'excise_net')
+_PERIOD_FIXED = ('network_1ph', 'network_3ph', 'subscription_dist')
+_PREVIEW_SAMPLES = {
+    'G12w': (('wtorek 08:00', 1, 8), ('wtorek 14:00', 1, 14), ('sobota 12:00', 5, 12), ('wtorek 23:00', 1, 23)),
+    'G12': (('wtorek 08:00', 1, 8), ('wtorek 14:00', 1, 14), ('sobota 12:00', 5, 12), ('wtorek 23:00', 1, 23)),
+    'G13': (('wtorek 08:00', 1, 8), ('wtorek 15:00', 1, 15), ('wtorek 20:00', 1, 20), ('sobota 12:00', 5, 12)),
+}
+
+
+@app.route('/api/tariff_guard')
+def api_tariff_guard_get():
+    """GET — stan strażnika cenników + czy dziś obowiązuje okres `assumed` (brak wpisanego okresu)."""
+    from . import tariff_guard as _tg
+    if not _tariff_guard_path:
+        return _tariff_error('tariff_guard_path not configured', 500)
+    try:
+        module = _tariff_module()
+        now = datetime.now()
+        active = False
+        try:
+            active = module.price_at(now).confidence == 'assumed'
+        except LookupError:
+            pass
+        valid_to = module._period_info(now.date())[0]['valid_to'] if active else None
+        return jsonify({'ok': True, 'state': _tg.load_state(_tariff_guard_path),
+                        'assumed': {'active': active, 'period_valid_to': valid_to,
+                                    'tariff': module.tariff_on(now.date())}})
+    except Exception as e:
+        log.exception('tariff_guard get failed')
+        return _tariff_error(str(e), 500)
+
+
+@app.route('/api/tariff_guard/ack', methods=['POST'])
+def api_tariff_guard_ack():
+    """POST — odkłada baner nowych dokumentów (czyści `new_documents`)."""
+    from . import tariff_guard as _tg
+    if not _tariff_guard_path:
+        return _tariff_error('tariff_guard_path not configured', 500)
+    try:
+        _tg.save_state(_tg.acknowledge(_tg.load_state(_tariff_guard_path)), _tariff_guard_path)
+    except Exception as e:
+        log.exception('tariff_guard ack failed')
+        return _tariff_error(str(e), 500)
+    return jsonify({'ok': True})
+
+
+@app.route('/api/tariff_period/form')
+def api_tariff_period_form():
+    """GET ?tariff=G12w — strefy i bieżące wartości okresu (prefill formularza nowego okresu)."""
+    tariff = request.args.get('tariff', '')
+    if tariff not in _PERIOD_FORM_TARIFFS:
+        return _tariff_error(f'taryfa musi być jedną z {", ".join(_PERIOD_FORM_TARIFFS)}')
+    try:
+        module = _tariff_module()
+        today = date.today()
+        period = module._period_info(today)[0]
+        nxt = (today.replace(day=1) + timedelta(days=32)).replace(day=1)
+        energy = {tariff: dict(period['energy_net'][tariff])}
+        dist = {tariff: dict(period['dist_var_net'][tariff])}
+        fixed = period.get('fixed_net') or {}
+        values = {'energy_net': energy, 'dist_var_net': dist,
+                  **{k: period[k] for k in _PERIOD_SCALARS},
+                  'fixed_net': {k: fixed[k] for k in _PERIOD_FIXED if k in fixed}}
+        return jsonify({'ok': True, 'tariff': tariff, 'from_default': nxt.isoformat(),
+                        'zones': {'energy_net': list(energy[tariff]), 'dist_var_net': list(dist[tariff])},
+                        'values': values})
+    except (LookupError, ValueError, KeyError) as e:
+        return _tariff_error(str(e))
+    except Exception as e:
+        log.exception('tariff_period form failed')
+        return _tariff_error(str(e), 500)
+
+
+def _period_entry(data: dict) -> dict:
+    """Wpis korekty z body `{from, to?, note?, patch}` (walidacja schematu + `from` = 1. dzień miesiąca)."""
+    from . import tariff_overrides as _to
+    start = data.get('from')
+    try:
+        day = date.fromisoformat(start)
+    except (TypeError, ValueError):
+        raise ValueError(f'from musi mieć format RRRR-MM-DD, otrzymano {start!r}') from None
+    if day.day != 1:
+        raise ValueError('Okres cennika musi zaczynać się 1. dnia miesiąca')
+    entry = {'from': day.isoformat(), 'to': data.get('to') or None,
+             'note': data.get('note') or '', 'patch': data.get('patch')}
+    _to.validate([entry])
+    return entry
+
+
+@app.route('/api/tariff_period/preview', methods=['POST'])
+def api_tariff_period_preview():
+    """POST {from, tariff, patch} — cena brutto w przykładowych godzinach; nic nie zapisuje."""
+    data = request.get_json(silent=True) or {}
+    tariff = data.get('tariff')
+    if tariff not in _PERIOD_FORM_TARIFFS:
+        return _tariff_error(f'taryfa musi być jedną z {", ".join(_PERIOD_FORM_TARIFFS)}')
+    try:
+        entry = _period_entry(data)
+        module = _single_override_module(_tariff_module(), entry)
+        start = date.fromisoformat(entry['from'])
+        samples = []
+        for label, weekday, hour in _PREVIEW_SAMPLES.get(tariff, _PREVIEW_SAMPLES['G12w']):
+            day = start + timedelta(days=(weekday - start.weekday()) % 7)
+            dt = datetime(day.year, day.month, day.day, hour)
+            p = module.price_at(dt, tariff)
+            samples.append({'label': label, 'dt': dt.isoformat(), 'zone': p.zone, 'level': p.level,
+                            'gross_per_kwh': round(p.gross, 4)})
+        return jsonify({'ok': True, 'samples': samples})
+    except (ValueError, LookupError, KeyError, TypeError) as e:
+        return _tariff_error(str(e))
+    except Exception as e:
+        log.exception('tariff_period preview failed')
+        return _tariff_error(str(e), 500)
+
+
+@app.route('/api/tariff_period', methods=['POST'])
+def api_tariff_period_save():
+    """POST {from, to?, note?, patch} — zapis nowego okresu jako korekty w tariff_overrides.json."""
+    from . import tariff_overrides as _to
+    if not _tariff_overrides_path:
+        return _tariff_error('tariff_config_path not configured', 500)
+    try:
+        entry = _period_entry(request.get_json(silent=True) or {})
+        _to.save(_to.upsert(_to.load(_tariff_overrides_path), entry), _tariff_overrides_path)
+    except (ValueError, LookupError) as e:
+        return _tariff_error(str(e))
+    except Exception as e:
+        log.exception('tariff_period save failed')
+        return _tariff_error(str(e), 500)
     return jsonify({'ok': True})
 
 
@@ -1800,16 +2112,14 @@ def api_tariff_config_derived():
       { changes: [{effective_from, changed:[{field,from,to}], rates, source_invoice}],
         existing_effective_from: [YYYY-MM] }
     changes posortowane najnowsze-pierwsze (ułatwia renderowanie).
-    existing_effective_from: lista kluczy ręcznych wpisów taryfowych —
-    pozwala UI oznaczyć, które wykryte zmiany mają już odpowiadający wpis.
+    existing_effective_from: lista miesięcy ręcznych korekt taryfy —
+    pozwala UI oznaczyć, które wykryte zmiany mają już odpowiadającą korektę.
     """
-    from . import tariff_config as _tc
     real = _load_real_billing()
     changes = list(reversed(_derive_tariff_changes(real)))
 
     try:
-        existing = [t['effective_from'] for t in _load_tariff_cfg().get('tariffs', [])
-                    if isinstance(t.get('effective_from'), str)]
+        existing = [o['from'][:7] for o in _tariff_module().overrides]
     except Exception:
         existing = []
 

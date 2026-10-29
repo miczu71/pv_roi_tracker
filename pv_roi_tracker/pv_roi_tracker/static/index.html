@@ -174,6 +174,16 @@
       </div>
       <!-- Taryfa configuration tab -->
       <div id="tab-taryfa" style="display:none;padding:12px">
+        <div class="tfx-nav" id="tfxNav" role="tablist" aria-label="Podsekcje taryf"></div>
+        <div id="tfxP-now" class="tfx-panel" role="tabpanel" aria-labelledby="tfxT-now">
+        <section class="tf-sec">
+          <h3 class="tf-h">Teraz</h3>
+          <div id="tfxNowTile" class="tfx-tile" aria-live="polite"><p class="tf-muted">Ładowanie…</p></div>
+          <h3 class="tf-h tf-gap">Najbliższe 48 godzin (cena brutto, zł/kWh)</h3>
+          <div class="chart-wrap" style="height:240px"><canvas id="tfxScheduleChart"></canvas></div>
+          <div id="tfxScheduleLegend" class="tf-legend tf-gap"></div>
+          <div id="tfxScheduleNote" class="tf-muted tf-gap" aria-live="polite"></div>
+        </section>
         <!-- 1. Twoja taryfa bazowa: stawki, godziny stref, skład ceny -->
         <section class="tf-sec">
           <h3 class="tf-h" id="taryfaTitle">Twoja taryfa G12w</h3>
@@ -187,6 +197,72 @@
           <div class="chart-wrap" style="height:240px"><canvas id="taryfaWeekChart"></canvas></div>
           <div id="taryfaWeekNote" class="tf-muted tf-gap"></div>
         </section>
+        </div>
+        <div id="tfxP-rates" class="tfx-panel" role="tabpanel" aria-labelledby="tfxT-rates" hidden>
+        <section class="tf-sec">
+          <h3 class="tf-h">Stawki — wszystkie składniki i okresy</h3>
+          <div class="tfx-filters">
+            <label>Taryfa <select id="tfxRTariff"></select></label>
+            <label>Strefa <select id="tfxRZone"></select></label>
+            <label>Składnik <select id="tfxRComp"></select></label>
+            <label>Od <input type="date" id="tfxRFrom"></label>
+            <label>Do <input type="date" id="tfxRTo"></label>
+            <label>Źródło <select id="tfxRSource"></select></label>
+            <label>Pewność <select id="tfxRConf"></select></label>
+            <label class="tfx-grow">Szukaj <input type="search" id="tfxRQ" placeholder="etykieta, taryfa, notatka"></label>
+          </div>
+          <div id="tfxRCount" class="tf-muted tf-gap" aria-live="polite"></div>
+          <div id="tfxRTable" class="tbl-wrap tf-gap"></div>
+        </section>
+        <!-- 4. Cennik Tauron -->
+        <section class="tf-sec">
+          <details id="taryfaCennik">
+            <summary class="tf-sum">Cennik Tauron — wszystkie taryfy (tylko odczyt)</summary>
+            <div class="tf-gap">
+              <label class="tf-muted">Okres cennika:
+                <select id="taryfaCennikPeriod" onchange="_renderTaryfaCennik()"></select>
+              </label>
+            </div>
+            <div id="taryfaCennikTbl" class="tbl-wrap tf-gap"></div>
+            <div id="taryfaCennikNote" class="tf-muted tf-gap"></div>
+          </details>
+        </section>
+        </div>
+        <div id="tfxP-break" class="tfx-panel" role="tabpanel" aria-labelledby="tfxT-break" hidden>
+        <section class="tf-sec">
+          <h3 class="tf-h">Rozbicie ceny na składniki</h3>
+          <div class="tfx-filters">
+            <div><div class="tfx-lbl" id="tfxBScopeLbl">Zakres</div>
+              <div class="tsim-seg" role="group" aria-labelledby="tfxBScopeLbl" id="tfxBScope"></div></div>
+            <label>Taryfa <select id="tfxBTariff"></select></label>
+            <label id="tfxBAtWrap">Termin <input type="text" id="tfxBAt"></label>
+            <div><div class="tfx-lbl" id="tfxBBasisLbl">Podstawa</div>
+              <div class="tsim-seg" role="group" aria-labelledby="tfxBBasisLbl" id="tfxBBasis"></div></div>
+          </div>
+          <fieldset class="tfx-incl"><legend>Wlicz składniki</legend><div id="tfxIncl"></div></fieldset>
+          <div id="tfxBState" class="tf-muted tf-gap" aria-live="polite"></div>
+          <div class="chart-wrap" style="height:120px"><canvas id="tfxBreakChart"></canvas></div>
+          <div id="tfxBLegend" class="tf-legend tf-gap"></div>
+          <div id="tfxBTable" class="tbl-wrap tf-gap"></div>
+          <div id="tfxBTotal" class="tfx-total tf-gap"></div>
+        </section>
+        </div>
+        <div id="tfxP-cmp" class="tfx-panel" role="tabpanel" aria-labelledby="tfxT-cmp" hidden>
+        <section class="tf-sec">
+          <h3 class="tf-h">Porównania</h3>
+          <div class="tsim-seg" role="group" aria-label="Tryb porównania" id="tfxCMode"></div>
+          <div id="tfxCCtl" class="tfx-filters tf-gap"></div>
+          <fieldset class="tfx-incl"><legend>Wlicz składniki</legend><div id="tfxIncl2"></div></fieldset>
+          <div id="tfxCState" class="tf-muted tf-gap" aria-live="polite"></div>
+          <div id="tfxCKpi" class="tf-gap"></div>
+          <div id="tfxCChartWrap" class="chart-wrap" style="height:260px"><canvas id="tfxCmpChart"></canvas></div>
+          <div id="tfxCLegend" class="tf-legend tf-gap"></div>
+          <div id="tfxCTable" class="tbl-wrap tf-gap"></div>
+          <div id="tfxCZones" class="tbl-wrap tf-gap"></div>
+        </section>
+        </div>
+        <div id="tfxP-src" class="tfx-panel" role="tabpanel" aria-labelledby="tfxT-src" hidden>
+        <div id="tariffGuardBanner" aria-live="polite"></div>
         <!-- 3. Oś czasu stawek (tylko odczyt) -->
         <section class="tf-sec">
           <h3 class="tf-h">Historia taryf</h3>
@@ -203,19 +279,18 @@
           <div id="taryfaList" style="margin-bottom:12px"></div>
           <button type="button" class="btn" onclick="showTab('settings')" style="margin-bottom:12px">Edytuj w Ustawieniach</button>
         </section>
-        <!-- 4. Cennik Tauron -->
+        <!-- 3b. Nowy okres cennika -->
         <section class="tf-sec">
-          <details id="taryfaCennik">
-            <summary class="tf-sum">Cennik Tauron — wszystkie taryfy (tylko odczyt)</summary>
-            <div class="tf-gap">
-              <label class="tf-muted">Okres cennika:
-                <select id="taryfaCennikPeriod" onchange="_renderTaryfaCennik()"></select>
-              </label>
-            </div>
-            <div id="taryfaCennikTbl" class="tbl-wrap tf-gap"></div>
-            <div id="taryfaCennikNote" class="tf-muted tf-gap"></div>
+          <details id="tariffPeriodDetails">
+            <summary class="tf-sum">Nowy okres cennika</summary>
+            <div id="tariffPeriodForm" class="tf-gap"></div>
           </details>
         </section>
+        <section class="tf-sec">
+          <h3 class="tf-h">Dokumenty źródłowe cennika</h3>
+          <div id="tfxSources" class="tbl-wrap"><p class="tf-muted">Ładowanie…</p></div>
+        </section>
+        </div>
       </div>
       <!-- Symulacja taryf tab -->
       <div id="tab-tsim" style="display:none;padding:12px">
@@ -298,6 +373,7 @@
             <div class="tsim-detail-body">
               <p id="tsimReconSummary" class="tsim-variant-note"></p>
               <div class="tbl-wrap"><table id="tsimReconTbl" class="tsim-tbl"></table></div>
+              <div id="tsimInvoiceCheck"></div>
             </div>
           </details>
         </div>

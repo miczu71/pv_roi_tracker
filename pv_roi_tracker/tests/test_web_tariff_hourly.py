@@ -169,3 +169,29 @@ def test_tariff_now_wg_bazy_z_inputs(client, wired):
     wired['baseline'] = 'G11'
     j = client.get('/api/tariff_now').get_json()
     assert j['tariff'] == 'G11' and j['next_change'] is None
+
+
+def test_tariff_now_nowe_pola(client, wired):
+    j = client.get('/api/tariff_now').get_json()
+    assert set(j) == {'ok', 'now', 'tariff', 'zone', 'net_per_kwh', 'gross_per_kwh', 'next_change',
+                      'level', 'confidence', 'period_from'}
+    assert j['level'] in ('cheap', 'mid', 'expensive', 'flat') and j['confidence'] and j['period_from']
+
+
+def test_tariff_schedule_domyslne(client, wired):
+    j = client.get('/api/tariff/schedule').get_json()
+    assert j['ok'] is True and j['hours'] == 48 and j['tariff'] == 'G12w'
+    assert len(j['schedule']) == 48 and j['schedule'][0]['hour'] == '2026-10-26T12'
+    assert set(j['schedule'][0]) == {'hour', 'tariff', 'zone', 'is_peak', 'level', 'gross', 'net', 'confidence'}
+    assert j['generated_at'].startswith('2026-10-26T12:30')
+
+
+def test_tariff_schedule_hours_i_tariff(client, wired):
+    j = client.get('/api/tariff/schedule?hours=3&tariff=G13').get_json()
+    assert len(j['schedule']) == 3 and j['tariff'] == 'G13'
+
+
+@pytest.mark.parametrize('qs', ['hours=999', 'hours=0', 'hours=abc', 'tariff=G99'])
+def test_tariff_schedule_400(client, wired, qs):
+    r = client.get('/api/tariff/schedule?' + qs)
+    assert r.status_code == 400 and r.get_json()['ok'] is False
