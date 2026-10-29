@@ -145,14 +145,20 @@ def apply_reconciliation(state_path: Path, result: dict, today: date) -> list:
     for mismatches not yet notified (notified drops signatures whose mismatch is gone)."""
     with _refresh_lock:
         state = load_payment_state(state_path)
-        already = set((state.get('_payments') or {}).get('notified') or [])
-        current = [m['signature'] for m in result['mismatches']]
+        previous = state.get('_payments') or {}
+        already = set(previous.get('notified') or [])
+        # Odrzucenie przetrwa przebieg bez tej rozbieżności; wygasa dopiero, gdy kwoty się zmienią.
+        current_amounts = {m['signature']: _amounts(m) for m in result['mismatches']}
+        dismissed = {sig: amounts for sig, amounts in (previous.get('dismissed') or {}).items()
+                     if current_amounts.get(sig, amounts) == amounts}
+        visible = [m for m in result['mismatches'] if m['signature'] not in dismissed]
+        current = [m['signature'] for m in visible]
         messages = [
             'Wpłaty: faktura {} — rozliczono {} zł, na fakturze {} zł.'.format(
                 m['signature'], _pl(m['settled']), _pl(m['amount_due']))
-            for m in result['mismatches'] if m['signature'] not in already]
-        state['_payments'] = {'last_payment': result['last_payment'], 'mismatches': result['mismatches'],
-                              'checked_at': today.isoformat(), 'notified': current}
+            for m in visible if m['signature'] not in already]
+        state['_payments'] = {'last_payment': result['last_payment'], 'mismatches': visible,
+                              'dismissed': dismissed, 'checked_at': today.isoformat(), 'notified': current}
         for sig in result['rescued']:
             if isinstance(state.get(sig), dict):
                 state[sig]['paid'] = True
@@ -223,3 +229,23 @@ def save_payment_state(path: Path, state: dict) -> None:
     tmp = path.with_name(path.name + '.tmp')
     tmp.write_text(json.dumps(state, indent=2, ensure_ascii=False))
     os.replace(tmp, path)          # atomowo: przerwany zapis nie zostawia uciętego JSON-a
+
+
+def _amounts(mismatch: dict) -> dict:
+    return {'settled': mismatch['settled'], 'amount_due': mismatch['amount_due']}
+
+
+def dismiss_mismatch(state_path: Path, signature: str) -> bool:
+    """Zignoruj bieżącą rozbieżność wpłat dla faktury: znika z `_payments.mismatches`, a jej kwoty
+    trafiają do `_payments.dismissed`. Fałsz, gdy takiej rozbieżności nie ma."""
+    with _refresh_lock:
+        state = load_payment_state(state_path)
+        block = state.get('_payments') or {}
+        found = next((m for m in block.get('mismatches') or [] if m['signature'] == signature), None)
+        if found is None:
+            return False
+        block['mismatches'] = [m for m in block['mismatches'] if m is not found]
+        block['notified'] = [s for s in block.get('notified') or [] if s != signature]
+        block.setdefault('dismissed', {})[signature] = _amounts(found)
+        save_payment_state(state_path, state)
+        return True

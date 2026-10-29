@@ -2,13 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.53.1] — 2026-10-28
+## [0.54.0] — 2026-10-29
 
-Poprawka: logowanie do eBOK nie przerywa joba po jednorazowym zerwaniu połączenia.
-
-- **Logowanie do „Mój TAURON”:** gdy POST logowania kończy się zerwanym połączeniem bez odpowiedzi (`RemoteDisconnected`, np. zamknięte keep-alive po stronie serwera), add-on pobiera formularz ponownie i ponawia POST **raz** po 10 s. Timeout odczytu i drugie zerwanie nadal kończą się błędem, więc konto nie zbliża się do blokady (maks. 2 POST-y na job).
-- **Powiadomienie:** zerwane połączenie w jobie eBOK daje komunikat „eBOK chwilowo niedostępny (zerwane połączenie) — spróbuję przy następnym jobie” zamiast „nieoczekiwany błąd”; w logu zostaje ślad stosu.
-- Testy: ponowienie po zerwaniu (świeży `action` formularza), rezygnacja po drugim zerwaniu, brak ponowienia po `ReadTimeout`.
+- **Zignoruj rozbieżność wpłat:** przy każdej linii „⚠ Rozbieżność wpłat” w panelu jest przycisk „Zignoruj” (`POST /api/ebok/payment-status/dismiss`). Zignorowana rozbieżność znika z panelu i nie wraca w kolejnych przebiegach joba. Jeśli kwoty rozliczenia lub faktury się zmienią, pojawia się ponownie i daje nowe powiadomienie; odrzucenie przetrwa też przebieg, w którym rozbieżności chwilowo nie widać.
 
 ## [0.53.0] — 2026-10-27
 

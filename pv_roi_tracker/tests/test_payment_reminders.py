@@ -12,6 +12,7 @@ from pv_roi_tracker.payment_reminders import (
     apply_reconciliation,
     build_reminder_notifications,
     decide_reminders,
+    dismiss_mismatch,
     load_payment_state,
     reconcile_payments,
     refresh_payment_state,
@@ -426,3 +427,53 @@ def test_build_reminder_notifications_survives_payments_key():
     notes, new_state = build_reminder_notifications(
         [_Doc(S17, date(2026, 10, 28), False, 80.0)], state, date(2026, 10, 27))
     assert len(notes) == 1 and new_state['_payments'] == state['_payments']
+
+
+# ── dismiss_mismatch (0.54.0) ────────────────────────────────────────────────
+
+def test_dismiss_mismatch_hides_it_from_state(tmp_path):
+    path = tmp_path / 'state.json'
+    apply_reconciliation(path, _result([_mm(S15), _mm(S17)]), date(2026, 10, 29))
+    assert dismiss_mismatch(path, S15) is True
+    block = load_payment_state(path)['_payments']
+    assert [m['signature'] for m in block['mismatches']] == [S17]
+    assert dismiss_mismatch(path, 'NIE/MA/TAKIEJ') is False
+
+
+def test_dismissed_mismatch_stays_hidden_without_push(tmp_path):
+    path = tmp_path / 'state.json'
+    apply_reconciliation(path, _result([_mm(S15)]), date(2026, 10, 29))
+    dismiss_mismatch(path, S15)
+    assert apply_reconciliation(path, _result([_mm(S15)]), date(2026, 10, 30)) == []
+    block = load_payment_state(path)['_payments']
+    assert block['mismatches'] == [] and S15 in block['dismissed']
+
+
+def test_dismissed_mismatch_returns_when_amounts_change(tmp_path):
+    path = tmp_path / 'state.json'
+    apply_reconciliation(path, _result([_mm(S15)]), date(2026, 10, 29))
+    dismiss_mismatch(path, S15)
+    changed = {**_mm(S15), 'settled': 70.0, 'diff': -30.5}
+    msgs = apply_reconciliation(path, _result([changed]), date(2026, 10, 30))
+    assert len(msgs) == 1 and S15 in msgs[0]
+    block = load_payment_state(path)['_payments']
+    assert block['mismatches'] == [changed] and S15 not in block['dismissed']
+
+
+def test_dismissal_survives_a_run_without_the_mismatch(tmp_path):
+    path = tmp_path / 'state.json'
+    apply_reconciliation(path, _result([_mm(S15)]), date(2026, 10, 29))
+    dismiss_mismatch(path, S15)
+    apply_reconciliation(path, _result([]), date(2026, 10, 30))
+    assert apply_reconciliation(path, _result([_mm(S15)]), date(2026, 10, 31)) == []
+    assert load_payment_state(path)['_payments']['mismatches'] == []
+
+
+def test_dismissing_one_of_two_keeps_the_other_and_clears_its_notified(tmp_path):
+    path = tmp_path / 'state.json'
+    apply_reconciliation(path, _result([_mm(S15), _mm(S17)]), date(2026, 10, 29))
+    dismiss_mismatch(path, S15)
+    assert S15 not in load_payment_state(path)['_payments']['notified']
+    assert apply_reconciliation(path, _result([_mm(S15), _mm(S17)]), date(2026, 10, 30)) == []
+    block = load_payment_state(path)['_payments']
+    assert [m['signature'] for m in block['mismatches']] == [S17] and block['notified'] == [S17]

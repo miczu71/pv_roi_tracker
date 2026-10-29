@@ -41,6 +41,7 @@ _ebok_sync_callback = None
 _ebok_status_callback = None
 _ebok_diag_callback = None
 _ebok_payment_status_callback = None
+_ebok_payment_dismiss_callback = None
 
 
 def set_rcem_override_callback(fn) -> None:
@@ -112,6 +113,12 @@ def set_ebok_payment_status_callback(fn) -> None:
     (docs/ROADMAP_EBOK_PAYMENT_STATUS.md Etap 3). Never triggers a live eBOK call."""
     global _ebok_payment_status_callback
     _ebok_payment_status_callback = fn
+
+
+def set_ebok_payment_dismiss_callback(fn) -> None:
+    """fn(signature) -> bool — zignoruj bieżącą rozbieżność wpłat; False, gdy takiej nie ma."""
+    global _ebok_payment_dismiss_callback
+    _ebok_payment_dismiss_callback = fn
 
 
 def set_layouts_path(path) -> None:
@@ -1344,6 +1351,20 @@ def ebok_payment_status():
     if _ebok_payment_status_callback is None:
         return jsonify({'active': None})
     return jsonify(_ebok_payment_status_callback())
+
+
+@app.route('/api/ebok/payment-status/dismiss', methods=['POST'])
+def ebok_payment_dismiss():
+    if _ebok_payment_dismiss_callback is None:
+        return jsonify({'ok': False, 'error': 'niedostępne'}), 503
+    body = request.get_json(silent=True)
+    signature = body.get('signature') if isinstance(body, dict) else None
+    signature = signature.strip() if isinstance(signature, str) else ''
+    if not signature:
+        return jsonify({'ok': False, 'error': 'brak sygnatury'}), 400
+    if not _ebok_payment_dismiss_callback(signature):
+        return jsonify({'ok': False, 'error': 'nie ma takiej rozbieżności'}), 404
+    return jsonify({'ok': True})
 
 
 @app.route('/api/invoice/debug', methods=['POST'])

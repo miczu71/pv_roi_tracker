@@ -2488,11 +2488,29 @@ function _renderLastPayment(lp, mismatches) {
   let text = 'Ostatnia wpłata ' + _plMoney(lp.amount) + ' (' + dd[2] + '.' + dd[1] + ') → ' + lp.signatures.join(', ');
   const cov = Object.values(lp.deposit_covered || {}).reduce((a, b) => a + b, 0);
   if (cov > 0) text += ' · depozyt pokrył ' + _plMoney(cov);
-  (mismatches || []).forEach(m => {
-    text += '\n⚠ Rozbieżność wpłat: ' + m.signature + ' rozliczono ' + _plMoney(m.settled) +
-      ', na fakturze ' + _plMoney(m.amount_due);
-  });
   line.textContent = text;
+  (mismatches || []).forEach(m => {
+    const row = document.createElement('div');
+    row.textContent = '⚠ Rozbieżność wpłat: ' + m.signature + ' rozliczono ' + _plMoney(m.settled) +
+      ', na fakturze ' + _plMoney(m.amount_due) + ' ';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'payment-dismiss';
+    btn.textContent = 'Zignoruj';
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      try {
+        const r = await fetch('api/ebok/payment-status/dismiss', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({signature: m.signature})});
+        if (r.ok || r.status === 404) { _refreshPaymentBar(); return; }  // 404 = już nieaktualna
+        console.error('Zignoruj rozbieżność: HTTP ' + r.status);
+      } catch (e) { console.error('Zignoruj rozbieżność:', e); }
+      btn.disabled = false;
+    });
+    row.appendChild(btn);
+    line.appendChild(row);
+  });
   line.style.display = '';
 }
 

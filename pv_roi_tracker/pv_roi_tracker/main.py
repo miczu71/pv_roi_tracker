@@ -877,6 +877,15 @@ def main() -> None:
     _web.set_ebok_status_callback(_ebok_status)
     _web.set_ebok_payment_status_callback(_ebok_payment_status)
 
+    def _ebok_payment_dismiss(signature: str) -> bool:
+        from . import payment_reminders as _pr
+        dismissed = _pr.dismiss_mismatch(EBOK_PAYMENT_STATE_PATH, signature)
+        if dismissed:
+            logger.info('eBOK: rozbieżność wpłat %s zignorowana z panelu', signature)
+        return dismissed
+
+    _web.set_ebok_payment_dismiss_callback(_ebok_payment_dismiss)
+
     from . import tariff_config as _tc
     _tc.seed_if_missing(TARIFF_CONFIG_PATH)
     _web.set_tariff_config_path(TARIFF_CONFIG_PATH)
