@@ -1217,6 +1217,19 @@ def main() -> None:
     _last: dict = {'result': None}
     _last_current: dict = {'record': None, 'key': None}
 
+    def tariff_feed_job() -> None:
+        """Encje taryfy (tariff_zone / tariff_price); poza cyklem odpytywania także co godzinę, by zmiana strefy nie czekała."""
+        try:
+            _res, _new_last = _tm.tariff_feed_step(
+                pub, _tariff_feed_last, _tariff_module_now(), _dt_now())
+            _tariff_feed_last.update(_new_last)
+            _record_job('tariff_feed', _res is not False,
+                        'MQTT rozłączony — taryfa nie opublikowana' if _res is False else '')
+        except Exception:
+            logger.exception('Tariff feed failed — continuing')
+            _tariff_feed_last['ok'] = False
+            _record_job('tariff_feed', False, 'publikacja taryfy nie powiodła się')
+
     def poll_and_publish() -> None:
         try:
             historic = historic_store.load(HISTORIC_PATH)
@@ -1337,16 +1350,7 @@ def main() -> None:
                 _record_job('jit_schedule', False, 'harmonogram JIT nie powiódł się')
 
             # --- Encje modułu taryf (tariff_zone / tariff_price; publikacja tylko przy zmianie) ---
-            try:
-                _res, _new_last = _tm.tariff_feed_step(
-                    pub, _tariff_feed_last, _tariff_module_now(), _dt_now())
-                _tariff_feed_last.update(_new_last)
-                _record_job('tariff_feed', _res is not False,
-                            'MQTT rozłączony — taryfa nie opublikowana' if _res is False else '')
-            except Exception:
-                logger.exception('Tariff feed failed — continuing')
-                _tariff_feed_last['ok'] = False
-                _record_job('tariff_feed', False, 'publikacja taryfy nie powiodła się')
+            tariff_feed_job()
             _web.update_state(result, all_records, rcem_price, month_closed=month_closed,
                               rcem_scrape_status=scrape_status)
             _web.update_deposit(deposit_result)
@@ -1691,6 +1695,9 @@ def main() -> None:
     # Poll every N minutes
     scheduler.add_job(poll_and_publish, 'interval', minutes=POLL_INTERVAL,
                       id='poll', name='ROI poll + MQTT publish', **_JOB_DEFAULTS)
+
+    scheduler.add_job(tariff_feed_job, CronTrigger(minute='0,5'),
+                      id='tariff_feed', name='Tariff feed (zmiana strefy co godzinę)', **_JOB_DEFAULTS)
 
     # Month-close: last day of month at 23:55 local time — provisional only
     # (reads the monthly-resetting utility_meter sensors; superseded below).

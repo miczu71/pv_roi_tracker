@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.55.1] — 2026-10-29
+
+- **Encje taryfy zmieniają strefę równo z godziną.** `tariff_zone` / `tariff_price` publikowały się tylko w cyklu odpytywania (co 30 min), więc po zmianie strefy cena mogła się spóźnić do pół godziny. Dodane zadanie `tariff_feed` o pełnej godzinie (minuta 0 i 5); publikacja nadal tylko przy zmianie.
+
 ## [0.55.0] — 2026-10-29
 
 Moduł taryf: jedno źródło cen dla pv_roi, Heiko i (po okresie zgodności) panelu Energia.
