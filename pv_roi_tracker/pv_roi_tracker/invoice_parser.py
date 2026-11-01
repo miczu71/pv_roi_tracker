@@ -53,6 +53,8 @@ def set_layouts_provider(fn: Callable[[str], list]) -> None:
 
 _BUILTIN_PATTERNS: dict[str, list] = {
     'imp_total': [
+        # Korekta do faktury VAT (nowy szablon): wartość po korekcie
+        r'Ilo.{1,3} energii pobranej po korekcie\s+(\d[\d ]*(?:,\d+)?)\s*kWh',
         r'Pobrano z sieci\s+([\d,]+)',
         r'Pobrane z sieci\s+([\d,]+)',
         r'Pobran[ae] z sieci\s+([\d,]+)',
@@ -137,6 +139,8 @@ _BUILTIN_PATTERNS: dict[str, list] = {
         r'Akcyza\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
     ],
     'invoice_number': [
+        # Korekta do faktury VAT (nowy szablon): "Numer korekty T/K1/…"
+        r'Numer korekty\s+([\w/]+)',
         # Korekta: "FAKTURA VAT KOREKTA NR T/K1/…" (must precede the plain NR variant
         # to avoid misidentifying the correction header as the corrected invoice number)
         r'FAKTURA VAT KOREKTA NR\s+([\w/]+)',
@@ -695,7 +699,9 @@ def _parse_text(text: str) -> InvoiceData:
     #   Deposit and amount_due must come from the corrected section.
     if re.search(r'NOTA (OBCI\S*|UZNANIOWA)', text, re.IGNORECASE):
         return _parse_nota(text)
-    _is_korekta = bool(re.search(r'FAKTURA VAT KOREKTA', text, re.IGNORECASE))
+    # Nowy szablon: "Korekta do faktury VAT" jako osobna linia nagłówka (nie wzmianka w treści).
+    _is_korekta = bool(re.search(r'FAKTURA VAT KOREKTA|^[ \t]*Korekta do faktury VAT[ \t]*$',
+                                 text, re.IGNORECASE | re.MULTILINE))
 
     # For korekta: deposit / amount_due fields must come from the NALEŻAŁO
     # POLICZYĆ (corrected) section, not the stale POLICZONO (old) one.
@@ -829,6 +835,22 @@ def _parse_text(text: str) -> InvoiceData:
         raise InvoiceParseError('Imported kWh (Pobrano z sieci) not found')
 
     exp_total = _first_float_multi(_patterns_for('exp_total'), text)
+    if exp_total is None and _is_korekta:
+        # Nowy szablon korekty: brak "Wprowadzono do sieci" — suma stref z pierwszego bloku
+        # (oddanie) (w PDF-ie strony są powielone, kolejne bloki to duplikaty, nie drugi licznik).
+        # Blok kończy się na następnym liczniku albo "Typ odczytu". Wiersz strefy w innym formacie
+        # albo mieszanka całodobowa + szczyt/poza → nie zgadujemy (exp_total zostaje None → błąd).
+        _od_m = re.search(
+            r'Licznik energii elektrycznej \(oddanie\)(.*?)'
+            r'(?=Licznik energii elektrycznej|Typ odczytu|\Z)', text, re.DOTALL)
+        if _od_m:
+            _zone_re = r'^[ \t]*((?:szczyt|pozaszczyt|ca.odobow)\w*)[ \t]+(\d[\d ]*(?:,\d+)?)[ \t]*$'
+            _zones = re.findall(_zone_re, _od_m.group(1), re.IGNORECASE | re.MULTILINE)
+            _zone_lines = re.findall(r'^[ \t]*(?:szczyt|pozaszczyt|ca.odobow)', _od_m.group(1),
+                                     re.IGNORECASE | re.MULTILINE)
+            _all_day = [z for z in _zones if z[0].lower().startswith('ca')]
+            if _zones and len(_zones) == len(_zone_lines) and (not _all_day or len(_all_day) == len(_zones)):
+                exp_total = sum(_n(v) for _, v in _zones)
     if exp_total is None:
         raise InvoiceParseError('Exported kWh (Wprowadzono do sieci) not found')
 
@@ -1105,11 +1127,19 @@ def _parse_text(text: str) -> InvoiceData:
         corrects_number = (
             _first(r'DO FAKTURY VAT KOREKTA NR\s+([\w/]+)', text)
             or _first(r'DO FAKTURY VAT NR\s+([\w/]+)', text)
+            or _first(r'Dotyczy dokumentu numer\s+([\w/]+)', text)
         )
         # "Przyczyna korekty: zaktualizowaliśmy wartość depozytu…" (one line)
         _r_m = re.search(r'Przyczyna korekty:\s*([^\n]+)', text, re.IGNORECASE)
         if _r_m:
             correction_reason = _r_m.group(1).strip()[:200]
+        else:
+            # Nowy szablon: akapit po "Dlaczego skorygowaliśmy Twoją fakturę?"
+            _w_m = re.search(
+                r'Dlaczego skorygowali.my Twoj. faktur.\?\s*\n(.*?)(?:\n\s*\n|Zapoznaj si|Twoje rozliczenie|\Z)',
+                text, re.DOTALL)
+            if _w_m:
+                correction_reason = ' '.join(_w_m.group(1).split())[:200] or None
         # "Zwiększenie wartości brutto: 1,89 zł" or "-6,25 zł" — the net delta
         # owed now; can be negative (deposit correction reduced the bill), so
         # the sign must be captured too, not just stripped by [\d ]+.

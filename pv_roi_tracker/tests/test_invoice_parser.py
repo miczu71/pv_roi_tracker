@@ -1179,3 +1179,121 @@ class TestDocTypeClassification:
         data = _parse_text(_make_nota_text())
         # Must complete without raising
         assert data is not None
+
+
+# ── Nowy szablon „Korekta do faktury VAT” (Mój TAURON) ────────────────────────
+
+_BLOK_A = """Przed korektą 
+Po korekcie 
+Przed korektą 
+Szczegóøy rozliczenia
+Szczegóøy rozliczenia energii w okresie od 01.11.2025 do 30.11.2025
+1. Sprzedaży energii elektrycznej 523 264,12 23 60,75 324,87
+2. Świadczonych usøug dystrybucji 523 111,01 23 25,54 136,55
+3. Wynik rozliczenia ( 1 + 2 ) 375,13 23 86,29 461,42
+4. Wartość prognozy depozytu 0,00
+5. Depozyt prosumencki w rozliczanym okresie (zø) 0,00
+6. Depozyt prosumencki z okresów poprzednich (zø) 228,90
+7. Rozliczenie depozytu ( 4 + 5 + 6 ) 228,90
+8. Do zapøaty (zø) ( 3 - 7 ) 232,52
+Rozliczenie VAT Wartość netto (zø) VAT (%) Kwota VAT (zø) Wartość brutto (zø)
+375,13 23 86,29 461,42
+1. Sprzedaży energii elektrycznej 523 264,12 23 60,75 324,87
+2. Świadczonych usøug dystrybucji 523 111,01 23 25,54 136,55
+3. Wynik rozliczenia ( 1 + 2 ) 375,13 23 86,29 461,42
+4. Wartość prognozy depozytu 0,00
+5. Depozyt prosumencki w rozliczanym okresie (zø) 0,00
+6. Depozyt prosumencki z okresów poprzednich (zø) 227,59
+7. Rozliczenie depozytu ( 4 + 5 + 6 ) 227,59
+8. Do zapøaty (zø) ( 3 - 7 ) 233,83
+Rozliczenie VAT Wartość netto (zø) VAT (%) Kwota VAT (zø) Wartość brutto (zø)
+375,13 23 86,29 461,42
+Zwiększenie wartości netto: 0,00 zø. Zwiększenie wartości VAT: 0,00 zø. Zwiększenie wartości brutto: 1,31 zø.
+"""
+
+_ODDANIE = """Licznik energii elektrycznej (oddanie)
+nr 000000
+szczyt 42,0000
+pozaszczytowa 62,0000
+"""
+
+_KOREKTA_MT_HEAD = """Korekta do faktury VAT
+Data wystawienia
+31.10.2026
+Numer korekty
+T/K1/XX000000/0019/26
+Dotyczy dokumentu numer
+T/K1/XX000000/0009/26
+Okres rozliczeniowy
+01.11.2025 - 30.11.2025
+Dlaczego skorygowaliśmy Twoją fakturę?
+PSE (Polskie Sieci Elektroenergetyczne) skorygowaøo cenę RCE/RCEm
+(Rynkową cenę energii elektrycznej/Rynkową miesięczną cenę energii elektrycznej), dlatego zaktualizowaliśmy wartość depozytu.
+ Zapoznaj się z poniższym wynikiem i szczegóøami rozliczenia.
+Twoje rozliczenie
+Przegląd zmian w rozliczeniu
+Ilość energii pobranej przed korektą 522 kWh
+Ilość energii pobranej po korekcie 523 kWh
+Wynik korekty
+Kwota po korekcie rozliczenia Do zapøaty 1,31 zø
+Termin pøatności do 16.11.2026
+"""
+
+_KOREKTA_MT_POBOR = """Licznik energii elektrycznej (pobór)
+nr 000000
+szczyt 118,0000
+pozaszczytowa 405,0000
+"""
+
+
+def _make_korekta_mt_text(oddanie=True) -> str:
+    """oddanie: True = domyślny blok, False = brak bloku, str = własny blok (oddanie)."""
+    block = _ODDANIE if oddanie is True else (oddanie or '')
+    return _KOREKTA_MT_HEAD + _BLOK_A * 2 + _KOREKTA_MT_POBOR + block
+
+
+class TestKorektaDoFakturyVat:
+    def test_parses_new_template(self):
+        d = _parse_text(_make_korekta_mt_text())
+        assert d.doc_type == 'korekta'
+        assert d.invoice_number == 'T/K1/XX000000/0019/26'
+        assert d.corrects_number == 'T/K1/XX000000/0009/26'
+        assert (d.year, d.month) == (2025, 11)
+        assert d.imported_kwh == 523
+        assert d.exported_kwh == 104
+        assert d.deposit_previous_pln == 227.59
+        assert d.prev_deposit_previous_pln == 228.90
+        assert d.amount_due_pln == 233.83
+        assert d.correction_delta_pln == 1.31
+        assert 'RCE' in d.correction_reason
+
+    def test_missing_oddanie_block_raises(self):
+        with pytest.raises(InvoiceParseError):
+            _parse_text(_make_korekta_mt_text(oddanie=False))
+
+    def test_oddanie_single_zone_g11(self):
+        block = 'Licznik energii elektrycznej (oddanie)\nnr 000000\ncałodobowa 104,0000\n'
+        assert _parse_text(_make_korekta_mt_text(block)).exported_kwh == 104
+
+    def test_oddanie_space_thousands(self):
+        block = ('Licznik energii elektrycznej (oddanie)\nnr 000000\n'
+                 'szczyt 1 042,0000\npozaszczytowa 62,0000\n')
+        assert _parse_text(_make_korekta_mt_text(block)).exported_kwh == 1104
+
+    @pytest.mark.parametrize('zones', [
+        'szczyt 42,0000 kWh\npozaszczytowa 62,0000\n',        # wiersz w innym formacie → nie sumujemy połowy
+        'szczyt 42,0000\npozaszczytowa 62,0000\ncałodobowa 104,0000\n',   # mieszanka → niejednoznaczne
+    ])
+    def test_oddanie_ambiguous_zones_raise(self, zones):
+        block = 'Licznik energii elektrycznej (oddanie)\nnr 000000\n' + zones
+        with pytest.raises(InvoiceParseError):
+            _parse_text(_make_korekta_mt_text(block))
+
+    def test_oddanie_stops_at_typ_odczytu(self):
+        # wiersze stref za blokiem liczników nie mogą wpaść do sumy
+        text = _make_korekta_mt_text(_ODDANIE + 'Typ odczytu: Zdalny.\nszczyt 999\n')
+        assert _parse_text(text).exported_kwh == 104
+
+    def test_mention_in_body_is_not_korekta(self):
+        text = _make_minimal_text() + '\nKorekta do faktury VAT jest wystawiana w terminie 7 dni.\n'
+        assert _parse_text(text).doc_type == 'rozliczeniowa'

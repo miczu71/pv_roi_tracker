@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.55.2] — 2026-11-01
+
+- **Import faktur z eBOK czyta nowy szablon „Korekta do faktury VAT”.** Korekta depozytu po przeliczeniu ceny RCEm przez PSE (układ Mój TAURON) była odrzucana jako „wymaga treningu”, bo parser szukał tylko starego nagłówka i etykiety „Pobrano z sieci”. Parser rozpoznaje teraz nagłówek (tylko jako osobną linię), energię pobraną „po korekcie”, energię oddaną jako sumę stref z bloku licznika (oddanie), numer korekty, dokument korygowany i przyczynę. Przy niepełnych albo mieszanych strefach nie zgaduje sumy, tylko zgłasza błąd.
+- Testy: nowa klasa `TestKorektaDoFakturyVat` (zanonimizowany układ, rozróżnienie wartości przed/po, taryfa jednostrefowa, separator tysięcy, strefy niejednoznaczne, wzmianka o korekcie w treści zwykłej faktury).
+
 ## [0.55.1] — 2026-10-29
 
 - **Encje taryfy zmieniają strefę równo z godziną.** `tariff_zone` / `tariff_price` publikowały się tylko w cyklu odpytywania (co 30 min), więc po zmianie strefy cena mogła się spóźnić do pół godziny. Dodane zadanie `tariff_feed` o pełnej godzinie (minuta 0 i 5); publikacja nadal tylko przy zmianie.
