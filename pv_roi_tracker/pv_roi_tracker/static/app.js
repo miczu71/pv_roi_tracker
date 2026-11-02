@@ -3586,6 +3586,10 @@ async function loadTaryfaTab() {
     const d = await rCfg.json();
     const dd = rDer.ok ? await rDer.json() : {changes: [], existing_effective_from: []};
     _renderTaryfaBadge(d);
+    if (d.corrupt) {
+      const b = document.getElementById('taryfaBadge');
+      b.innerHTML += '<div style="color:#dc3545">⚠ Plik korekt uszkodzony (kopia .corrupt) — napraw albo usuń przed zapisem</div>';
+    }
     _renderTaryfaTimeline(d.tariffs || [], dd.changes || [], d, true);
   } catch(e) {
     document.getElementById('taryfaBadge').textContent = 'Błąd ładowania: ' + e.message;
@@ -4146,7 +4150,7 @@ let _tpFormTariff = null;
 function _tpNum(id, label, val, extra) {
   return '<label class="tf-muted" style="display:block;margin:4px 0">' + _esc(label)
     + ' <input type="number" step="0.0001" min="0" id="' + _esc(id) + '" value="' + _esc(String(val ?? ''))
-    + '" style="width:100px" ' + (extra || '') + '></label>';
+    + '" data-orig="' + _esc(String(val ?? '')) + '" style="width:100px" ' + (extra || '') + '></label>';
 }
 
 function _initTariffPeriodForm() {
@@ -4204,13 +4208,19 @@ function _collectTariffPeriod() {
   patch.energy_net[_tpFormTariff] = {};
   patch.dist_var_net[_tpFormTariff] = {};
   document.querySelectorAll('#tpFields input[type=number]').forEach(el => {
-    if (el.value === '') return;
+    if (el.value === '' || el.value === el.dataset.orig) return;
     const n = parseFloat(el.value);
     if (!isFinite(n) || n < 0) throw new Error('Stawka musi być liczbą >= 0.');
     if (el.dataset.key) patch[el.dataset.key][_tpFormTariff][el.dataset.zone] = n;
     else if (el.dataset.scalar) patch[el.dataset.scalar] = n;
     else if (el.dataset.fixed) patch.fixed_net[el.dataset.fixed] = n;
   });
+  ['energy_net', 'dist_var_net'].forEach(k => {
+    if (!Object.keys(patch[k][_tpFormTariff]).length) delete patch[k][_tpFormTariff];
+    if (!Object.keys(patch[k]).length) delete patch[k];
+  });
+  if (!Object.keys(patch.fixed_net).length) delete patch.fixed_net;
+  if (!Object.keys(patch).length) throw new Error('Nic nie zmieniono.');
   return {from: fromVal + '-01', tariff: _tpFormTariff, note: (document.getElementById('tpNote').value || '').trim(), patch};
 }
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import shutil
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -74,10 +74,22 @@ def validate_periods(raw) -> list:
 
 
 def _quarantine(path) -> None:
-    """Kopia uszkodzonego pliku do `<plik>.corrupt` — tylko gdy kopii jeszcze nie ma (nie nadpisuje)."""
+    """Kopia uszkodzonego pliku do `<plik>.corrupt`; gdy ta już istnieje, do `<plik>.corrupt.<UTC>`
+    (kolizja nazwy → `-1`, `-2`…). Niczego nie nadpisuje; identycznej treści nie kopiuje ponownie."""
     corrupt = Path(str(path) + '.corrupt')
     if corrupt.exists():
-        return
+        try:  # ta sama treść już zachowana (częsty odczyt uszkodzonego pliku) → bez kolejnej kopii
+            data = Path(path).read_bytes()
+            if any(c.read_bytes() == data for c in corrupt.parent.glob(corrupt.name + '*')):
+                return
+        except OSError:
+            pass
+        stamp = datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')
+        base = Path(f'{corrupt}.{stamp}')
+        corrupt, n = base, 0
+        while corrupt.exists():
+            n += 1
+            corrupt = Path(f'{base}-{n}')
     try:
         shutil.copy2(path, corrupt)
     except Exception:

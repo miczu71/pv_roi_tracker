@@ -35,6 +35,8 @@ _PATCH_KEYS = frozenset({
     'energy_net', 'dist_var_net', 'quality_net', 'oze_net', 'cogeneration_net',
     'excise_net', 'fixed_net', 'dynamic_dist_var_net',
 })
+_ZONED_KEYS = ('energy_net', 'dist_var_net')   # taryfa → strefa → liczba
+_SCALAR_KEYS = ('quality_net', 'oze_net', 'cogeneration_net', 'excise_net')  # liczba
 _FIXED_FIELDS = ('fixed_mocowa_net', 'fixed_abonament_net', 'fixed_stalysieciowy_net', 'fixed_total_net')
 _EPS = 1e-9
 
@@ -47,6 +49,38 @@ def _check_number_tree(value, label: str) -> None:
             _check_number_tree(v, f'{label}.{k}')
     elif isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
         raise ValueError(f'{label} musi być liczbą >= 0, otrzymano {value!r}')
+
+
+def _is_num(value) -> bool:
+    return not isinstance(value, bool) and isinstance(value, (int, float)) and value >= 0
+
+
+def _check_patch_shape(patch: dict, i: int) -> None:
+    """Kształt patcha jak w katalogu: strefowe = taryfa → strefa → liczba, skalary = liczba,
+    fixed_net = pole → liczba albo (np. capacity_by_annual_kwh) podsłownik → liczba."""
+    for key, value in patch.items():
+        where = f'korekta {i}: {key}'
+        if key in _ZONED_KEYS:
+            if not isinstance(value, dict):
+                raise ValueError(f'{where} musi być słownikiem taryfa → strefa → liczba')
+            for tariff, zones in value.items():
+                if not isinstance(zones, dict) or not all(_is_num(v) for v in zones.values()):
+                    raise ValueError(f'{where}.{tariff} musi być słownikiem strefa → liczba >= 0')
+        elif key == 'dynamic_dist_var_net':
+            if not isinstance(value, dict) or not all(_is_num(v) for v in value.values()):
+                raise ValueError(f'{where} musi być słownikiem strefa → liczba >= 0')
+        elif key in _SCALAR_KEYS:
+            if not _is_num(value):
+                raise ValueError(f'{where} musi być liczbą >= 0, otrzymano {value!r}')
+        elif key == 'fixed_net':
+            if not isinstance(value, dict):
+                raise ValueError(f'{where} musi być słownikiem pole → liczba')
+            for field, v in value.items():
+                if isinstance(v, dict):
+                    if not all(_is_num(x) for x in v.values()):
+                        raise ValueError(f'{where}.{field} musi zawierać liczby >= 0')
+                elif not _is_num(v):
+                    raise ValueError(f'{where}.{field} musi być liczbą >= 0, otrzymano {v!r}')
 
 
 def _iso(value, label: str) -> date:
@@ -77,6 +111,7 @@ def validate(overrides) -> list:
         if bad:
             raise ValueError(f'korekta {i}: nieznane klucze patch: {sorted(bad)}')
         _check_number_tree(patch, f'korekta {i}: patch')
+        _check_patch_shape(patch, i)
     return overrides
 
 
@@ -99,18 +134,24 @@ def validate_rates_entry(entry: dict) -> None:
 
 # ── odczyt / zapis ───────────────────────────────────────────────────────────
 
-def load(path) -> list:
-    """Korekty z pliku. Brak pliku → []. Uszkodzony plik/schemat → [] + log ERROR + kopia `.corrupt`."""
+def load_status(path) -> tuple:
+    """(korekty, uszkodzony). Brak pliku → ([], False). Każda wada JSON/schematu → ([], True)
+    + log ERROR + kopia `.corrupt`."""
     try:
         with open(path, encoding='utf-8') as f:
             doc = json.load(f)
-        return validate(doc)
+        return validate(doc), False
     except FileNotFoundError:
-        return []
+        return [], False
     except Exception:
         logger.error('tariff_overrides: nie można wczytać %s — korekty puste', path, exc_info=True)
         _quarantine(path)
-        return []
+        return [], True
+
+
+def load(path) -> list:
+    """Korekty z pliku. Brak pliku albo uszkodzony plik/schemat → []."""
+    return load_status(path)[0]
 
 
 def save(overrides: list, path) -> None:

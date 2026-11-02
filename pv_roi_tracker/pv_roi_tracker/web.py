@@ -1916,8 +1916,10 @@ def api_tariff_config_get():
                   if max_inv else f'Baseline (brak faktur, current: {cur_ef})')
     else:
         reason = 'Brak wpisów taryfowych — używane litery fallback w kodzie'
+    corrupt = _to.load_status(_tariff_overrides_path)[1] if _tariff_overrides_path else False
     return jsonify({
         'tariffs': tariffs,
+        'corrupt': corrupt,
         'current_effective_from': cur_ef,
         'is_override_active': is_override,
         'active_reason': reason,
@@ -1942,7 +1944,10 @@ def api_tariff_config_upsert():
         tariff = tariff if tariff in _TWO_ZONE_VIEW else 'G12w'
         entry = {'from': day.isoformat(), 'to': None, 'note': data.get('note') or '',
                  'patch': _to.entry_to_patch(data.get('rates') or {}, module, day, tariff)}
-        _to.save(_to.upsert(_to.load(_tariff_overrides_path), entry), _tariff_overrides_path)
+        current, corrupt = _to.load_status(_tariff_overrides_path)
+        if corrupt:
+            return jsonify({'ok': False, 'error': _OVERRIDES_CORRUPT_MSG}), 409
+        _to.save(_to.upsert(current, entry), _tariff_overrides_path)
     except (ValueError, LookupError) as e:
         return jsonify({'ok': False, 'error': str(e)}), 400
     except Exception as e:
@@ -1962,7 +1967,10 @@ def api_tariff_config_delete():
     if not ef:
         return jsonify({'ok': False, 'error': 'effective_from wymagane'}), 400
     try:
-        _to.save(_to.remove(_to.load(_tariff_overrides_path), f'{ef}-01'), _tariff_overrides_path)
+        current, corrupt = _to.load_status(_tariff_overrides_path)
+        if corrupt:
+            return jsonify({'ok': False, 'error': _OVERRIDES_CORRUPT_MSG}), 409
+        _to.save(_to.remove(current, f'{ef}-01'), _tariff_overrides_path)
     except Exception as e:
         log.exception('tariff_config delete failed')
         return jsonify({'ok': False, 'error': str(e)}), 500
@@ -2045,6 +2053,9 @@ def api_tariff_period_form():
         return _tariff_error(str(e), 500)
 
 
+_OVERRIDES_CORRUPT_MSG = 'Plik korekt uszkodzony (kopia .corrupt) — napraw albo usuń przed zapisem'
+
+
 def _period_entry(data: dict) -> dict:
     """Wpis korekty z body `{from, to?, note?, patch}` (walidacja schematu + `from` = 1. dzień miesiąca)."""
     from . import tariff_overrides as _to
@@ -2058,7 +2069,23 @@ def _period_entry(data: dict) -> dict:
     entry = {'from': day.isoformat(), 'to': data.get('to') or None,
              'note': data.get('note') or '', 'patch': data.get('patch')}
     _to.validate([entry])
+
+    def _has_number(node) -> bool:
+        if isinstance(node, dict):
+            return any(_has_number(v) for v in node.values())
+        return isinstance(node, (int, float)) and not isinstance(node, bool)
+
+    if not _has_number(entry['patch']):
+        raise ValueError('Nic nie zmieniono — podaj przynajmniej jedną stawkę')
     return entry
+
+
+def _merge_patch(base: dict, new: dict) -> dict:
+    """Głębokie scalenie patchy korekty: liście z `new` wygrywają, pozostałe pola `base` zostają."""
+    out = dict(base)
+    for k, v in new.items():
+        out[k] = _merge_patch(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else v
+    return out
 
 
 @app.route('/api/tariff_period/preview', methods=['POST'])
@@ -2095,7 +2122,14 @@ def api_tariff_period_save():
         return _tariff_error('tariff_config_path not configured', 500)
     try:
         entry = _period_entry(request.get_json(silent=True) or {})
-        _to.save(_to.upsert(_to.load(_tariff_overrides_path), entry), _tariff_overrides_path)
+        current, corrupt = _to.load_status(_tariff_overrides_path)
+        if corrupt:
+            return _tariff_error(_OVERRIDES_CORRUPT_MSG, 409)
+        old = next((e for e in current if e.get('from') == entry['from']), None)
+        if old:     # formularz wysyła tylko zmienione pola — reszta wcześniejszej korekty tego miesiąca zostaje
+            entry = {**entry, 'to': entry['to'] or old.get('to'), 'note': entry['note'] or old.get('note') or '',
+                     'patch': _merge_patch(old.get('patch') or {}, entry['patch'])}
+        _to.save(_to.upsert(current, entry), _tariff_overrides_path)
     except (ValueError, LookupError) as e:
         return _tariff_error(str(e))
     except Exception as e:

@@ -96,14 +96,15 @@ def test_preview_does_not_write_and_uses_patch(client, tmp_path):
     assert j['samples'][0]['zone'] == 'peak' and j['samples'][1]['zone'] == 'offpeak'
     assert j['samples'][0]['dt'].startswith('2027-01-05T08')   # pierwszy wtorek od 2027-01-01
     base = client.post('/api/tariff_period/preview',
-                       json={'from': '2027-01-01', 'tariff': 'G12w', 'patch': {}}).get_json()
+                       json={'from': '2027-01-01', 'tariff': 'G12w', 'patch': _patch_g12w(0.1)}).get_json()
     assert j['samples'][0]['gross_per_kwh'] > base['samples'][0]['gross_per_kwh']
     assert not (tmp_path / 'ov.json').exists()
 
 
 def test_preview_g13_samples(client):
     j = client.post('/api/tariff_period/preview',
-                    json={'from': '2027-01-01', 'tariff': 'G13', 'patch': {}}).get_json()
+                    json={'from': '2027-01-01', 'tariff': 'G13',
+                          'patch': {'energy_net': {'G13': {'morning_peak': 0.9}}}}).get_json()
     assert [s['label'] for s in j['samples']] == ['wtorek 08:00', 'wtorek 15:00', 'wtorek 20:00', 'sobota 12:00']
     assert j['samples'][0]['zone'] == 'morning_peak'
 
@@ -131,6 +132,18 @@ def test_save_writes_entry_and_price_is_manual(client, tmp_path, monkeypatch):
     assert p.components['energy'] == pytest.approx(0.9)
 
 
+def test_save_merges_into_existing_entry_of_same_month(client, tmp_path):
+    """Formularz wysyła tylko zmienione pola — zapis nie może gubić pól wcześniejszej korekty tego miesiąca."""
+    first = {'energy_net': {'G12w': {'peak': 0.9, 'offpeak': 0.5}}, 'quality_net': 0.01}
+    assert client.post('/api/tariff_period', json={'from': '2027-01-01', 'note': 'TD', 'patch': first}).status_code == 200
+    second = {'energy_net': {'G12w': {'peak': 0.95}}, 'excise_net': 0.005}
+    assert client.post('/api/tariff_period', json={'from': '2027-01-01', 'patch': second}).status_code == 200
+    stored = tariff_overrides.load(tmp_path / 'ov.json')
+    assert len(stored) == 1 and stored[0]['note'] == 'TD'
+    assert stored[0]['patch'] == {'energy_net': {'G12w': {'peak': 0.95, 'offpeak': 0.5}},
+                                  'quality_net': 0.01, 'excise_net': 0.005}
+
+
 def test_save_not_first_day_400(client, tmp_path):
     r = client.post('/api/tariff_period', json={'from': '2027-01-15', 'patch': _patch_g12w()})
     assert r.status_code == 400 and '1. dnia' in r.get_json()['error']
@@ -150,3 +163,38 @@ def test_save_bad_json_400(client):
 def test_save_not_wired_500(client, monkeypatch):
     monkeypatch.setattr(web, '_tariff_overrides_path', None)
     assert client.post('/api/tariff_period', json={'from': '2027-01-01', 'patch': {}}).status_code == 500
+
+
+# ── E3: pusty patch, uszkodzony plik korekt, flaga corrupt ───────────────────
+
+@pytest.mark.parametrize('patch', [{}, {'energy_net': {}}, {'energy_net': {'G12w': {}}, 'fixed_net': {}}])
+def test_preview_and_save_empty_patch_400(client, tmp_path, patch):
+    r = client.post('/api/tariff_period/preview', json={'from': '2027-01-01', 'tariff': 'G12w', 'patch': patch})
+    assert r.status_code == 400 and 'Nic nie zmieniono' in r.get_json()['error']
+    r = client.post('/api/tariff_period', json={'from': '2027-01-01', 'patch': patch})
+    assert r.status_code == 400 and 'Nic nie zmieniono' in r.get_json()['error']
+    assert not (tmp_path / 'ov.json').exists()
+
+
+def test_save_corrupt_overrides_file_409_and_not_written(client, tmp_path):
+    ov = tmp_path / 'ov.json'
+    ov.write_text('{nie json', encoding='utf-8')
+    r = client.post('/api/tariff_period', json={'from': '2027-01-01', 'patch': _patch_g12w(0.9)})
+    assert r.status_code == 409
+    assert r.get_json() == {'ok': False, 'error': 'Plik korekt uszkodzony (kopia .corrupt) — napraw albo usuń przed zapisem'}
+    assert ov.read_text(encoding='utf-8') == '{nie json'
+
+
+def test_config_upsert_and_delete_corrupt_409(client, tmp_path):
+    (tmp_path / 'ov.json').write_text('{nie json', encoding='utf-8')
+    r = client.post('/api/tariff_config', json={'effective_from': '2027-01', 'rates': {'peak_gross': 1.0}})
+    assert r.status_code == 409
+    r = client.post('/api/tariff_config/delete', json={'effective_from': '2027-01'})
+    assert r.status_code == 409
+    assert (tmp_path / 'ov.json').read_text(encoding='utf-8') == '{nie json'
+
+
+def test_config_get_corrupt_flag(client, tmp_path):
+    assert client.get('/api/tariff_config').get_json()['corrupt'] is False
+    (tmp_path / 'ov.json').write_text('{nie json', encoding='utf-8')
+    assert client.get('/api/tariff_config').get_json()['corrupt'] is True

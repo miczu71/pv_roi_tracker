@@ -216,3 +216,103 @@ def test_build_reads_overrides_and_override_tariff(tmp_path):
     assert m.legacy_rates(DAY)['dist_jakosciowa_net'] == 0.05
     m2 = build(None, 'G11', None)
     assert m2.tariff_on(date.today()) == 'G11'
+
+
+# ── E3: kształt patcha, load_status, kwarantanna ─────────────────────────────
+
+@pytest.mark.parametrize('patch', [
+    {'energy_net': 0.5},
+    {'energy_net': {'G12w': 0.5}},
+    {'energy_net': {'G12w': {'peak': -1}}},
+    {'dist_var_net': {'G12w': {'peak': 'x'}}},
+    {'dynamic_dist_var_net': {'S1': {'peak': 0.1}}},
+    {'dynamic_dist_var_net': 0.1},
+    {'fixed_net': 1.0},
+    {'fixed_net': {'network_1ph': -1}},
+    {'fixed_net': {'capacity_by_annual_kwh': {'lt500': {'x': 1}}}},
+    {'quality_net': {'G12w': 0.1}},
+    {'oze_net': {}},
+    {'cogeneration_net': [0.1]},
+    {'excise_net': True},
+])
+def test_validate_patch_shape_rejected(patch):
+    with pytest.raises(ValueError, match='korekta 1'):
+        to.validate([{'from': '2026-05-01', 'patch': patch}])
+
+
+def test_validate_patch_shape_accepts_catalog_shapes():
+    patch = {
+        'energy_net': {'G12w': {'peak': 0.5, 'offpeak': 0.3}},
+        'dist_var_net': {'G13': {'morning_peak': 0.2}},
+        'dynamic_dist_var_net': {'S1': 0.1},
+        'fixed_net': {'network_1ph': 7.0, 'capacity_by_annual_kwh': {'lt500': 2.9},
+                      'sales_fee_by_tariff': {'G13s': 19.1}},
+        'quality_net': 0.01, 'oze_net': 0.0, 'cogeneration_net': 0.002, 'excise_net': 0.005,
+    }
+    assert to.validate([{'from': '2026-05-01', 'patch': patch}])
+
+
+def test_entry_to_patch_output_passes_validate(module):
+    rates = {'energy_peak_net': 0.6, 'dist_var_offpeak_net': 0.1, 'dist_oze_net': 0.001,
+             'fixed_mocowa_net': 5.0, 'fixed_abonament_net': 4.0, 'fixed_stalysieciowy_net': 8.0}
+    patch = to.entry_to_patch(rates, module, DAY, 'G12w')
+    assert to.validate([{'from': '2026-06-01', 'patch': patch}])
+
+
+def test_load_status_missing_file(tmp_path):
+    assert to.load_status(tmp_path / 'brak.json') == ([], False)
+    assert not (tmp_path / 'brak.json.corrupt').exists()
+
+
+def test_load_status_valid_file(tmp_path):
+    p = tmp_path / 'ov.json'
+    entry = {'from': '2026-05-01', 'to': None, 'note': '', 'patch': {'oze_net': 0.1}}
+    p.write_text(json.dumps([entry]), encoding='utf-8')
+    assert to.load_status(p) == ([entry], False)
+
+
+@pytest.mark.parametrize('text', ['{nie json', '{"a": 1}', '[{"from": "2026-05-01", "patch": {"energy_net": 0.5}}]'])
+def test_load_status_corrupt_flags_and_quarantines(tmp_path, caplog, text):
+    p = tmp_path / 'ov.json'
+    p.write_text(text, encoding='utf-8')
+    with caplog.at_level('ERROR'):
+        assert to.load_status(p) == ([], True)
+    assert to.load(p) == []
+    assert (tmp_path / 'ov.json.corrupt').read_text(encoding='utf-8') == text
+    assert any(r.levelname == 'ERROR' for r in caplog.records)
+
+
+def test_quarantine_twice_keeps_both_copies(tmp_path):
+    p = tmp_path / 'ov.json'
+    p.write_text('pierwsza', encoding='utf-8')
+    to._quarantine(p)
+    p.write_text('druga', encoding='utf-8')
+    to._quarantine(p)
+    assert (tmp_path / 'ov.json.corrupt').read_text(encoding='utf-8') == 'pierwsza'
+    extra = [f for f in tmp_path.iterdir() if f.name.startswith('ov.json.corrupt.')]
+    assert len(extra) == 1 and extra[0].read_text(encoding='utf-8') == 'druga'
+    p.write_text('trzecia', encoding='utf-8')
+    to._quarantine(p)
+    extra = sorted(f.read_text(encoding='utf-8') for f in tmp_path.iterdir() if f.name.startswith('ov.json.corrupt.'))
+    assert extra == ['druga', 'trzecia']
+
+
+def test_quarantine_same_content_not_copied_again(tmp_path):
+    p = tmp_path / 'ov.json'
+    p.write_text('x', encoding='utf-8')
+    for _ in range(3):
+        to._quarantine(p)
+    assert sorted(f.name for f in tmp_path.iterdir()) == ['ov.json', 'ov.json.corrupt']
+
+
+def test_catalog_periods_pass_patch_shape_validation():
+    import json as _json
+    from pathlib import Path
+    cat = _json.loads((Path(to.__file__).parent / 'tariffs' / 'tauron.json').read_text(encoding='utf-8'))
+    n = 0
+    for period in cat['periods']:
+        patch = {k: v for k, v in period.items() if k in to._PATCH_KEYS}
+        if patch:
+            n += 1
+            assert to.validate([{'from': '2026-05-01', 'patch': patch}])
+    assert n >= 2

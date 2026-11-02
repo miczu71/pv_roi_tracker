@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.55.3] — 2026-11-02
+
+- **Formularz nowego okresu cennika zapisuje tylko zmienione stawki (d).** Do tej pory każde pole było wysyłane z wartością wstępną, więc zapis „zamrażał” wszystkie stawki okresu. Teraz do korekty trafiają wyłącznie pola, które edytowano; zapis do miesiąca z istniejącą korektą scala się z nią (pozostałe pola zostają), a brak zmian daje komunikat „Nic nie zmieniono”. Backend odrzuca patch bez żadnej liczby.
+- **Walidacja kształtu korekty (c).** `energy_net`, `dist_var_net`, `dynamic_dist_var_net`, `fixed_net` i opłaty skalarne muszą mieć kształt z katalogu `tauron.json`; błędny kształt (np. `energy_net` jako liczba) nie wywala już modułu taryf.
+- **Uszkodzony plik korekt nie jest po cichu kasowany (b).** Zapis (okres, korekta, usunięcie) przy uszkodzonym `tariff_overrides.json` zwraca 409 z komunikatem zamiast nadpisać plik pustą listą; lista korekt zgłasza `corrupt: true`, a zakładka Taryfa pokazuje ostrzeżenie.
+- **Kwarantanna nie gubi kolejnych uszkodzeń (7).** Gdy kopia `.corrupt` już istnieje, nowe uszkodzenie trafia do `.corrupt.<RRRRmmddGGMMSS>` (identyczna treść nie jest kopiowana ponownie).
+- Testy: 1348 passed (23 skipped); wynik zestawu taryf bez zmian.
+
 ## [0.55.2] — 2026-11-01
 
 - **Import faktur z eBOK czyta nowy szablon „Korekta do faktury VAT”.** Korekta depozytu po przeliczeniu ceny RCEm przez PSE (układ Mój TAURON) była odrzucana jako „wymaga treningu”, bo parser szukał tylko starego nagłówka i etykiety „Pobrano z sieci”. Parser rozpoznaje teraz nagłówek (tylko jako osobną linię), energię pobraną „po korekcie”, energię oddaną jako sumę stref z bloku licznika (oddanie), numer korekty, dokument korygowany i przyczynę. Przy niepełnych albo mieszanych strefach nie zgaduje sumy, tylko zgłasza błąd.
