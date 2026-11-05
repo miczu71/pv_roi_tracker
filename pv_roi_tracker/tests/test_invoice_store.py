@@ -602,3 +602,17 @@ def test_promote_stub_removes_stub_under_different_key(store_path):
     assert new_key == '2025-03'
     assert new_key in stored
     assert stub_key not in stored
+
+
+def test_promote_stub_same_key_keeps_raw_text_pdf_and_pre_reconcile(store_path):
+    """Re-parse w miejscu nie gubi raw_text, PDF ani pierwszego snapshotu pre_reconcile."""
+    data = _data(year=2024, month=1, warnings=['brak stawki'])
+    key = invoice_store.upsert(data, filename='ebok_T-K1-1-24.pdf', raw_text='tekst źródłowy',
+                               pre_reconcile={'orig': 1}, pdf_bytes=b'%PDF-orig', path=store_path)
+    invoice_store.promote_stub(key, data, filename='ebok_T-K1-1-24.pdf', reconciled=True,
+                               pre_reconcile={'orig': 2}, raw_text='tekst źródłowy', path=store_path)
+    rec = invoice_store.load(store_path)[key]
+    assert rec['raw_text'] == 'tekst źródłowy'
+    assert rec['pre_reconcile'] == {'orig': 1}
+    assert invoice_store.load_pdf(key, store_path) == b'%PDF-orig'
+    assert rec['pdf_path']

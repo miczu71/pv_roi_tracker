@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.56.3] — 2026-11-05
+
+### Naprawiono
+- Przy każdym starcie add-onu znikały z magazynu faktur rekordy z `needs_training` pod prawdziwym kluczem miesiąca (np. 2024-01, 2026-11): ponowny parsing zapisywał rekord i od razu usuwał go tym samym kluczem. Sync eBOK importował je więc od nowa po każdym restarcie. Nowe `invoice_store.promote_stub` usuwa stary klucz tylko wtedy, gdy różni się od nowego.
+
 ## [0.56.2] — 2026-11-05
 
 - **eBOK: odporniejsza lista „do zapłaty”.** Jedno ponowienie po błędzie połączenia; przy porażce wynik synchronizacji ma `unpaid_failed`, ostrzeżenie w logu i wzmiankę w stanie zadania (stan płatności nie jest kasowany).

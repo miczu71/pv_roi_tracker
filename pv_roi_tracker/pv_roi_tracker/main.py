@@ -613,7 +613,7 @@ def main() -> None:
                 reconciled = historic_store.reconcile_invoice(data, HISTORIC_PATH)
                 invoice_store.promote_stub(stub_key, data, filename=stub.get('filename', ''),
                                            reconciled=reconciled, pre_reconcile=snap,
-                                           path=INVOICE_PATH)
+                                           raw_text=raw_text, path=INVOICE_PATH)
                 promoted.append(f'{data.year}-{data.month:02d}')
                 logger.info('Auto-promoted stub %s → %d-%02d', stub_key, data.year, data.month)
             except InvoiceParseError:
