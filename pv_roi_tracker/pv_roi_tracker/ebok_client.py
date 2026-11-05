@@ -321,6 +321,32 @@ class EbokClient:
             raise EbokLayoutChanged('Nie znaleziono taryfy na stronie umowy')
         return contract
 
+    def probe_invoices_page(self, known: set) -> dict:
+        """Sonda diagnostyczna (0.55.5, tylko odczyt): strona „Faktury” i jej skrypty z tej samej
+        domeny → ścieżki `/api/sitecore/<Kontroler>/<Akcja>`, nazwy atrybutów `data-*` oraz
+        sygnatury dokumentów, których nie ma w `known`. Bez numeru płatnika i checksum w wyniku."""
+        r = self._get(f'{SERVICE}/Home/Pages/Faktury?'
+                      + urlencode({'sid': SYSTEM, 'pp': self._payer_id or ''}), REQUEST_TIMEOUT)
+        html = r.text or ''
+        api_paths = set(_API_PATH_RE.findall(html))
+        scripts = []
+        for src in _SCRIPT_SRC_RE.findall(html):
+            url = src if src.startswith('http') else SERVICE + (src if src.startswith('/') else '/' + src)
+            if url.startswith(SERVICE + '/') and url not in scripts:
+                scripts.append(url)
+        for url in scripts[:MAX_PROBE_SCRIPTS]:
+            try:
+                js = self._get_retrying(url, headers={'User-Agent': USER_AGENT}, timeout=REQUEST_TIMEOUT)
+                if js.status_code == 200:
+                    api_paths.update(_API_PATH_RE.findall(js.text or ''))
+            except Exception as exc:
+                logger.warning('eBOK: sonda — skrypt niedostępny (%s)', type(exc).__name__)
+        signatures = {m for m in _SIGNATURE_RE.findall(html) if not is_known(m, known)}
+        return {'status': r.status_code, 'size': len(html),
+                'api_paths': sorted(api_paths),
+                'data_attrs': sorted(set(_DATA_ATTR_RE.findall(html))),
+                'unknown_signatures': sorted(signatures)}
+
 
 def _is_login_page(r) -> bool:
     return b'id="kc-form-login"' in (r.content or b'')
@@ -359,6 +385,11 @@ def parse_client_checksum(html: str, payer_id: str) -> Optional[str]:
     return parse_clients(html).get(str(payer_id))
 
 
+_API_PATH_RE = re.compile(r'/api/sitecore/[A-Za-z0-9_]+/[A-Za-z0-9_]+')
+_SCRIPT_SRC_RE = re.compile(r'<script[^>]+src="([^"]+)"', re.I)
+_DATA_ATTR_RE = re.compile(r'\b(data-[a-z0-9-]+)=', re.I)
+_SIGNATURE_RE = re.compile(r'\bT/K1/[A-Za-z0-9]+/\d{4}/\d{2}\b')
+MAX_PROBE_SCRIPTS = 8
 _POINT_LINK_RE = re.compile(r'href="([^"]*punkty-poboru[^"]*)"')
 _DL_HORIZONTAL_RE = re.compile(r'<dl[^>]*\bdl-horizontal\b[^>]*>(.*?)</dl>', re.S | re.I)
 _DT_DD_RE = re.compile(r'<dt[^>]*>(.*?)</dt>\s*<dd[^>]*>(.*?)</dd>', re.S | re.I)

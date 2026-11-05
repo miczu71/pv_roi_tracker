@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.55.5] — 2026-11-05
+
+- **Diagnostyka eBOK: sonda strony „Faktury”.** `GET api/ebok/diag` zwraca sekcję `invoices_page` (status, rozmiar, ścieżki `/api/sitecore/…` ze strony i jej skryptów, nazwy atrybutów `data-*`, sygnatury nieobecne w archiwum). Tylko odczyt, bez numeru płatnika i checksum. Powód: nowa, nierozliczona faktura nie pojawia się w archiwum dokumentów (`GetDocuments` zwraca tylko opłacone/rozliczone), więc import jej nie widzi.
+
 ## [0.55.4] — 2026-11-05
 
 - **Taryfa G13: pobór peak/offpeak liczy się z trzech stref.** Rola „peak” = stary `sensor.daily_energy_peak` + `sensor.g13_energia_morning_peak` + `sensor.g13_energia_evening_peak`, rola „offpeak” = stary `sensor.daily_energy_offpeak` + `sensor.g13_energia_other`. Stare liczniki G12w są zamrożone (historia zostaje w statystykach), brak encji jest pomijany. Dotyczy okna energii, miesiąca ze statystyk i bieżącego miesiąca.

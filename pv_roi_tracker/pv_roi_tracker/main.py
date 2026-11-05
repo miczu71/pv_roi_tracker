@@ -847,7 +847,14 @@ def main() -> None:
             client.select_payer(EBOK_PAYER_ID)
             docs = client.list_documents(EBOK_DATE_FROM, _date.today())
             known = _ec.known_signatures(invoice_store.load(INVOICE_PATH).values())
-            return {'ok': True, 'total': len(docs),
+            try:
+                page = client.probe_invoices_page(
+                    known | {_ec.normalize_signature(d.signature) for d in docs})
+                probe = {k: ([mask(x) for x in v] if isinstance(v, list) else v)
+                         for k, v in page.items()}
+            except Exception as exc:
+                probe = {'error': mask(f'{type(exc).__name__}: {exc}')}
+            return {'ok': True, 'total': len(docs), 'invoices_page': probe,
                     'statuses': sorted({d.status for d in docs}),
                     'newest': [mask(f'{d.issued_on} {d.signature} | {d.status}')
                                for d in _ebok_newest(docs)],

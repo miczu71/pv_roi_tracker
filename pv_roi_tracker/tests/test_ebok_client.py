@@ -750,3 +750,52 @@ def test_list_payments_missing_documents_list_raises_layout_changed():
     session.when('GetPayments', _FakeResponse(text=json.dumps({'Status': 'OK', 'TotalNumber': 0})))
     with pytest.raises(EbokLayoutChanged):
         client.list_payments(date(2025, 10, 1), date(2026, 10, 27))
+
+
+# ── probe_invoices_page() (sonda diagnostyczna 0.55.5) ───────────────────────
+
+_FAKTURY_HTML = (_FIX / 'ebok_faktury.html').read_text(encoding='utf-8')
+_FAKTURY_JS = (_FIX / 'ebok_faktury.js').read_text(encoding='utf-8')
+
+
+def _probe_client():
+    client, session = _seq_client()
+    session.when('/Home/Pages/Faktury', _FakeResponse(text=_FAKTURY_HTML))
+    session.when('/assets/invoices.js', _FakeResponse(text=_FAKTURY_JS))
+    client._payer_id = _PAYER
+    return client, session
+
+
+def test_probe_invoices_page_finds_api_paths_and_unknown_signatures():
+    client, session = _probe_client()
+    out = client.probe_invoices_page(known={'T_K1_XX000000_0018_26'})
+    assert out['status'] == 200
+    assert out['size'] == len(_FAKTURY_HTML)
+    assert out['api_paths'] == ['/api/sitecore/EbokInvoices/GetPdf',
+                                '/api/sitecore/EbokInvoices/GetUnpaid']
+    assert out['unknown_signatures'] == ['T/K1/XX000000/0020/26']
+    assert 'data-client-checksum' in out['data_attrs']
+
+
+def test_probe_invoices_page_fetches_only_own_domain_scripts():
+    client, session = _probe_client()
+    client.probe_invoices_page(known=set())
+    urls = [c[1] for c in session.calls if c[0] == 'GET']
+    assert any(u == 'https://moj.tauron.pl/assets/invoices.js' for u in urls)
+    assert not any('cdn.example.com' in u for u in urls)
+
+
+def test_probe_invoices_page_never_leaks_payer_or_checksum():
+    client, session = _probe_client()
+    out = client.probe_invoices_page(known=set())
+    text = json.dumps(out, ensure_ascii=False)
+    assert _PAYER not in text
+    assert 'c' * 64 not in text
+
+
+def test_probe_invoices_page_script_failure_does_not_break_probe():
+    client, session = _probe_client()
+    session._responses.insert(0, ('/assets/invoices.js', _FakeResponse(text='', status_code=500)))
+    out = client.probe_invoices_page(known=set())
+    assert out['status'] == 200
+    assert '/api/sitecore/EbokInvoices/GetUnpaid' in out['api_paths']  # z atrybutu HTML
