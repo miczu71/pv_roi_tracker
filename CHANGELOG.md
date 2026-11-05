@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.55.6] — 2026-11-05
+
+- **Diagnostyka eBOK: sonda listy faktur.** `GET api/ebok/diag` zwraca dodatkowo `invoice_list` (jedno wywołanie `LoadMoreInvoicesProducts`: status, typ i kształt odpowiedzi) oraz w `invoices_page` fragmenty JS wokół tego wywołania i szkielet wiersza `data-item`. Tylko odczyt; w wyniku są wyłącznie typy, nazwy pól i słowa statusu (bez kwot, numerów, płatnika i checksum). Powód: poznać format listy faktur nierozliczonych przed ich importem.
+
 ## [0.55.5] — 2026-11-05
 
 - **Diagnostyka eBOK: sonda strony „Faktury”.** `GET api/ebok/diag` zwraca sekcję `invoices_page` (status, rozmiar, ścieżki `/api/sitecore/…` ze strony i jej skryptów, nazwy atrybutów `data-*`, sygnatury nieobecne w archiwum). Tylko odczyt, bez numeru płatnika i checksum. Powód: nowa, nierozliczona faktura nie pojawia się w archiwum dokumentów (`GetDocuments` zwraca tylko opłacone/rozliczone), więc import jej nie widzi.
