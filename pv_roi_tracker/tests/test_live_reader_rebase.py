@@ -21,6 +21,7 @@ parameter removed to match the new signature).
 """
 from __future__ import annotations
 
+import logging
 from datetime import date
 from unittest.mock import patch
 
@@ -139,6 +140,30 @@ def test_sum_role_month_none_when_all_missing():
 
 def test_sum_role_month_none_for_empty_entity_list():
     assert lr._sum_role_month({}, []) is None
+
+
+def test_sum_role_month_warn_missing_logs_once_per_entity(caplog):
+    lr._warned_missing_entities.clear()
+    vals = {'sensor.a': 10.0}
+    with caplog.at_level(logging.WARNING, logger='pv_roi_tracker.live_reader'):
+        assert lr._sum_role_month(vals, ['sensor.a', 'sensor.b'], warn_missing=True) == pytest.approx(10.0)
+        assert lr._sum_role_month(vals, ['sensor.a', 'sensor.b'], warn_missing=True) == pytest.approx(10.0)
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING and 'sensor.b' in r.getMessage()]
+    assert len(warnings) == 1
+
+
+def test_sum_role_month_no_warning_without_warn_missing(caplog):
+    lr._warned_missing_entities.clear()
+    with caplog.at_level(logging.WARNING, logger='pv_roi_tracker.live_reader'):
+        assert lr._sum_role_month({'sensor.a': 10.0}, ['sensor.a', 'sensor.b']) == pytest.approx(10.0)
+    assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+
+
+def test_sum_role_month_all_missing_returns_none_without_warning(caplog):
+    lr._warned_missing_entities.clear()
+    with caplog.at_level(logging.WARNING, logger='pv_roi_tracker.live_reader'):
+        assert lr._sum_role_month({'sensor.a': None}, ['sensor.a'], warn_missing=True) is None
+    assert not [r for r in caplog.records if r.levelno == logging.WARNING]
 
 
 # ── _build_record: always-derived self_consumed/consumed ────────────────────
@@ -337,8 +362,6 @@ def test_read_current_month_corrects_produced_exported_from_dashboard_sources():
     states = {
         'sensor.inverter_yield_monthly': 200.0,               # provisional, will be overridden
         'sensor.power_meter_exported_energy_monthly': 80.0,   # provisional, will be overridden
-        'sensor.monthly_energy_peak': 999.0,                  # provisional, will be overridden
-        'sensor.monthly_energy_offpeak': 999.0,               # provisional, will be overridden
         'sensor.battery_grid_charge_off_peak_monthly': 5.0,
     }
     lts_values = {
@@ -373,16 +396,12 @@ def test_read_current_month_corrects_produced_exported_from_dashboard_sources():
 
 def test_read_current_month_falls_back_when_dashboard_correction_unavailable():
     """If the supplementary LTS call fails (empty dict, e.g. WS/recorder
-    hiccup), the old provisional REST-read produced/exported/peak/offpeak
-    must still be used — the poll must not fail just because the correction
-    couldn't run. The REST fallback for peak/offpeak reads the old monthly-
-    cycle sensors (which carry a real month-to-date total), not the
-    daily-cycle ones used for the LTS path."""
+    hiccup), produced/exported fall back to the old provisional REST-read,
+    so the poll does not fail. peak/offpeak have no REST fallback (the
+    sensor.monthly_energy_* meters are frozen since G13), so they stay None."""
     states = {
         'sensor.inverter_yield_monthly': 200.0,
         'sensor.power_meter_exported_energy_monthly': 80.0,
-        'sensor.monthly_energy_peak': 120.0,
-        'sensor.monthly_energy_offpeak': 100.0,
         'sensor.battery_grid_charge_off_peak_monthly': 5.0,
     }
     with (
@@ -397,6 +416,116 @@ def test_read_current_month_falls_back_when_dashboard_correction_unavailable():
     assert result is not None
     assert result.produced_kwh == pytest.approx(200.0)   # old provisional value, unchanged
     assert result.exported_kwh == pytest.approx(80.0)    # old provisional value, unchanged
-    assert result.purchased_kwh_peak == pytest.approx(120.0)
-    assert result.purchased_kwh_offpeak == pytest.approx(100.0)
+    assert result.purchased_kwh_peak is None
+    assert result.purchased_kwh_offpeak is None
     assert result.cross_family_produced_kwh is None
+
+
+def _g13_current_month_sources():
+    """Źródła jak po 05.11.2026 bez importu z sieci (imported=None)."""
+    sources = _fixed_sources()
+    sources['grid_import'] = []
+    return sources
+
+
+def test_read_current_month_sums_g13_zone_meters_with_legacy():
+    """Od G13 peak = stary daily_energy_peak + morning_peak + evening_peak,
+    offpeak = stary daily_energy_offpeak + g13_energia_other."""
+    lts_values = {
+        'sensor.energy_pv': 210.0,
+        'sensor.power_meter_exported': 82.0,
+        lr._ZONE_PEAK_METER: 10.0,
+        'sensor.g13_energia_morning_peak': 2.0,
+        'sensor.g13_energia_evening_peak': 3.0,
+        lr._ZONE_OFFPEAK_METER: 5.0,
+        'sensor.g13_energia_other': 4.0,
+        lr._TEMPLATE_PRODUCED_METER: 225.0,
+    }
+    with (
+        patch.object(lr, '_get_state', side_effect=lambda eid: {
+            'sensor.inverter_yield_monthly': 200.0,
+            'sensor.power_meter_exported_energy_monthly': 80.0,
+            'sensor.battery_grid_charge_off_peak_monthly': 5.0,
+        }.get(eid)),
+        patch.object(lr, '_solcast_month_projection', return_value=None),
+        patch.object(lr, 'get_energy_dashboard_sources', return_value=_g13_current_month_sources()),
+        patch.object(lr, '_fetch_lifetime_month_stats', return_value=lts_values),
+        patch('pv_roi_tracker.live_reader.date') as mock_date,
+    ):
+        mock_date.today.return_value = date(2026, 11, 6)
+        result = lr.read_current_month(rcem_price=None)
+    assert result is not None
+    assert result.purchased_kwh_peak == pytest.approx(15.0)   # 10 + 2 + 3
+    assert result.purchased_kwh_offpeak == pytest.approx(9.0)  # 5 + 4
+
+
+def test_read_current_month_none_peak_offpeak_when_lts_empty_warns(caplog):
+    lr._warned_missing_entities.clear()
+    with (
+        patch.object(lr, '_get_state', side_effect=lambda eid: {
+            'sensor.inverter_yield_monthly': 200.0,
+            'sensor.power_meter_exported_energy_monthly': 80.0,
+        }.get(eid)),
+        patch.object(lr, '_solcast_month_projection', return_value=None),
+        patch.object(lr, 'get_energy_dashboard_sources', return_value=_g13_current_month_sources()),
+        patch.object(lr, '_fetch_lifetime_month_stats', return_value={}),
+        patch('pv_roi_tracker.live_reader.date') as mock_date,
+        caplog.at_level(logging.WARNING, logger='pv_roi_tracker.live_reader'),
+    ):
+        mock_date.today.return_value = date(2026, 11, 6)
+        result = lr.read_current_month(rcem_price=None)
+    assert result is not None
+    assert result.purchased_kwh_peak is None
+    assert result.purchased_kwh_offpeak is None
+    assert any('brak LTS peak/offpeak' in r.getMessage() for r in caplog.records)
+
+
+# ── get_energy_window: peak/offpeak zone sums include G13 meters ──────────────
+
+def _window_data(series: dict) -> dict:
+    """series: {entity_id: [change, ...]} → shape returned by _ws_statistics."""
+    return {eid: [{'start': f'2026-11-0{i + 1}T00:00:00+01:00', 'change': c}
+                  for i, c in enumerate(changes)]
+            for eid, changes in series.items()}
+
+
+def test_get_energy_window_zone_sums_include_g13_meters():
+    data = _window_data({
+        lr._ZONE_PEAK_METER: [4.0, 1.0],
+        'sensor.g13_energia_morning_peak': [2.0],
+        'sensor.g13_energia_evening_peak': [3.0],
+        lr._ZONE_OFFPEAK_METER: [5.0],
+        'sensor.g13_energia_other': [4.0],
+    })
+    with (
+        patch.object(lr, 'get_energy_dashboard_sources', return_value=_fixed_sources()),
+        patch.object(lr, '_ws_statistics', side_effect=lambda *a, **k: data),
+    ):
+        win = lr.get_energy_window(date(2026, 11, 1), date(2026, 11, 3))
+    assert win['peak'] == pytest.approx(10.0)    # 5 + 2 + 3
+    assert win['offpeak'] == pytest.approx(9.0)  # 5 + 4
+
+
+def test_get_energy_window_offpeak_without_g13_other_uses_legacy_only():
+    data = _window_data({
+        lr._ZONE_OFFPEAK_METER: [5.0],
+    })
+    with (
+        patch.object(lr, 'get_energy_dashboard_sources', return_value=_fixed_sources()),
+        patch.object(lr, '_ws_statistics', side_effect=lambda *a, **k: data),
+    ):
+        win = lr.get_energy_window(date(2026, 11, 1), date(2026, 11, 3))
+    assert win['offpeak'] == pytest.approx(5.0)
+
+
+def test_get_energy_window_skips_negative_change():
+    data = _window_data({
+        lr._ZONE_OFFPEAK_METER: [5.0, -7.0],
+        'sensor.g13_energia_other': [4.0],
+    })
+    with (
+        patch.object(lr, 'get_energy_dashboard_sources', return_value=_fixed_sources()),
+        patch.object(lr, '_ws_statistics', side_effect=lambda *a, **k: data),
+    ):
+        win = lr.get_energy_window(date(2026, 11, 1), date(2026, 11, 3))
+    assert win['offpeak'] == pytest.approx(9.0)  # -7 pominięte

@@ -85,6 +85,8 @@ _solcast_available: Optional[bool] = None
 # Cache dla get_energy_dashboard_sources() — preferencje Energy Dashboard
 # rzadko się zmieniają; odświeżane raz na start + raz dziennie (patrz main.py).
 _energy_prefs_cache: Optional[dict] = None
+# Encje roli, o których już ostrzegliśmy (brak wartości przy częściowym odczycie) — raz na proces.
+_warned_missing_entities: set = set()
 
 
 def solcast_available() -> Optional[bool]:
@@ -516,19 +518,25 @@ def _fetch_lifetime_month_stats(year: int, month: int, entity_ids: list) -> dict
     return out
 
 
-def _sum_role_month(vals: dict, entities: list) -> Optional[float]:
+def _sum_role_month(vals: dict, entities: list, warn_missing: bool = False) -> Optional[float]:
     """Sum the already-fetched per-entity LTS 'change' values (from
     _fetch_lifetime_month_stats) for one Energy Dashboard role (e.g. multiple
     grid-import meters). Returns None only if EVERY entity for this role is
     missing/negative; a partial read (some entities present) still sums what
     is available — the Energy Dashboard itself likewise just adds up
     whatever statistics exist for each of its configured sources.
+    With warn_missing, a partial read logs one warning per missing entity per process.
     """
     if not entities:
         return None
     available = [vals[e] for e in entities if vals.get(e) is not None]
     if not available:
         return None
+    if warn_missing and len(available) < len(entities):
+        for e in entities:
+            if vals.get(e) is None and e not in _warned_missing_entities:
+                _warned_missing_entities.add(e)
+                logger.warning('_sum_role_month: brak wartości LTS dla %s — suma roli bez tej encji', e)
     return sum(available)
 
 
@@ -885,8 +893,9 @@ def read_current_month(
     offpeak plus the G13 g13_energia_* meters): those reset every day, so _get_state() on them only ever
     returns today's import, not the month's — confirmed live 2 days into
     August 2026 (monthly_energy_offpeak=7.58 kWh vs daily_energy_offpeak=
-    2.49 kWh, already diverged). The REST fallback below reads the old
-    monthly-cycle sensors instead, which do carry a month-to-date total.
+    2.49 kWh, already diverged). There is no REST fallback for peak/offpeak:
+    sensor.monthly_energy_* stopped updating at the G13 switch (05.11.2026),
+    so if the LTS call yields no peak/offpeak they stay None (logged).
 
     Returns None if the primary production sensor is unavailable OR if the
     reading looks like a freshly-reset utility_meter (produced <= 5 kWh on
@@ -897,8 +906,6 @@ def read_current_month(
 
     produced_live = _get_state('sensor.inverter_yield_monthly')
     exported_live = _get_state('sensor.power_meter_exported_energy_monthly')
-    peak_live     = _get_state('sensor.monthly_energy_peak')
-    offpeak_live  = _get_state('sensor.monthly_energy_offpeak')
     arb_kwh       = _get_state('sensor.battery_grid_charge_off_peak_monthly')
 
     if produced_live is None:
@@ -921,21 +928,19 @@ def read_current_month(
                  + [_TEMPLATE_PRODUCED_METER, *_ZONE_PEAK_METERS, *_ZONE_OFFPEAK_METERS])
     vals = _fetch_lifetime_month_stats(year, month, entity_ids)
 
-    produced = _sum_role_month(vals, sources['solar'])
+    produced = _sum_role_month(vals, sources['solar'], warn_missing=True)
     if produced is None:
         produced = produced_live
-    exported = _sum_role_month(vals, sources['grid_export'])
+    exported = _sum_role_month(vals, sources['grid_export'], warn_missing=True)
     if exported is None:
         exported = exported_live
-    peak = _sum_role_month(vals, _ZONE_PEAK_METERS)
-    if peak is None:
-        peak = peak_live
-    offpeak = _sum_role_month(vals, _ZONE_OFFPEAK_METERS)
-    if offpeak is None:
-        offpeak = offpeak_live
-    imported = _sum_role_month(vals, sources['grid_import'])
-    battery_charge_kwh = _sum_role_month(vals, sources['battery_charge'])
-    battery_discharge_kwh = _sum_role_month(vals, sources['battery_discharge'])
+    peak = _sum_role_month(vals, _ZONE_PEAK_METERS, warn_missing=True)
+    offpeak = _sum_role_month(vals, _ZONE_OFFPEAK_METERS, warn_missing=True)
+    if peak is None or offpeak is None:
+        logger.warning('read_current_month: brak LTS peak/offpeak — fallback REST pominięty (liczniki monthly_energy_* zamrożone od G13)')
+    imported = _sum_role_month(vals, sources['grid_import'], warn_missing=True)
+    battery_charge_kwh = _sum_role_month(vals, sources['battery_charge'], warn_missing=True)
+    battery_discharge_kwh = _sum_role_month(vals, sources['battery_discharge'], warn_missing=True)
 
     projected_month_kwh = _solcast_month_projection(today, produced)
 

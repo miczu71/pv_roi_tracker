@@ -112,7 +112,8 @@ def test_read_current_month_forwards_tariff_rates_to_build_record():
         patch.object(lr, '_get_state', side_effect=lambda eid: states.get(eid, None)),
         patch.object(lr, '_solcast_month_projection', return_value=None),
         patch.object(lr, 'get_energy_dashboard_sources', return_value=dict(lr._FALLBACK_ENERGY_SOURCES)),
-        patch.object(lr, '_fetch_lifetime_month_stats', return_value={}),
+        patch.object(lr, '_fetch_lifetime_month_stats',
+                     return_value={'sensor.daily_energy_peak': 120.0, 'sensor.daily_energy_offpeak': 100.0}),
         patch('pv_roi_tracker.live_reader.date') as mock_date,
     ):
         mock_date.today.return_value = date(2026, 7, 15)
