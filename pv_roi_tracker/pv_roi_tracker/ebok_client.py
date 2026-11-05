@@ -664,12 +664,13 @@ _VOID_TAGS = frozenset({'img', 'input', 'br', 'hr', 'meta', 'link', 'source', 'w
 
 
 class _Node:
-    __slots__ = ('tag', 'classes', 'data', 'children', 'parent', 'texts')
+    __slots__ = ('tag', 'classes', 'data', 'children', 'parent', 'texts', 'dvals')
 
     def __init__(self, tag, classes, data, parent):
         self.tag, self.classes, self.data, self.parent = tag, classes, data, parent
         self.children: list = []
         self.texts: list = []
+        self.dvals: dict = {}
 
     def sig(self):
         return (self.tag, tuple(self.classes))
@@ -700,6 +701,7 @@ class _TreeParser(HTMLParser):
                     break
                 n = n.parent
         node.parent = self._cur
+        node.dvals = {a: (v or '') for a, v in attrs if a.startswith('data-')}
         self._cur.children.append(node)
         for a, v in attrs:   # `value="Zapłać"` na przycisku to etykieta UI, jak tekst
             if a == 'value' and tag == 'input' and v:
@@ -851,6 +853,36 @@ def _safe_block_shape(html: str):
         return {'error': 'RecursionError'}   # głęboko zagnieżdżony HTML nie może zepsuć reszty sondy
 
 
+def _details_blocks(html: str, limit: int = 3000) -> Optional[dict]:
+    """Sonda E0i: ukryte `.row-details-container` (wiersze faktur pod punktem poboru) i wiersze
+    z `data-charge-id`. Bez wartości: liście przez `_leaf_fields`, id tylko jako maska kształtu."""
+    parser = _TreeParser()
+    parser.feed(html or '')
+    parser.close()
+    nodes = list(parser.root.walk())
+    containers = [n for n in nodes if 'row-details-container' in n.classes]
+    charge = [n for n in nodes if 'data-charge-id' in n.dvals]
+    if not containers and not charge:
+        return None
+    out: dict = {'containers': len(containers), 'charge_rows': len(charge)}
+    if containers:
+        first = containers[0]
+        out.update({'children': len(list(first.walk())) - 1, 'leaves': _leaf_fields(first),
+                    'skeleton': _node_skeleton(first)[:limit]})
+    if charge:
+        out['charge_id_shapes'] = sorted({_mask_value_shape(n.dvals['data-charge-id']) for n in charge})[:3]
+        out['charge_attrs'] = sorted({re.sub(r'\d', '9', a) for n in charge for a in n.data})[:12]
+        out['charge_row_skeleton'] = _node_skeleton(charge[0])[:limit]
+    return out
+
+
+def _safe_details_blocks(html: str):
+    try:
+        return _details_blocks(html)
+    except RecursionError:
+        return {'error': 'RecursionError'}
+
+
 def _json_shape(value, depth: int = 0, key: str = '', returned: Optional[int] = None):
     if isinstance(value, dict):
         rc = value.get('ReturnedCount')
@@ -866,6 +898,7 @@ def _json_shape(value, depth: int = 0, key: str = '', returned: Optional[int] = 
                     'dl_blocks': _safe_block_shape(value),
                     'item_blocks': _safe_repeated_block_shape(value, returned),
                     'expand_attrs': _expand_attrs(value),
+                    'details_blocks': _safe_details_blocks(value),
                     'tags': dict(Counter(re.findall(r'<([a-z][a-z0-9]*)', value, re.I)).most_common(8))}
         return value if _STATUS_WORD_RE.fullmatch(value) else 'str'
     if isinstance(value, int) and not isinstance(value, bool) and key.endswith('Count'):

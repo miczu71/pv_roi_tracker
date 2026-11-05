@@ -862,8 +862,9 @@ def main() -> None:
                 if shape.get('skeleton'):
                     shape['skeleton'] = mask(shape['skeleton'])
                 result_html = ((shape.get('tree') or {}).get('ResultHtml') or {})
-                for holder in (result_html, result_html.get('dl_blocks') or {}, result_html.get('item_blocks') or {}):
-                    for field in ('html', 'skeleton'):
+                for holder in (result_html, result_html.get('dl_blocks') or {}, result_html.get('item_blocks') or {},
+                               result_html.get('details_blocks') or {}):
+                    for field in ('html', 'skeleton', 'charge_row_skeleton'):
                         if isinstance(holder.get(field), str):
                             holder[field] = mask(holder[field])
                 req = list_probe.get('request') or {}

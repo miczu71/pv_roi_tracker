@@ -1241,3 +1241,32 @@ def test_expand_attrs_masks_digits_in_attribute_names():
     from pv_roi_tracker.ebok_client import _expand_attrs
     out = _expand_attrs('<a class="toggle-button" data-agreement-123456="x"></a>')
     assert 'data-agreement-999999' in out[0]['attrs'] and '123456' not in json.dumps(out)
+
+
+# ── E0i: ukryte row-details-container z wierszami faktur ──
+
+_DETAILS = (
+    '<div class="row invoice-row"><div class="col">Punkt</div></div>'
+    '<div class="row-details-container"><div class="table-inside"><div class="table-wrapper">'
+    '<div class="row" data-charge-id="123456789" data-agreement-id="55"><span>K1NBN000000/037</span>'
+    '<span>31.10.2026</span><span>1,31 zł</span><input class="ebok-checkbox-payment" type="checkbox">'
+    '<a class="ebok-button-pay-agreement">Zapłać</a></div></div></div></div>')
+
+
+def test_details_blocks_shape_without_values():
+    from pv_roi_tracker.ebok_client import _details_blocks
+    out = _details_blocks(_DETAILS * 2)
+    assert out['containers'] == 2 and out['charge_rows'] == 2
+    assert out['charge_id_shapes'] == ['999999999']
+    assert 'data-charge-id' in out['charge_attrs']
+    shapes = [l['shape'] for l in out['leaves']]
+    assert '99,99 aa' not in shapes and '9,99 aa' in shapes and '99.99.9999' in shapes
+    text = json.dumps(out, ensure_ascii=False)
+    assert '123456789' not in text and '000000' not in text and '1,31' not in text and '2026' not in text
+
+
+def test_details_blocks_absent_and_in_json_shape():
+    from pv_roi_tracker.ebok_client import _details_blocks, _json_shape
+    assert _details_blocks('<div><p>a</p></div>') is None
+    out = _json_shape({'ResultHtml': _DETAILS, 'TotalCount': 1, 'ReturnedCount': 1})
+    assert out['ResultHtml']['details_blocks']['containers'] == 1
