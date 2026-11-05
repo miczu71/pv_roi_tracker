@@ -219,6 +219,7 @@ class EbokClient:
         fetched in pages of PAGE_SIZE (at most MAX_PAGES)."""
         if not self._checksum or not self._payer_id:
             raise EbokError('Nie wybrano płatnika (select_payer)')
+        self.last_unpaid_error = None
         docs: list[EbokDocument] = []
         for page in range(MAX_PAGES):
             range_from = page * PAGE_SIZE + 1
@@ -244,7 +245,6 @@ class EbokClient:
                 break
         else:
             logger.warning('eBOK: lista dokumentów obcięta do %d stron (%d dok.)', MAX_PAGES, len(docs))
-        self.last_unpaid_error = None
         try:
             try:
                 unpaid = self.list_unpaid_invoices()
@@ -330,11 +330,13 @@ class EbokClient:
         return pdf
 
     def download_pdf_any_mode(self, pdf_url: str) -> bytes:
-        """download_pdf; po EbokLayoutChanged próby z docMode z DOC_MODE_FALLBACKS (bez oryginalnego).
+        """download_pdf; po EbokError (poza EbokLoginBlocked) próby z docMode z DOC_MODE_FALLBACKS (bez oryginalnego).
         Zwraca pierwszy poprawny PDF, inaczej rzuca ostatni błąd."""
         try:
             return self.download_pdf(pdf_url)
-        except EbokLayoutChanged as exc:
+        except EbokLoginBlocked:
+            raise
+        except EbokError as exc:   # też „odpowiedź nie jest PDF” / błędny status — typowe dla złego docMode
             last: EbokError = exc
         parts = urlparse(pdf_url)
         query = parse_qs(parts.query, keep_blank_values=True)
@@ -345,8 +347,12 @@ class EbokClient:
             query['docMode'] = [mode]
             url = parts._replace(query=urlencode(query, doseq=True)).geturl()
             try:
-                return self.download_pdf(url)
-            except EbokLayoutChanged as exc:
+                pdf = self.download_pdf(url)
+                logger.info('eBOK: PDF pobrany z zapasowym docMode=%s', mode)
+                return pdf
+            except EbokLoginBlocked:
+                raise
+            except EbokError as exc:
                 last = exc
         raise last
 

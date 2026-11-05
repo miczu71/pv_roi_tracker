@@ -1648,3 +1648,35 @@ def test_download_pdf_any_mode_first_success_single_request():
     session.when('GetDocumentImage', _FakeResponse(text=_PDF_JSON))
     assert client.download_pdf_any_mode(_ANY_URL.format(mode=1)).startswith(b'%PDF')
     assert _modes(session) == ['1']
+
+
+def test_download_pdf_any_mode_falls_back_on_plain_ebok_error(monkeypatch):
+    """Zły docMode często daje JSON OK bez pliku PDF (EbokError, nie EbokLayoutChanged)."""
+    from pv_roi_tracker import ebok_client as ec
+    calls = []
+
+    def fake(self, url):
+        calls.append(url)
+        if 'docMode=2' in url:
+            return b'%PDF-ok'
+        raise ec.EbokError('Pobranie PDF: odpowiedź nie jest plikiem PDF')
+
+    monkeypatch.setattr(ec.EbokClient, 'download_pdf', fake)
+    client = ec.EbokClient.__new__(ec.EbokClient)
+    out = client.download_pdf_any_mode('https://moj.tauron.pl/api/sitecore/X/Y?docType=FV&docMode=1')
+    assert out == b'%PDF-ok' and len(calls) == 3
+
+
+def test_download_pdf_any_mode_login_blocked_propagates(monkeypatch):
+    from pv_roi_tracker import ebok_client as ec
+    calls = []
+
+    def fake(self, url):
+        calls.append(url)
+        raise ec.EbokLoginBlocked('x')
+
+    monkeypatch.setattr(ec.EbokClient, 'download_pdf', fake)
+    client = ec.EbokClient.__new__(ec.EbokClient)
+    with pytest.raises(ec.EbokLoginBlocked):
+        client.download_pdf_any_mode('https://moj.tauron.pl/api/sitecore/X/Y?docType=FV&docMode=1')
+    assert len(calls) == 1

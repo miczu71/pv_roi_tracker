@@ -739,7 +739,7 @@ def main() -> None:
                 state['last_sync'] = _dt.now().isoformat()
                 state.pop('blocked_until', None)
                 _save_ebok_state(state)
-                _record_job('ebok', True, 'brak nowych dokumentów')
+                _record_job('ebok', True, 'brak nowych dokumentów' + (' (lista do zapłaty niedostępna)' if unpaid_failed else ''))
                 return {'ok': True, 'imported': [], 'skipped_existing': len(docs), 'errors': [], **diag}
 
             files = []
