@@ -34,6 +34,8 @@ from pv_roi_tracker.ebok_client import (
     parse_home_contract,
     parse_payments_json,
     parse_point_details,
+    parse_unpaid_invoices_html,
+    parse_unpaid_source,
 )
 
 _FIX = Path(__file__).parent / 'fixtures'
@@ -400,6 +402,7 @@ def test_parse_documents_json_skips_rows_without_signature():
 def _selected_client():
     client, session = _client_with_successful_login()
     session.when('/archiwum-dokumentow', _FakeResponse(text=_ARCHIWUM_HTML))
+    session.when('/Home/Pages/Faktury', _FakeResponse(text='<html></html>'))   # brak źródła nierozliczonych
     client.select_payer(_PAYER)
     return client, session
 
@@ -1321,3 +1324,167 @@ def test_probe_invoice_list_returns_source_hints():
     assert {'kind': 'guid', 'where': 'div[data-source-id]', 'n': 1} in hints['result_html_tokens']
     assert any('GetInvoices' in c for c in hints['result_html_code'])
     assert _GUID not in json.dumps(out)
+
+
+# ── faktury do zapłaty (E1: lista „Faktury” → GetInvoices) ───────────────────
+
+_SRC_GUID = '00000000-0000-0000-0000-000000000000'
+_SRC_HEX = 'ab' * 32
+_SIG_A = 'T/K1/XX000000/0020/26'
+_SIG_B = 'K1NXX000000/037'
+
+
+def _unpaid_row(sig, issued='01.10.2026', due='15.10.2026', amount='95,32 zł', doc_type='FV', name='Faktura'):
+    base = ('/api/sitecore/EbokArchiveDocuments/GetDocumentImage?'
+            f'docNumber=x&docType={doc_type}&a=1')
+    return (f'<tr><td><a data-base="{base}" href="#"> {sig} </a><div>{name}</div></td>'
+            f'<td>{issued}</td><td>-</td><td>{due}</td>'
+            f'<td><input data-charge-id="1" data-charge-value="95.32"><div class="amount">{amount}</div>'
+            '<a href="/Payment">Zapłać</a></td></tr>')
+
+
+def _result_html(source_id=_SRC_GUID, checksum=_SRC_HEX):
+    return (f'<div data-source-id="{source_id}" data-contractor-number-checksum="{checksum}" '
+            'data-api-url="/api/sitecore/EbokInvoices/GetInvoices"></div>')
+
+
+def test_parse_unpaid_source_ok():
+    assert parse_unpaid_source(_result_html()) == {'source_id': _SRC_GUID, 'checksum': _SRC_HEX}
+
+
+def test_parse_unpaid_source_missing_attribute_is_none():
+    assert parse_unpaid_source(f'<div data-source-id="{_SRC_GUID}"></div>') is None
+    assert parse_unpaid_source('<div data-contractor-number-checksum="%s"></div>' % _SRC_HEX) is None
+    assert parse_unpaid_source('') is None
+
+
+def test_parse_unpaid_source_bad_format_is_none():
+    assert parse_unpaid_source(_result_html(source_id='nie-guid')) is None
+    assert parse_unpaid_source(_result_html(checksum='ab' * 10)) is None
+
+
+def test_parse_unpaid_invoices_html_rows():
+    html = ('<table>' + _unpaid_row(_SIG_A) + _unpaid_row(_SIG_B, amount='10,00 zł', due='20.10.2026')
+            + '<tr><td><div>Faktura</div></td><td>01.10.2026</td><td>-</td><td>x</td><td></td></tr>'
+            + '</table>')
+    docs = parse_unpaid_invoices_html(html)
+    assert [d.signature for d in docs] == [_SIG_A, _SIG_B]
+    a, b = docs
+    assert a.doc_name == 'Faktura' and a.issued_on == '01.10.2026'
+    assert a.due_date == date(2026, 10, 15) and a.amount_gross_pln == 95.32
+    assert a.paid is False and a.status == 'Do zapłaty' and a.doc_type == 'FV'
+    assert a.pdf_url.startswith('https://moj.tauron.pl/api/sitecore/EbokArchiveDocuments/GetDocumentImage?')
+    assert b.amount_gross_pln == 10.0 and b.due_date == date(2026, 10, 20)
+
+
+def test_parse_unpaid_invoices_html_foreign_pdf_url_dropped():
+    html = _unpaid_row(_SIG_A).replace('/api/sitecore/EbokArchiveDocuments', 'https://evil.example/x')
+    assert parse_unpaid_invoices_html(html)[0].pdf_url is None
+
+
+def test_signature_re_matches_both_formats():
+    from pv_roi_tracker.ebok_client import _SIGNATURE_RE, normalize_signature
+    assert _SIGNATURE_RE.findall(f'a {_SIG_A} b {_SIG_B} c') == [_SIG_A, _SIG_B]
+    assert normalize_signature(_SIG_B) == 'K1NXX000000_037'
+
+
+def _unpaid_page(first, last, total):
+    return _FakeResponse(text=json.dumps({'status': 'OK', 'totalCount': total, 'html': ''.join(
+        _unpaid_row(f'T/K1/XX000000/{i:04d}/26') for i in range(first, last + 1))}))
+
+
+def _unpaid_client(result_html=None):
+    client, session = _selected_client()
+    session._responses.insert(0, ('/Home/Pages/Faktury', _FakeResponse(text=_LIST_PAGE)))
+    body = json.dumps({'ResultHtml': _result_html() if result_html is None else result_html,
+                       'TotalCount': 1, 'ReturnedCount': 1})
+    session.when('EbokInvoiceList/LoadMoreInvoicesProducts', _FakeResponse(text=body))
+    return client, session
+
+
+def test_list_unpaid_invoices_paginates_five_plus_two():
+    client, session = _unpaid_client()
+    session.when('skip=0', _unpaid_page(1, 5, 7))
+    session.when('skip=5', _unpaid_page(6, 7, 7))
+    docs = client.list_unpaid_invoices()
+    assert len(docs) == 7
+    urls = [c[1] for c in session.calls if 'GetInvoices' in c[1]]
+    assert len(urls) == 2
+    for part in (f'sourceId={_SRC_GUID}', f'contractorNumber={_PAYER}', f'checkSum={_SRC_HEX}', 'take=5'):
+        assert part in urls[0]
+
+
+def test_list_unpaid_invoices_without_source_returns_empty():
+    client, session = _unpaid_client(result_html='<div>brak</div>')
+    assert client.list_unpaid_invoices() == []
+    assert not [c for c in session.calls if 'GetInvoices' in c[1]]
+
+
+def test_list_unpaid_invoices_status_not_ok_raises_layout_changed():
+    client, session = _unpaid_client()
+    session.when('GetInvoices', _FakeResponse(text=json.dumps({'status': 'Error', 'html': ''})))
+    with pytest.raises(EbokLayoutChanged):
+        client.list_unpaid_invoices()
+
+
+def test_list_unpaid_invoices_without_payer_raises():
+    client, _ = _seq_client()
+    with pytest.raises(EbokError, match='płatnika'):
+        client.list_unpaid_invoices()
+
+
+def _archive_with(session, sigs):
+    session.when('GetDocuments', _FakeResponse(text=json.dumps({'Status': 'OK', 'TotalNumber': len(sigs), 'Documents': [
+        {'DocSignature': s, 'DocType': 'FV', 'Status': 'Opłacona'} for s in sigs]})))
+
+
+def test_list_documents_appends_unpaid_and_archive_wins_on_duplicates():
+    client, session = _unpaid_client()
+    _archive_with(session, [_SIG_A])
+    session.when('GetInvoices', _FakeResponse(text=json.dumps({'status': 'OK', 'totalCount': 2, 'html':
+                                                              _unpaid_row(_SIG_A) + _unpaid_row(_SIG_B)})))
+    docs = client.list_documents(date(2015, 1, 1), date(2026, 10, 27))
+    assert [d.signature for d in docs] == [_SIG_A, _SIG_B]
+    assert docs[0].paid is True and docs[0].status == 'Opłacona'
+    assert docs[1].paid is False
+
+
+def test_list_documents_unpaid_error_keeps_archive(caplog):
+    client, session = _unpaid_client()
+    _archive_with(session, [_SIG_A])
+    session.when('GetInvoices', _FakeResponse(text=json.dumps({'status': 'Error'})))
+    docs = client.list_documents(date(2015, 1, 1), date(2026, 10, 27))
+    assert [d.signature for d in docs] == [_SIG_A]
+    assert 'EbokLayoutChanged' in caplog.text
+
+
+def test_list_documents_unpaid_request_exception_keeps_archive(monkeypatch):
+    client, session = _unpaid_client()
+    _archive_with(session, [_SIG_A])
+    monkeypatch.setattr(client, 'list_unpaid_invoices',
+                        lambda: (_ for _ in ()).throw(requests.exceptions.ChunkedEncodingError('x')))
+    docs = client.list_documents(date(2015, 1, 1), date(2026, 10, 27))
+    assert [d.signature for d in docs] == [_SIG_A]
+
+
+def test_list_documents_login_blocked_in_unpaid_propagates(monkeypatch):
+    client, session = _unpaid_client()
+    _archive_with(session, [_SIG_A])
+    monkeypatch.setattr(client, 'list_unpaid_invoices',
+                        lambda: (_ for _ in ()).throw(EbokLoginBlocked('x')))
+    with pytest.raises(EbokLoginBlocked):
+        client.list_documents(date(2015, 1, 1), date(2026, 10, 27))
+
+
+def test_unpaid_only_document_becomes_active_payment(tmp_path):
+    from pv_roi_tracker.payment_reminders import apply_refresh, load_payment_state, select_active_payment
+    client, session = _unpaid_client()
+    _archive_with(session, [])
+    session.when('GetInvoices', _FakeResponse(text=json.dumps({'status': 'OK', 'totalCount': 1, 'html':
+                                                              _unpaid_row(_SIG_B)})))
+    docs = client.list_documents(date(2015, 1, 1), date(2026, 10, 27))
+    path = tmp_path / 'payment_state.json'
+    today = docs[0].due_date
+    apply_refresh(docs, path, today)
+    active = select_active_payment(load_payment_state(path), today)
+    assert active['signature'] == _SIG_B

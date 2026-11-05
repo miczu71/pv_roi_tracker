@@ -37,7 +37,7 @@ from datetime import date, datetime
 from html import unescape
 from html.parser import HTMLParser
 from typing import Callable, Optional
-from urllib.parse import urlencode, urljoin
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 
 import requests
 
@@ -51,6 +51,7 @@ REQUEST_TIMEOUT = 45
 ARCHIVE_TIMEOUT = 60
 RETRY_DELAYS = (10, 30, 90)  # s przed kolejnymi ponowieniami GET po timeoucie / błędzie połączenia
 PAGE_SIZE = 100
+UNPAID_PAGE_SIZE = 5
 MAX_PAGES = 10  # safety cap: 1000 dokumentów
 # Status dokumentu uznawany za zapłacony; każdy inny = niezapłacony (słownik poznajemy z logów).
 PAID_STATUSES = {'Opłacona', 'Rozliczono', 'Zapłacona'}
@@ -240,6 +241,20 @@ class EbokClient:
                 break
         else:
             logger.warning('eBOK: lista dokumentów obcięta do %d stron (%d dok.)', MAX_PAGES, len(docs))
+        try:
+            unpaid = self.list_unpaid_invoices()
+        except EbokLoginBlocked:
+            raise
+        except (EbokError, requests.exceptions.RequestException) as exc:
+            logger.warning('eBOK: lista faktur do zapłaty niedostępna (%s) — zwracam samo archiwum',
+                           type(exc).__name__)
+            return docs
+        seen = {normalize_signature(d.signature) for d in docs}
+        for doc in unpaid:
+            key = normalize_signature(doc.signature)
+            if key not in seen:
+                seen.add(key)
+                docs.append(doc)
         return docs
 
     def list_payments(self, date_from: date, date_to: date) -> list[EbokPayment]:
@@ -371,16 +386,9 @@ class EbokClient:
                 'expand_context': expand_context[:8],
                 'item_skeleton': _html_skeleton(html)}
 
-    def probe_invoice_list(self) -> dict:
-        """Sonda E0d (0.55.8, tylko odczyt): jak JS strony Faktury (`loadMoreItems`) — POST
-        `LoadMoreInvoicesProducts?sid&pp` z `startingIndex`, `searchTerm`, `PickupMediumType`
-        i `parentViewModel` (zmienna JS `serializedViewModel` ze strony, przekazywana bez zmian).
-        Zwraca wyłącznie kształt odpowiedzi (`_response_shape`): bez kwot, numerów i płatnika;
-        wartość `serializedViewModel` nie opuszcza metody."""
-        if not self._payer_id:
-            raise EbokError('Nie wybrano płatnika (select_payer)')
-        page_url = f'{SERVICE}/Home/Pages/Faktury?' + urlencode({'sid': SYSTEM, 'pp': self._payer_id})
-        html = self._get(page_url, REQUEST_TIMEOUT).text or ''
+    def _invoice_list_form(self, html: str):
+        """Formularz POST `LoadMoreInvoicesProducts` zbudowany ze strony Faktury: (form | None gdy
+        brak view-modelu, diagnostyka `request`, view_obj). Wspólne dla sondy i list_unpaid_invoices."""
         view_obj = _js_object_var(html, 'serializedViewModel') or None   # pusty {} = brak danych do wysłania
         object_unparsed = view_obj is None and bool(re.search(r'(?<![\w.$])serializedViewModel\s*=\s*\{', html))
         view_text = None if view_obj is not None else _js_string_var(html, 'serializedViewModel')
@@ -399,20 +407,92 @@ class EbokClient:
                    'medium_type_found': medium is not None,
                    'medium_type': medium, 'medium_type_source': medium_source}
         if view_obj is None and view_text is None:
-            request['view_model_context'] = _var_context(html, 'serializedViewModel')
-            return {'ok': False, 'request': request,
-                    'skipped': 'brak (lub nie do sparsowania) serializedViewModel jako obiektu ani literału tekstowego — POST pominięty'}
-        if medium is None:
-            request['medium_type_context'] = _var_context(html, 'mediumType')
+            return None, request, view_obj
         form = [('startingIndex', 0), ('searchTerm', ''), ('PickupMediumType', medium or '')]
         form += _flatten_params(view_obj, 'parentViewModel') if view_obj is not None \
             else [('parentViewModel', view_text)]
-        r = self._session.post(
+        return form, request, view_obj
+
+    def _post_invoice_form(self, form: list, page_url: str):
+        return self._session.post(
             f'{SERVICE}/api/sitecore/EbokInvoiceList/LoadMoreInvoicesProducts?'
             + urlencode({'sid': SYSTEM, 'pp': self._payer_id}),
             data=form,
             headers={'User-Agent': USER_AGENT, 'X-Requested-With': 'XMLHttpRequest', 'Referer': page_url},
             timeout=REQUEST_TIMEOUT)
+
+    def _post_invoice_list(self, page_html: str) -> Optional[str]:
+        """POST jak JS strony Faktury; zwraca `ResultHtml` albo None (brak view-modelu / brak
+        ResultHtml w odpowiedzi). Wygasła sesja → EbokError."""
+        form, _request, _view = self._invoice_list_form(page_html)
+        if form is None:
+            return None
+        page_url = f'{SERVICE}/Home/Pages/Faktury?' + urlencode({'sid': SYSTEM, 'pp': self._payer_id})
+        r = self._post_invoice_form(form, page_url)
+        if _is_login_page(r):
+            raise EbokError('Sesja eBOK wygasła przy zapytaniu o listę faktur')
+        try:
+            payload = json.loads(r.text or '')
+        except (ValueError, RecursionError):
+            return None
+        rh = payload.get('ResultHtml') if isinstance(payload, dict) else None
+        return rh if isinstance(rh, str) else None
+
+    def list_unpaid_invoices(self) -> list[EbokDocument]:
+        """Faktury do zapłaty z listy „Faktury” (jeszcze nieobecne w archiwum): POST
+        LoadMoreInvoicesProducts → źródło (sourceId + checksum) → GET GetInvoices stronami
+        po 5. Brak źródła (brak faktur do zapłaty) → []."""
+        if not self._payer_id:
+            raise EbokError('Nie wybrano płatnika (select_payer)')
+        page_html = self._get(f'{SERVICE}/Home/Pages/Faktury?'
+                              + urlencode({'sid': SYSTEM, 'pp': self._payer_id}), REQUEST_TIMEOUT).text or ''
+        source = parse_unpaid_source(self._post_invoice_list(page_html) or '')
+        if source is None:
+            logger.info('eBOK: brak źródła faktur do zapłaty na liście Faktury')
+            return []
+        docs: list[EbokDocument] = []
+        skip = 0
+        for _ in range(MAX_PAGES):
+            query = urlencode({'sourceId': source['source_id'], 'contractorNumber': self._payer_id,
+                               'checkSum': source['checksum'], 'take': UNPAID_PAGE_SIZE, 'skip': skip})
+            r = self._get(f'{SERVICE}/api/sitecore/EbokInvoices/GetInvoices?{query}', ARCHIVE_TIMEOUT)
+            if r.status_code != 200:
+                raise EbokError(f'Pobranie faktur do zapłaty nie powiodło się (status {r.status_code})')
+            try:
+                data = json.loads(r.text)
+            except ValueError as exc:
+                raise EbokLayoutChanged('Odpowiedź (faktury do zapłaty) nie jest JSON-em') from exc
+            if not isinstance(data, dict) or data.get('status') != 'OK':   # klucze małymi literami
+                raise EbokLayoutChanged('Odpowiedź (faktury do zapłaty) ze statusem '
+                                        f"{data.get('status') if isinstance(data, dict) else type(data).__name__!r}"
+                                        ' zamiast "OK"')
+            docs.extend(parse_unpaid_invoices_html(data.get('html') or ''))
+            total = data.get('totalCount')
+            skip += UNPAID_PAGE_SIZE
+            if not isinstance(total, int) or skip >= total:
+                break
+        else:
+            logger.warning('eBOK: lista faktur do zapłaty obcięta do %d stron', MAX_PAGES)
+        return docs
+
+    def probe_invoice_list(self) -> dict:
+        """Sonda E0d (0.55.8, tylko odczyt): jak JS strony Faktury (`loadMoreItems`) — POST
+        `LoadMoreInvoicesProducts?sid&pp` z `startingIndex`, `searchTerm`, `PickupMediumType`
+        i `parentViewModel` (zmienna JS `serializedViewModel` ze strony, przekazywana bez zmian).
+        Zwraca wyłącznie kształt odpowiedzi (`_response_shape`): bez kwot, numerów i płatnika;
+        wartość `serializedViewModel` nie opuszcza metody."""
+        if not self._payer_id:
+            raise EbokError('Nie wybrano płatnika (select_payer)')
+        page_url = f'{SERVICE}/Home/Pages/Faktury?' + urlencode({'sid': SYSTEM, 'pp': self._payer_id})
+        html = self._get(page_url, REQUEST_TIMEOUT).text or ''
+        form, request, view_obj = self._invoice_list_form(html)
+        if form is None:
+            request['view_model_context'] = _var_context(html, 'serializedViewModel')
+            return {'ok': False, 'request': request,
+                    'skipped': 'brak (lub nie do sparsowania) serializedViewModel jako obiektu ani literału tekstowego — POST pominięty'}
+        if not request['medium_type_found']:
+            request['medium_type_context'] = _var_context(html, 'mediumType')
+        r = self._post_invoice_form(form, page_url)
         if _is_login_page(r):
             raise EbokError('Sesja eBOK wygasła przy zapytaniu o listę faktur')
         result_html = ''
@@ -1029,7 +1109,7 @@ def parse_client_checksum(html: str, payer_id: str) -> Optional[str]:
 _API_PATH_RE = re.compile(r'(/api/sitecore/[A-Za-z0-9_]+/[A-Za-z0-9_]+)(?:\?([^"\'\s<>]*))?')
 _SCRIPT_SRC_RE = re.compile(r'<script[^>]+src="([^"]+)"', re.I)
 _DATA_ATTR_RE = re.compile(r'\b(data-[a-z0-9-]+)=', re.I)
-_SIGNATURE_RE = re.compile(r'\bT/K1/[A-Za-z0-9]+(?:/\d{4})?/\d{2}\b')
+_SIGNATURE_RE = re.compile(r'\bT/K1/[A-Za-z0-9]+(?:/\d{4})?/\d{2}\b|\bK1N[A-Za-z0-9]+/\d{3}\b')
 MAX_PROBE_SCRIPTS = 8
 _POINT_LINK_RE = re.compile(r'href="([^"]*punkty-poboru[^"]*)"')
 _DL_HORIZONTAL_RE = re.compile(r'<dl[^>]*\bdl-horizontal\b[^>]*>(.*?)</dl>', re.S | re.I)
@@ -1132,6 +1212,136 @@ def parse_documents_json(data: dict) -> list:
         ))
     for status in sorted(unknown):
         logger.info('eBOK: status dokumentu poza PAID_STATUSES: %r', status)
+    return docs
+
+
+_GUID_RE = re.compile(r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}')
+_CHECKSUM_RE = re.compile(r'[0-9a-fA-F]{64}')
+
+
+class _UnpaidSourceParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.found: Optional[dict] = None
+
+    def handle_starttag(self, tag, attrs):
+        if self.found is not None:
+            return
+        a = dict(attrs)
+        if 'data-source-id' in a:
+            self.found = a
+
+
+def parse_unpaid_source(result_html: str) -> Optional[dict]:
+    """{'source_id', 'checksum'} z pierwszego elementu z `data-source-id` w ResultHtml listy
+    Faktury; brak atrybutu albo zły format (GUID / 64 hex) → None."""
+    parser = _UnpaidSourceParser()
+    try:
+        parser.feed(result_html or '')
+    except Exception:  # noqa: BLE001 — HTMLParser na śmieciach; brak źródła = None
+        return None
+    attrs = parser.found
+    if not attrs:
+        return None
+    source_id = (attrs.get('data-source-id') or '').strip()
+    checksum = (attrs.get('data-contractor-number-checksum') or '').strip()
+    if not _GUID_RE.fullmatch(source_id) or not _CHECKSUM_RE.fullmatch(checksum):
+        return None
+    return {'source_id': source_id, 'checksum': checksum}
+
+
+class _UnpaidRowsParser(HTMLParser):
+    """Wiersze `<tr><td>…` z html GetInvoices → listy komórek ze znacznikami potrzebnych pól."""
+
+    def __init__(self):
+        super().__init__()
+        self.rows: list = []
+        self._row = None
+        self._cell = None
+        self._in_div = None     # 'amount' | 'type' | None
+        self._in_link = False
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if tag == 'tr':
+            self._row = {'cells': [], 'base': None, 'number': '', 'type': '', 'amount': ''}
+        elif self._row is None:
+            return
+        elif tag == 'td':
+            self._cell = []
+            self._row['cells'].append(self._cell)
+        elif tag == 'a' and 'data-base' in a and self._row['base'] is None:
+            self._row['base'] = a['data-base'] or ''
+            self._in_link = True
+        elif tag == 'div' and self._cell is not None:
+            classes = (a.get('class') or '').split()
+            if 'amount' in classes:
+                self._in_div = 'amount'
+            elif len(self._row['cells']) == 1 and self._row['base'] is not None and not self._row['type']:
+                self._in_div = 'type'
+
+    def handle_endtag(self, tag):
+        if self._row is None:
+            return
+        if tag == 'a':
+            self._in_link = False
+        elif tag == 'div':
+            self._in_div = None
+        elif tag == 'td':
+            self._cell = None
+        elif tag == 'tr':
+            self.rows.append(self._row)
+            self._row = None
+
+    def handle_data(self, data):
+        if self._row is None:
+            return
+        if self._cell is not None:
+            self._cell.append(data)
+        if self._in_link:
+            self._row['number'] += data
+        elif self._in_div:
+            self._row[self._in_div] += data
+
+
+def parse_unpaid_invoices_html(html: str) -> list:
+    """`html` z GetInvoices (wiersze `<tr><td>`) → EbokDocument (paid=False, status „Do zapłaty”).
+    Kolumny: 1 numer (`a[data-base]` + `div` typu), 2 data wystawienia, 4 termin, 5 `div.amount`.
+    Wiersz bez numeru jest pomijany."""
+    parser = _UnpaidRowsParser()
+    try:
+        parser.feed(html or '')
+        parser.close()
+    except Exception:  # noqa: BLE001 — uszkodzony HTML: zwracamy to, co się sparsowało
+        pass
+    docs = []
+    for row in parser.rows:
+        signature = ' '.join(unescape(row['number']).split())
+        if not signature:
+            continue
+        cells = [' '.join(unescape(''.join(c)).split()) for c in row['cells']]
+        issued = _parse_date(cells[1]) if len(cells) > 1 else None
+        due = _parse_date(cells[3]) if len(cells) > 3 else None
+        amount = ' '.join(unescape(row['amount']).split()).replace('zł', '').strip()
+        base = (row['base'] or '').strip()
+        doc_type = 'FV'
+        pdf_url = None
+        if base.startswith('/api/sitecore/'):
+            pdf_url = SERVICE + base
+            found = parse_qs(urlparse(base).query).get('docType')
+            if found and found[0].strip():
+                doc_type = found[0].strip()
+        docs.append(EbokDocument(
+            signature=signature,
+            doc_name=' '.join(unescape(row['type']).split()),
+            issued_on=issued.strftime('%d.%m.%Y') if issued else '',
+            amount_gross_pln=_to_float(amount),
+            due_date=due,
+            paid=False,
+            pdf_url=pdf_url,
+            status='Do zapłaty',
+            doc_type=doc_type,
+        ))
     return docs
 
 
