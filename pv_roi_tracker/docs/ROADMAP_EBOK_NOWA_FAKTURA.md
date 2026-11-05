@@ -183,3 +183,11 @@ Ustalenia na żywo (store przez `api/data`, 1 diag, logi):
 3. simplify → code-review + silent-failure-hunter + pr-test-analyzer + security (na `v0.56.1..HEAD`) → release 0.56.2 → `ha_manage_updates` backup=true.
 4. Weryfikacja na żywo **jutro** (limit logowań): jeden `POST api/ebok/sync`; odczyt logu o brakujących i o próbach docMode (haiku-scout). Kryterium: lista brakujących nazwana, import 2024-01/2026-11 nie powtarza się albo ma wskazaną przyczynę; `payment-status` nie gubi aktywnej płatności; 037 pobrany albo znamy odpowiedź dla docMode 0/2.
 Rollback: backup add-onu z `ha_manage_updates` (0.56.1).
+
+## STATUS dedup-037 2026-11-05 (0.56.2 na żywo; tag `v0.56.2` published, dev `1e58313`, `8edddd1`, `eda6852` + wydanie, kopia /config `045e534`; testy 1442 passed / 23 skipped)
+
+- Zrobione wg `docs/PLAN_EBOK_NOWA_FAKTURA_DEDUP037.md`: retry listy „do zapłaty” (1×, `RequestException`) + `last_unpaid_error`; `download_pdf_any_mode` (docMode 0/2 po `EbokError`, nie `EbokLoginBlocked`; log udanego trybu) dla dokumentów „Do zapłaty”; sync zwraca i loguje zamaskowaną listę `missing` oraz `unpaid_failed`; health „brak nowych (lista do zapłaty niedostępna)”.
+- Korekty planu: krok 1(b) zbędny (`apply_refresh` scala wpisy — porażka listy nie kasuje aktywnej płatności; dodany test regresyjny); krok 1(d) `needs_training` poza zakresem (wymaga zmiany `invoice_ingest`) — nadal otwarte.
+- Przeglądy: security 0 znalezisk; pr-test-analyzer i silent-failure-hunter 0 blokujących; code-review: poprawione (fallback po zwykłym `EbokError`, reset `last_unpaid_error` na starcie `list_documents`). Pubguard 0. Nieblokujące, niewprowadzone: brak testu `ebok_sync` (closure), literał `'Do zapłaty'` ×3, brak retry dla `EbokError` 5xx, `diag['latest']` niezamaskowane (stare), `ebok_payment_check` nie czyta `last_unpaid_error`.
+- **Weryfikacja na żywo dopiero 06.11** (limit logowań do eBOK): jeden `POST api/ebok/sync`. Kryteria: `missing` nazywa brakujące dokumenty (hipoteza kolizji klucza `YYYY-MM` dla 2024-01/2026-11), `unpaid_failed` false, log prób docMode dla 037, `payment-status` nie gubi aktywnej płatności.
+- Otwarte: PDF 037, powtarzany import 2024-01/2026-11, `needs_training`/`reconciled=False` dla 2026-11, kwoty 3 faktur (suma 104,48), notatka pamięci HA `project_ebok_moj_tauron`, zamknięcie długów G13 w `/config/docs/ROADMAP_energy_panel_g13.md`.
