@@ -1108,3 +1108,41 @@ def test_invoice_block_shape_implied_end_tags_and_class_digits():
     assert [f['label'] for f in out['fields']] == ['Numer', 'Termin płatności']
     assert out['fields'][1]['shape'] == '99.99.9999' and 'inv-99999' in out['skeleton'] and '12345' not in out['skeleton']
     assert _safe_block_shape('<dl><dt>a' + '<li>' * 3000 + '</dl>') is not None
+
+
+_ROW_BLOCK = (
+    '<div class="row item"><div class="col-a"><span class="num">K1AB000000/037</span>'
+    '<span class="typ">Faktura</span></div>'
+    '<div class="col-b">31.10.2026</div><div class="col-c">ul. Tajna 5</div>'
+    '<div class="col-d">14.11.2026</div>'
+    '<div class="col-e"><span>95,32 zł</span><input type="button" value="Zapłać"></div>'
+    '<dl class="dl-horizontal"><dt>Należność</dt><dd>1,00 zł</dd></dl></div>')
+
+
+def test_repeated_block_shape_picks_container_with_returned_count_not_first_dt():
+    from pv_roi_tracker.ebok_client import _repeated_block_shape
+    html = '<div class="sum"><dl><dt>Łącznie</dt><dd>9,99 zł</dd></dl><dl><dt>Nota odsetkowa</dt><dd>0,00 zł</dd></dl></div>' \
+           '<div id="itemList">' + _ROW_BLOCK * 3 + '</div>'
+    out = _repeated_block_shape(html, 3)
+    assert out['blocks'] == 3 and out['skeleton'].startswith('<div.row.item>')
+    by_path = {l['path']: l for l in out['leaves']}
+    shapes = [l['shape'] for l in out['leaves']]
+    assert 'a9aa999999/999' in shapes and '99.99.9999' in shapes and '99,99 aa' in shapes
+    assert any(l['label'] == 'Zapłać' for l in out['leaves'])
+    assert any(l['label'] == 'Należność' for l in out['leaves'])
+    assert not any(l.get('label') == 'ul. Tajna' for l in out['leaves'])
+    text = json.dumps(out, ensure_ascii=False)
+    assert '95,32' not in text and '000000' not in text and 'Tajna' not in text and '2026' not in text
+    assert by_path
+
+
+def test_repeated_block_shape_no_match_returns_none():
+    from pv_roi_tracker.ebok_client import _repeated_block_shape
+    assert _repeated_block_shape('<div><p>a</p></div>', 3) is None
+    assert _repeated_block_shape(_ROW_BLOCK * 2, 0) is None
+
+
+def test_json_shape_passes_returned_count_to_item_blocks():
+    from pv_roi_tracker.ebok_client import _json_shape
+    out = _json_shape({'ResultHtml': '<div id="l">' + _ROW_BLOCK * 3 + '</div>', 'TotalCount': 3, 'ReturnedCount': 3})
+    assert out['ResultHtml']['item_blocks']['blocks'] == 3

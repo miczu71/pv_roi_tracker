@@ -693,6 +693,73 @@ def _invoice_block_shape(html: str, limit: int = 1500) -> Optional[dict]:
             'skeleton': _node_skeleton(block)[:limit]}
 
 
+_UI_LABELS = frozenset({
+    'zapłać', 'numer', 'typ', 'faktura', 'data wystawienia', 'termin płatności', 'kwota do zapłaty',
+    'informacje dodatkowe', 'należność', 'nota odsetkowa', 'łącznie', 'do zapłaty', 'po terminie',
+    'szczegóły', 'pobierz', 'nazwa', 'status'})
+
+
+def _node_depth(node: '_Node') -> int:
+    d = 0
+    while node.parent is not None:
+        node, d = node.parent, d + 1
+    return d
+
+
+def _leaf_fields(block: '_Node', limit: int = 60) -> list:
+    """Liście tekstowe bloku: ścieżka tag.klasa (cyfry → 9), zamaskowany kształt, etykieta tylko
+    gdy tekst to znane słowo UI (lista stała — nigdy adres, nazwa ani numer)."""
+    out = []
+    for n in block.walk():
+        own = ' '.join(' '.join(n.texts).split())
+        if not own:
+            continue
+        chain, cur = [], n
+        while cur is not None and cur is not block.parent:
+            chain.append(cur.tag + ''.join('.' + re.sub(r'\d', '9', c) for c in cur.classes))
+            cur = cur.parent
+        out.append({'path': '>'.join(reversed(chain))[:120], 'shape': _mask_value_shape(own),
+                    'label': own if own.lower() in _UI_LABELS else None})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _repeated_block_shape(html: str, count: int, limit: int = 3000) -> Optional[dict]:
+    """Sonda E0g: blok faktury = najwyższa grupa rodzeństwa o tej samej sygnaturze tag+klasy
+    i liczności == `count` (ReturnedCount); przy kilku grupach na tej samej głębokości
+    wygrywa ta z tekstem „Zapłać”. Zwraca szkielet i liście; bez wartości."""
+    if not isinstance(count, int) or isinstance(count, bool) or count < 2:
+        return None
+    parser = _TreeParser()
+    parser.feed(html or '')
+    parser.close()
+    best = None   # (priorytet, głębokość, pierwszy węzeł grupy)
+    for parent in parser.root.walk():
+        groups: dict = {}
+        for c in parent.children:
+            groups.setdefault(c.sig(), []).append(c)
+        for members in groups.values():
+            if len(members) != count:
+                continue
+            pay = bool(re.search(r'zapłać', members[0].text(), re.I))
+            key = (0 if pay else 1, _node_depth(members[0]))
+            if best is None or key < best[0]:
+                best = (key, members[0])
+    if best is None:
+        return None
+    block = best[1]
+    return {'blocks': count, 'children': len(list(block.walk())) - 1,
+            'leaves': _leaf_fields(block), 'skeleton': _node_skeleton(block)[:limit]}
+
+
+def _safe_repeated_block_shape(html: str, count):
+    try:
+        return _repeated_block_shape(html, count)
+    except RecursionError:
+        return {'error': 'RecursionError'}
+
+
 def _safe_block_shape(html: str):
     try:
         return _invoice_block_shape(html)
@@ -700,10 +767,11 @@ def _safe_block_shape(html: str):
         return {'error': 'RecursionError'}   # głęboko zagnieżdżony HTML nie może zepsuć reszty sondy
 
 
-def _json_shape(value, depth: int = 0, key: str = ''):
+def _json_shape(value, depth: int = 0, key: str = '', returned: Optional[int] = None):
     if isinstance(value, dict):
-        return {re.sub(r'\d', '9', str(k)): _json_shape(v, depth + 1, str(k)) for k, v in value.items()} \
-            if depth < 4 else 'object'
+        rc = value.get('ReturnedCount')
+        return {re.sub(r'\d', '9', str(k)): _json_shape(v, depth + 1, str(k), rc if isinstance(rc, int) else None)
+                for k, v in value.items()} if depth < 4 else 'object'
     if isinstance(value, list):
         return {'list': len(value), 'item': _json_shape(value[0], depth + 1) if value and depth < 4 else None}
     if isinstance(value, str):
@@ -712,6 +780,7 @@ def _json_shape(value, depth: int = 0, key: str = ''):
                     'rows': len(_ITEM_START_RE.findall(value)),
                     'signatures': len(set(_SIGNATURE_RE.findall(value))),
                     'dl_blocks': _safe_block_shape(value),
+                    'item_blocks': _safe_repeated_block_shape(value, returned),
                     'tags': dict(Counter(re.findall(r'<([a-z][a-z0-9]*)', value, re.I)).most_common(8))}
         return value if _STATUS_WORD_RE.fullmatch(value) else 'str'
     if isinstance(value, int) and not isinstance(value, bool) and key.endswith('Count'):
