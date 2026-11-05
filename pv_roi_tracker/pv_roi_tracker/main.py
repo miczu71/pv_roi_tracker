@@ -288,6 +288,18 @@ def _ebok_missing_documents(docs, known: set) -> tuple:
     return missing, len(missing) > MAX_NEW_PER_SYNC
 
 
+def _ebok_missing_summary(missing) -> list:
+    """Zamaskowana lista brakujących dokumentów do logu i diagnostyki sync (bez prawdziwych numerów)."""
+    import re
+    out = []
+    for d in missing:
+        parts = (d.issued_on or '').split('.')
+        month = f'{parts[2]}-{parts[1]}' if len(parts) == 3 else ''
+        out.append({'month': month, 'sig': re.sub(r'\d+', '<n>', d.signature), 'name': d.doc_name,
+                    'source': 'do_zapłaty' if d.status == 'Do zapłaty' else 'archiwum'})
+    return out
+
+
 def _payments_window_start(today: date) -> date:
     """Początek okna wpłat: 13 miesięcy wstecz (dzień przycięty do długości miesiąca)."""
     from dateutil.relativedelta import relativedelta
@@ -703,8 +715,14 @@ def main() -> None:
                 # Status OK z pustą listą przy znanej historii = zły checksum/płatnik, nie „brak nowych”
                 raise _ec.EbokLayoutChanged('Lista dokumentów jest pusta mimo zaimportowanych faktur')
             missing, over_limit = _ebok_missing_documents(docs, known_numbers)
-            diag = {'total': len(docs), 'latest': [d.signature for d in _ebok_newest(docs)]}
-            logger.info('eBOK: %d dok., brakujących %d', len(docs), len(missing))
+            missing_summary = _ebok_missing_summary(missing)
+            unpaid_failed = bool(getattr(client, 'last_unpaid_error', None))
+            diag = {'total': len(docs), 'latest': [d.signature for d in _ebok_newest(docs)],
+                    'missing': missing_summary, 'unpaid_failed': unpaid_failed}
+            logger.info('eBOK: %d dok., brakujących %d: %s', len(docs), len(missing), missing_summary)
+            if unpaid_failed:
+                logger.warning('eBOK: lista faktur do zapłaty niedostępna (%s) — wynik może być niepełny',
+                               client.last_unpaid_error)
 
             refresh_payment_bar(docs)
             from datetime import date as _date
@@ -731,7 +749,8 @@ def main() -> None:
                     not_found.append(doc.signature)
                     continue
                 try:
-                    pdf_bytes = client.download_pdf(doc.pdf_url)
+                    fetch = client.download_pdf_any_mode if doc.status == 'Do zapłaty' else client.download_pdf
+                    pdf_bytes = fetch(doc.pdf_url)
                     files.append((f'ebok_{doc.signature.replace("/", "-")}.pdf', pdf_bytes))
                 except Exception:
                     logger.exception('eBOK: pobranie PDF %s nie powiodło się', doc.signature)

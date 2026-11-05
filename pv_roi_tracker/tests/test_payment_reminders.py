@@ -477,3 +477,14 @@ def test_dismissing_one_of_two_keeps_the_other_and_clears_its_notified(tmp_path)
     assert apply_reconciliation(path, _result([_mm(S15), _mm(S17)]), date(2026, 10, 30)) == []
     block = load_payment_state(path)['_payments']
     assert [m['signature'] for m in block['mismatches']] == [S17] and block['notified'] == [S17]
+
+
+def test_refresh_payment_state_keeps_active_payment_when_list_lacks_it():
+    """Porażka listy „do zapłaty” (faktura nieobecna w docs) nie kasuje aktywnej płatności."""
+    state = {'SIG/UNPAID': {'reminded_before': False, 'reminded_due': False,
+                            'due_date': '2026-10-10', 'paid': False, 'amount_gross_pln': 95.32}}
+    docs = [_Doc('SIG/OTHER', date(2026, 9, 1), paid=True, amount_gross_pln=80.0)]
+    today = date(2026, 10, 4)
+    _, new_state = refresh_payment_state(docs, state, today)
+    active = select_active_payment(new_state, today)
+    assert active is not None and active['signature'] == 'SIG/UNPAID'

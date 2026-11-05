@@ -53,6 +53,8 @@ RETRY_DELAYS = (10, 30, 90)  # s przed kolejnymi ponowieniami GET po timeoucie /
 PAGE_SIZE = 100
 UNPAID_PAGE_SIZE = 5
 MAX_PAGES = 10  # safety cap: 1000 dokumentów
+UNPAID_RETRY_DELAY = 3  # s przed jedynym ponowieniem listy „do zapłaty”
+DOC_MODE_FALLBACKS = ('0', '2')  # docMode próbowane po porażce pobrania PDF
 # Status dokumentu uznawany za zapłacony; każdy inny = niezapłacony (słownik poznajemy z logów).
 PAID_STATUSES = {'Opłacona', 'Rozliczono', 'Zapłacona'}
 _PAID_FOLDED = {s.casefold() for s in PAID_STATUSES}
@@ -122,6 +124,7 @@ class EbokClient:
         self._logged_in = False
         self._payer_id: Optional[str] = None
         self._checksum: Optional[str] = None
+        self.last_unpaid_error: Optional[str] = None
 
     def _get_retrying(self, *args, **kwargs):
         """session.get z ponowieniami po timeoucie / błędzie połączenia (kolejne
@@ -241,11 +244,18 @@ class EbokClient:
                 break
         else:
             logger.warning('eBOK: lista dokumentów obcięta do %d stron (%d dok.)', MAX_PAGES, len(docs))
+        self.last_unpaid_error = None
         try:
-            unpaid = self.list_unpaid_invoices()
+            try:
+                unpaid = self.list_unpaid_invoices()
+            except requests.exceptions.RequestException as exc:
+                logger.warning('eBOK: lista faktur do zapłaty — ponawiam raz (%s)', type(exc).__name__)
+                time.sleep(UNPAID_RETRY_DELAY)
+                unpaid = self.list_unpaid_invoices()
         except EbokLoginBlocked:
             raise
         except (EbokError, requests.exceptions.RequestException) as exc:
+            self.last_unpaid_error = type(exc).__name__
             logger.warning('eBOK: lista faktur do zapłaty niedostępna (%s: %s) — zwracam samo archiwum',
                            type(exc).__name__, exc)
             return docs
@@ -318,6 +328,27 @@ class EbokClient:
             logger.warning('eBOK: odpowiedź PDF bez pliku PDF (%s)', _safe_pdf_shape(r, pdf_url))
             raise EbokError('Pobranie PDF: odpowiedź nie jest plikiem PDF')
         return pdf
+
+    def download_pdf_any_mode(self, pdf_url: str) -> bytes:
+        """download_pdf; po EbokLayoutChanged próby z docMode z DOC_MODE_FALLBACKS (bez oryginalnego).
+        Zwraca pierwszy poprawny PDF, inaczej rzuca ostatni błąd."""
+        try:
+            return self.download_pdf(pdf_url)
+        except EbokLayoutChanged as exc:
+            last: EbokError = exc
+        parts = urlparse(pdf_url)
+        query = parse_qs(parts.query, keep_blank_values=True)
+        original = (query.get('docMode') or [''])[0]
+        for mode in DOC_MODE_FALLBACKS:
+            if mode == original:
+                continue
+            query['docMode'] = [mode]
+            url = parts._replace(query=urlencode(query, doseq=True)).geturl()
+            try:
+                return self.download_pdf(url)
+            except EbokLayoutChanged as exc:
+                last = exc
+        raise last
 
     def read_contract(self) -> dict:
         """Umowa z portalu: strona główna (umowa, taryfa, faktura) uzupełniona szczegółami

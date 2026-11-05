@@ -374,3 +374,23 @@ def test_periods_peak_fn_override_g13_traktuje_szczyt_jak_szczyt(tmp_path, monke
     assert fn is not None
     assert fn(datetime(2026, 11, 3, 8)) is True    # wtorek, zimowy szczyt poranny G13
     assert fn(datetime(2026, 11, 3, 14)) is False  # wtorek, pozasz. G13
+
+
+# ── _ebok_missing_summary (diagnostyka brakujących dokumentów) ───────────────
+
+def test_ebok_missing_summary_masks_digits_source_and_month():
+    from pv_roi_tracker.main import _ebok_missing_summary
+
+    class D:
+        def __init__(self, signature, doc_name, issued_on, status):
+            self.signature, self.doc_name = signature, doc_name
+            self.issued_on, self.status = issued_on, status
+
+    summary = _ebok_missing_summary([
+        D('K1NXX000000/037', 'Faktura', '05.10.2026', 'Do zapłaty'),
+        D('T/K1/XX000000/0020/26', 'Faktura rzeczywista', '', 'Opłacona'),
+    ])
+    assert summary == [
+        {'month': '2026-10', 'sig': 'K<n>NXX<n>/<n>', 'name': 'Faktura', 'source': 'do_zapłaty'},
+        {'month': '', 'sig': 'T/K<n>/XX<n>/<n>/<n>', 'name': 'Faktura rzeczywista', 'source': 'archiwum'},
+    ]

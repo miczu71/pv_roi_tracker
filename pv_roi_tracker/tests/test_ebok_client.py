@@ -1533,3 +1533,118 @@ def test_unpaid_only_document_becomes_active_payment(tmp_path):
     apply_refresh(docs, path, today)
     active = select_active_payment(load_payment_state(path), today)
     assert active['signature'] == _SIG_B
+
+
+# ── retry listy „do zapłaty” i last_unpaid_error ────────────────────────────
+
+def _unpaid_doc():
+    from pv_roi_tracker.ebok_client import EbokDocument
+    return EbokDocument(signature=_SIG_B, doc_name='Faktura', issued_on='01.10.2026',
+                        amount_gross_pln=95.32, status='Do zapłaty', doc_type='FV')
+
+
+def _raiser(*excs):
+    """list_unpaid_invoices: kolejne wywołania rzucają kolejne wyjątki, a po wyczerpaniu zwraca dokument."""
+    calls = []
+
+    def fake():
+        calls.append(1)
+        if len(calls) <= len(excs):
+            raise excs[len(calls) - 1]
+        return [_unpaid_doc()]
+    return fake, calls
+
+
+def test_unpaid_retry_succeeds_on_second_attempt(monkeypatch):
+    from pv_roi_tracker import ebok_client
+    monkeypatch.setattr(ebok_client, 'UNPAID_RETRY_DELAY', 0)
+    client, session = _unpaid_client()
+    _archive_with(session, [_SIG_A])
+    fake, calls = _raiser(requests.exceptions.ConnectionError('x'))
+    monkeypatch.setattr(client, 'list_unpaid_invoices', fake)
+    docs = client.list_documents(date(2015, 1, 1), date(2026, 10, 27))
+    assert [d.signature for d in docs] == [_SIG_A, _SIG_B]
+    assert len(calls) == 2
+    assert client.last_unpaid_error is None
+
+
+def test_unpaid_two_failures_keep_archive_and_record_error_type(monkeypatch):
+    from pv_roi_tracker import ebok_client
+    monkeypatch.setattr(ebok_client, 'UNPAID_RETRY_DELAY', 0)
+    client, session = _unpaid_client()
+    _archive_with(session, [_SIG_A])
+    fake, calls = _raiser(requests.exceptions.ConnectionError('SECRET-host'),
+                          requests.exceptions.ConnectionError('SECRET-host'))
+    monkeypatch.setattr(client, 'list_unpaid_invoices', fake)
+    docs = client.list_documents(date(2015, 1, 1), date(2026, 10, 27))
+    assert [d.signature for d in docs] == [_SIG_A]
+    assert len(calls) == 2
+    assert client.last_unpaid_error == 'ConnectionError'
+
+
+def test_unpaid_login_blocked_propagates_without_retry(monkeypatch):
+    from pv_roi_tracker import ebok_client
+    monkeypatch.setattr(ebok_client, 'UNPAID_RETRY_DELAY', 0)
+    client, session = _unpaid_client()
+    _archive_with(session, [_SIG_A])
+    fake, calls = _raiser(EbokLoginBlocked('x'))
+    monkeypatch.setattr(client, 'list_unpaid_invoices', fake)
+    with pytest.raises(EbokLoginBlocked):
+        client.list_documents(date(2015, 1, 1), date(2026, 10, 27))
+    assert len(calls) == 1
+
+
+def test_unpaid_layout_changed_no_retry_records_error(monkeypatch):
+    from pv_roi_tracker import ebok_client
+    monkeypatch.setattr(ebok_client, 'UNPAID_RETRY_DELAY', 0)
+    client, session = _unpaid_client()
+    _archive_with(session, [_SIG_A])
+    fake, calls = _raiser(EbokLayoutChanged('x'))
+    monkeypatch.setattr(client, 'list_unpaid_invoices', fake)
+    docs = client.list_documents(date(2015, 1, 1), date(2026, 10, 27))
+    assert [d.signature for d in docs] == [_SIG_A]
+    assert len(calls) == 1
+    assert client.last_unpaid_error == 'EbokLayoutChanged'
+
+
+# ── download_pdf_any_mode() ─────────────────────────────────────────────────
+
+_ANY_URL = ('https://moj.tauron.pl/api/sitecore/EbokArchiveDocuments/GetDocumentImage'
+            '?docNumber=x&docType=FV&docMode={mode}')
+_ERR_JSON = json.dumps({'Status': 'Error', 'Document': None})
+
+
+def _modes(session):
+    return [c[1].rsplit('docMode=', 1)[1] for c in session.calls if 'GetDocumentImage' in c[1]]
+
+
+def test_download_pdf_any_mode_falls_back_to_mode_zero():
+    client, session = _client_with_successful_login()
+    session.when('docMode=1', _FakeResponse(text=_ERR_JSON))
+    session.when('docMode=0', _FakeResponse(text=_PDF_JSON))
+    pdf = client.download_pdf_any_mode(_ANY_URL.format(mode=1))
+    assert pdf.startswith(b'%PDF')
+    assert _modes(session) == ['1', '0']
+
+
+def test_download_pdf_any_mode_all_fail_raises_after_three_requests():
+    client, session = _client_with_successful_login()
+    session.when('GetDocumentImage', _FakeResponse(text=_ERR_JSON))
+    with pytest.raises(EbokLayoutChanged):
+        client.download_pdf_any_mode(_ANY_URL.format(mode=1))
+    assert _modes(session) == ['1', '0', '2']
+
+
+def test_download_pdf_any_mode_skips_original_mode():
+    client, session = _client_with_successful_login()
+    session.when('GetDocumentImage', _FakeResponse(text=_ERR_JSON))
+    with pytest.raises(EbokLayoutChanged):
+        client.download_pdf_any_mode(_ANY_URL.format(mode=0))
+    assert _modes(session) == ['0', '2']
+
+
+def test_download_pdf_any_mode_first_success_single_request():
+    client, session = _client_with_successful_login()
+    session.when('GetDocumentImage', _FakeResponse(text=_PDF_JSON))
+    assert client.download_pdf_any_mode(_ANY_URL.format(mode=1)).startswith(b'%PDF')
+    assert _modes(session) == ['1']
