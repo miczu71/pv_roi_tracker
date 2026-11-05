@@ -14,6 +14,7 @@ from __future__ import annotations
 from datetime import date
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -290,7 +291,6 @@ def _ebok_missing_documents(docs, known: set) -> tuple:
 
 def _ebok_missing_summary(missing) -> list:
     """Zamaskowana lista brakujących dokumentów do logu i diagnostyki sync (bez prawdziwych numerów)."""
-    import re
     out = []
     for d in missing:
         parts = (d.issued_on or '').split('.')
