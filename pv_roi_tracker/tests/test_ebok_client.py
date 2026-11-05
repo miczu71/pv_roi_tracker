@@ -536,6 +536,16 @@ def test_download_pdf_error_status_logs_masked_shape(caplog):
         assert secret not in text
 
 
+def test_download_pdf_ok_status_without_pdf_logs_shape(caplog):
+    client, session = _client_with_successful_login()
+    body = json.dumps({'Status': 'OK', 'Document': ''})
+    session.when('GetDocumentImage', _FakeResponse(text=body))
+    with caplog.at_level('WARNING'):
+        with pytest.raises(EbokError):
+            client.download_pdf('https://moj.tauron.pl/api/x/GetDocumentImage?docType=FV&docMode=1')
+    assert 'Document=str[0]' in caplog.text and 'docType=FV' in caplog.text
+
+
 def test_download_pdf_non_json_logs_length_only(caplog):
     client, session = _client_with_successful_login()
     session.when('GetDocumentImage', _FakeResponse(text='<html>tajne 555</html>'))

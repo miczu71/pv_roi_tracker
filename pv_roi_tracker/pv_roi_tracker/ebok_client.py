@@ -308,13 +308,14 @@ class EbokClient:
         try:
             data = _json_or_layout_error(r, 'PDF')
         except EbokLayoutChanged:
-            logger.warning('eBOK: odpowiedź PDF nie jest OK (%s)', _pdf_response_shape(r, pdf_url))
+            logger.warning('eBOK: odpowiedź PDF nie jest OK (%s)', _safe_pdf_shape(r, pdf_url))
             raise
         try:
             pdf = base64.b64decode(data.get('Document') or '', validate=False)
         except (binascii.Error, ValueError, TypeError) as exc:
             raise EbokError(f'Pobranie PDF: niepoprawne dane base64 ({exc})') from exc
         if not pdf.startswith(b'%PDF'):
+            logger.warning('eBOK: odpowiedź PDF bez pliku PDF (%s)', _safe_pdf_shape(r, pdf_url))
             raise EbokError('Pobranie PDF: odpowiedź nie jest plikiem PDF')
         return pdf
 
@@ -1081,6 +1082,14 @@ def _is_login_page(r) -> bool:
     return b'id="kc-form-login"' in (r.content or b'')
 
 
+def _safe_pdf_shape(r, pdf_url: str) -> str:
+    """Diagnostyka nie może zasłonić oryginalnego błędu."""
+    try:
+        return _pdf_response_shape(r, pdf_url)
+    except Exception:
+        return '<błąd diagnostyki>'
+
+
 def _pdf_response_shape(r, pdf_url: str) -> str:
     """Zamaskowany opis nieudanej odpowiedzi PDF do logu: docType/docMode z adresu (krótkie słowa
     i cyfry), klucze JSON, słowo Status i długości wartości. Bez numerów, checksum i treści."""
@@ -1088,7 +1097,7 @@ def _pdf_response_shape(r, pdf_url: str) -> str:
     params = []
     for name in ('docType', 'docMode'):
         value = (query.get(name) or [''])[0]
-        params.append(f'{name}={value if re.fullmatch(r"[A-Za-z0-9]{1,8}", value) else "?"}')
+        params.append(f'{name}={value if re.fullmatch(r"[A-Za-z]{1,4}|[0-9]", value) else "?"}')
     try:
         data = json.loads(r.text)
     except ValueError:
