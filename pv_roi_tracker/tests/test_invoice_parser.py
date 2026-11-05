@@ -1297,3 +1297,46 @@ class TestKorektaDoFakturyVat:
     def test_mention_in_body_is_not_korekta(self):
         text = _make_minimal_text() + '\nKorekta do faktury VAT jest wystawiana w terminie 7 dni.\n'
         assert _parse_text(text).doc_type == 'rozliczeniowa'
+
+
+# ── Faktura za część miesiąca: ułamkowa ilość „mc” w opłatach stałych ─────────
+
+_OLD_FIXED_LINES = (
+    'Sk.adnik sta.y stawki sieciowej mc 1 10,34000 10,34 23 2,38 12,72\n',
+    'Stawka op.aty abonamentowej z./mc 1 4,56000 4,56 23 1,05 5,61\n',
+    'Op.ata mocowa z./mc 1 16,01000 16,01 23 3,68 19,69\n',
+)
+
+
+def _make_partial_month_text(qty_mocowa: str, qty_siec: str, qty_abon: str = '1') -> str:
+    """Układ 2026 (ilość przed jednostką), końcowa faktura za 2 dni: ilość mc ułamkowa."""
+    text = _make_old_format_text()
+    new_lines = (
+        f'Składnik stały stawki sieciowej {qty_siec} mc 10,86000 0,72 23 0,17 0,89\n',
+        f'Stawka opłaty abonamentowej {qty_abon} mc 0,00000 0,00 23 0,00 0,00\n',
+        f'Opłata mocowa {qty_mocowa} mc 24,05000 1,60 23 0,37 1,97\n',
+    )
+    for old, new in zip(_OLD_FIXED_LINES, new_lines):
+        assert old in text
+        text = text.replace(old, new)
+    return text
+
+
+class TestPartialMonthFixedFees:
+    """Ułamkowa ilość „mc” (0,067) nie może kończyć się ostrzeżeniem „nie znaleziona”
+    ani flagą needs_training — to poprawny układ faktury końcowej za kilka dni."""
+
+    @pytest.mark.parametrize('qty_mocowa,qty_siec,qty_abon', [('0,067', '0,0667', '0,067'), ('1', '1', '1')])
+    def test_fixed_fees_found(self, qty_mocowa, qty_siec, qty_abon):
+        parsed = _parse_text(_make_partial_month_text(qty_mocowa, qty_siec, qty_abon))
+        assert parsed.fixed_mocowa_net == pytest.approx(1.60, abs=0.001)
+        assert parsed.fixed_abonament_net == pytest.approx(0.0, abs=0.001)
+        assert parsed.fixed_stalysieciowy_net == pytest.approx(0.72, abs=0.001)
+        assert parsed.fixed_total_net == pytest.approx(2.32, abs=0.001)
+        assert not any('nie znalezion' in w or 'nieobliczon' in w for w in parsed.warnings)
+
+    def test_optional_trade_fee_fractional_qty(self):
+        """Opłata handlowa (opcjonalna, bez ostrzeżenia przy braku) też nie może znikać po cichu."""
+        text = _make_partial_month_text('0,067', '0,0667', '0,067') + \
+            'Opłata handlowa 0,067 mc 28,86000 1,93 23 0,44 2,37\n'
+        assert _parse_text(text).oplata_handlowa_net == pytest.approx(1.93, abs=0.001)

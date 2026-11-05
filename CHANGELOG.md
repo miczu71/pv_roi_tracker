@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.56.4] — 2026-11-05
+
+### Naprawiono
+- Faktura za część miesiąca (np. końcowa przy zmianie taryfy: opłaty stałe za ułamek miesiąca, ilość `0,067 mc`) nie była w pełni rozpoznawana: parser pomijał opłatę mocową, składnik stały sieciowy i abonament, bo wzorce przyjmowały tylko całkowitą ilość miesięcy. Skutek: ostrzeżenia „nie znaleziona”, brak `fixed_total_net` i flaga `needs_training`, przez którą faktura wyglądała w zakładce Faktury jak nierozpoznany plik („wymaga treningu”, nazwa pliku zamiast miesiąca) i nie była uzgadniana. Ilość `mc` może być teraz ułamkowa (`[\d,]+`) — także dla opcjonalnych opłat przejściowej, handlowej i akcyzy, które przy ułamku wypadały po cichu, bez ostrzeżenia. Test: `TestPartialMonthFixedFees`.
+
 ## [0.56.3] — 2026-11-05
 
 ### Naprawiono

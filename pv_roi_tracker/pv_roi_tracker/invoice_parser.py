@@ -125,18 +125,18 @@ _BUILTIN_PATTERNS: dict[str, list] = {
     ],
     # Optional fees — not present on every prosument invoice; absence is normal.
     'oplata_przejsciowa': [
-        r'Op.ata przej.ciowa\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
+        r'Op.ata przej.ciowa\s+[\d,]+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
         r'Op.ata przej.ciowa\s+(?!\d)\S+\s+\d+\s+[\d,]+\s+([\d,]+)',
         r'Op.ata przej.ciowa\s+[\d,]+\s+kWh\s+[\d,]+\s+([\d,]+)',
     ],
     'oplata_handlowa': [
-        r'Op.ata handlowa\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
+        r'Op.ata handlowa\s+[\d,]+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
         r'Op.ata handlowa\s+(?!\d)\S+\s+\d+\s+[\d,]+\s+([\d,]+)',
         r'Op.ata handlowa\s+[\d,]+\s+kWh\s+[\d,]+\s+([\d,]+)',
     ],
     'akcyza': [
         r'Akcyza\s+[\d,]+\s+kWh\s+[\d,]+\s+([\d,]+)',
-        r'Akcyza\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
+        r'Akcyza\s+[\d,]+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
     ],
     'invoice_number': [
         # Korekta do faktury VAT (nowy szablon): "Numer korekty T/K1/…"
@@ -197,31 +197,31 @@ _BUILTIN_PATTERNS: dict[str, list] = {
     ],
     'fixed_mocowa': [
         # New format: label qty unit price_per_unit value_net
-        r'Op.ata mocowa\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
-        r'Op.ata mocow\w*\s+\d+\s+[^\s]*mc\s+([\d,]+)',
+        r'Op.ata mocowa\s+[\d,]+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
+        r'Op.ata mocow\w*\s+[\d,]+\s+[^\s]*mc\s+([\d,]+)',
         # Old format: label unit qty price_per_unit value_net  (unit comes before qty)
         r'Op.ata mocow\w*\s+(?!\d)\S+\s+\d+\s+[\d,]+\s+([\d,]+)',
     ],
     'fixed_abonament': [
         # New format (label on one line)
-        r'Stawka op.aty abonamentowej\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
-        r'Op.ata abonamentow\w*\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
-        r'Abonament\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
+        r'Stawka op.aty abonamentowej\s+[\d,]+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
+        r'Op.ata abonamentow\w*\s+[\d,]+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
+        r'Abonament\s+[\d,]+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
         # Old format: unit before qty (label on one line)
         r'Stawka op.aty abonamentowej\s+(?!\d)\S+\s+\d+\s+[\d,]+\s+([\d,]+)',
         # Oldest format: pypdf splits "Stawka opłaty\nabonamentowej"
         r'Stawka op.aty\s+abonamentowej\s+(?!\d)\S+\s+\d+\s+[\d,]+\s+([\d,]+)',
-        r'Stawka op.aty\s+abonamentowej\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
+        r'Stawka op.aty\s+abonamentowej\s+[\d,]+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
     ],
     'fixed_stalysieciowy': [
         # New format (label on one line)
-        r'Sk.adnik sta.y stawki sieciowej\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
-        r'Sk.adnik sta.y sieciow\w*\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
+        r'Sk.adnik sta.y stawki sieciowej\s+[\d,]+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
+        r'Sk.adnik sta.y sieciow\w*\s+[\d,]+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
         # Old format: unit before qty (label on one line)
         r'Sk.adnik sta.y stawki sieciowej\s+(?!\d)\S+\s+\d+\s+[\d,]+\s+([\d,]+)',
         # Oldest format: pypdf splits "Składnik stały stawki\nsieciowej"
         r'Sk.adnik sta.y stawki\s+sieciowej\s+(?!\d)\S+\s+\d+\s+[\d,]+\s+([\d,]+)',
-        r'Sk.adnik sta.y stawki\s+sieciowej\s+\d+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
+        r'Sk.adnik sta.y stawki\s+sieciowej\s+[\d,]+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
     ],
 }
 
