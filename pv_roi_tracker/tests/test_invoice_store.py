@@ -616,3 +616,160 @@ def test_promote_stub_same_key_keeps_raw_text_pdf_and_pre_reconcile(store_path):
     assert rec['pre_reconcile'] == {'orig': 1}
     assert invoice_store.load_pdf(key, store_path) == b'%PDF-orig'
     assert rec['pdf_path']
+
+
+# ── Dwie faktury rozliczeniowe w jednym miesiącu (zmiana taryfy) ────────────
+
+def _part(num, period, imported, exported=0.0):
+    d = _data(year=2026, month=11, imported=imported, exported=exported)
+    d.invoice_number = num
+    d.billing_period_raw = period
+    return d
+
+
+def test_second_billing_invoice_same_month_keeps_first(store_path):
+    first = _part('T/K1/X/0021/26', '01.11.2026 - 02.11.2026', 28.0)
+    second = _part('T/K1/X/0022/26', '03.11.2026 - 30.11.2026', 300.0, 40.0)
+    invoice_store.upsert(first, 'ebok_T-K1-X-0021-26.pdf', pdf_bytes=b'%PDF-1', path=store_path)
+    invoice_store.upsert(second, 'ebok_T-K1-X-0022-26.pdf', pdf_bytes=b'%PDF-2', path=store_path)
+    stored = invoice_store.load(store_path)
+    assert stored['2026-11']['invoice_number'] == 'T/K1/X/0022/26'
+    parts = [k for k in stored if '~cz~' in k]
+    assert len(parts) == 1 and parts[0].startswith('2026-11~cz~')
+    assert stored[parts[0]]['invoice_number'] == 'T/K1/X/0021/26'
+    assert invoice_store.load_pdf(parts[0], store_path) == b'%PDF-1'
+    assert invoice_store.load_pdf('2026-11', store_path) == b'%PDF-2'
+    from pv_roi_tracker.ebok_client import known_signatures
+    ks = known_signatures(stored.values())
+    assert any(s.endswith('0021_26') for s in ks)
+
+
+def test_part_arriving_after_final_goes_to_cz_and_final_stays(store_path):
+    first = _part('T/K1/X/0021/26', '01.11.2026 - 02.11.2026', 28.0)
+    second = _part('T/K1/X/0022/26', '03.11.2026 - 30.11.2026', 300.0)
+    invoice_store.upsert(second, 'ebok_T-K1-X-0022-26.pdf', path=store_path)
+    invoice_store.upsert(first, 'ebok_T-K1-X-0021-26.pdf', path=store_path)
+    stored = invoice_store.load(store_path)
+    assert stored['2026-11']['invoice_number'] == 'T/K1/X/0022/26'
+    cz = [v for k, v in stored.items() if '~cz~' in k]
+    assert [v['invoice_number'] for v in cz] == ['T/K1/X/0021/26']
+
+
+def test_same_number_reupload_is_idempotent(store_path):
+    a = _part('T/K1/X/0021/26', '01.11.2026 - 02.11.2026', 28.0)
+    b = _part('T/K1/X/0022/26', '03.11.2026 - 30.11.2026', 300.0)
+    for d, f in ((a, 'ebok_T-K1-X-0021-26.pdf'), (b, 'ebok_T-K1-X-0022-26.pdf'),
+                 (a, 'ebok_T-K1-X-0021-26.pdf'), (b, 'ebok_T-K1-X-0022-26.pdf')):
+        invoice_store.upsert(d, f, path=store_path)
+    stored = invoice_store.load(store_path)
+    assert sorted(stored) == sorted(['2026-11'] + [k for k in stored if '~cz~' in k])
+    assert len(stored) == 2
+
+
+def test_filter_billing_excludes_parts_and_combined_kwh_sums(store_path):
+    invoice_store.upsert(_part('T/K1/X/0021/26', '01.11.2026 - 02.11.2026', 28.0, 1.5), 'a.pdf', path=store_path)
+    invoice_store.upsert(_part('T/K1/X/0022/26', '03.11.2026 - 30.11.2026', 300.0, 40.0), 'b.pdf', path=store_path)
+    stored = invoice_store.load(store_path)
+    assert list(invoice_store.filter_billing(stored)) == ['2026-11']
+    tot = invoice_store.combined_kwh(stored, '2026-11')
+    assert tot['imported_kwh'] == pytest.approx(328.0)
+    assert tot['exported_kwh'] == pytest.approx(41.5)
+
+
+def test_combined_kwh_single_invoice_unchanged(store_path):
+    invoice_store.upsert(_data(year=2026, month=10, imported=338.0, exported=10.0), 'a.pdf', path=store_path)
+    tot = invoice_store.combined_kwh(invoice_store.load(store_path), '2026-10')
+    assert tot['imported_kwh'] == 338.0 and tot['exported_kwh'] == 10.0
+
+
+def test_build_invoices_data_nests_part_and_diffs_against_sum(store_path):
+    from types import SimpleNamespace
+    from pv_roi_tracker import web
+    invoice_store.upsert(_part('T/K1/X/0021/26', '01.11.2026 - 02.11.2026', 28.0, 1.5), 'a.pdf',
+                         pdf_bytes=b'%PDF-1', path=store_path)
+    invoice_store.upsert(_part('T/K1/X/0022/26', '03.11.2026 - 30.11.2026', 300.0, 40.0), 'b.pdf', path=store_path)
+    rec = SimpleNamespace(year=2026, month=11, purchased_kwh=328.0, exported_kwh=41.5)
+    rows = web._build_invoices_data([rec], invoice_store.load(store_path))
+    assert [r['key'] for r in rows] == ['2026-11']          # część nie jest osobnym wierszem
+    row = rows[0]
+    assert row['invoice_number'] == 'T/K1/X/0022/26'
+    assert [p['invoice_number'] for p in row['parts']] == ['T/K1/X/0021/26']
+    assert row['parts'][0]['key'].startswith('2026-11~cz~') and row['parts'][0]['has_pdf']
+    assert row['diff_imported_kwh'] == 0 and row['diff_exported_kwh'] == 0   # suma części, nie sama druga faktura
+
+
+def test_build_invoices_data_single_invoice_has_no_parts(store_path):
+    from pv_roi_tracker import web
+    invoice_store.upsert(_data(year=2026, month=10), 'a.pdf', path=store_path)
+    rows = web._build_invoices_data([], invoice_store.load(store_path))
+    assert rows[0]['parts'] == []
+
+
+def test_promote_part_after_main_removed_moves_part_and_pdf(store_path):
+    invoice_store.upsert(_part('T/K1/X/0021/26', '01.11.2026 - 02.11.2026', 28.0), 'a.pdf',
+                         pdf_bytes=b'%PDF-1', path=store_path)
+    invoice_store.upsert(_part('T/K1/X/0022/26', '03.11.2026 - 30.11.2026', 300.0), 'b.pdf',
+                         pdf_bytes=b'%PDF-2', path=store_path)
+    invoice_store.remove('2026-11', store_path)
+    src = invoice_store.promote_part('2026-11', store_path)
+    stored = invoice_store.load(store_path)
+    assert src and src.startswith('2026-11~cz~')
+    assert not [k for k in stored if '~cz~' in k]
+    assert stored['2026-11']['invoice_number'] == 'T/K1/X/0021/26'
+    assert invoice_store.load_pdf('2026-11', store_path) == b'%PDF-1'
+    assert invoice_store.load_pdf(src, store_path) is None
+
+
+def test_promote_part_noop_when_main_exists_or_no_parts(store_path):
+    invoice_store.upsert(_part('T/K1/X/0021/26', '01.11.2026 - 02.11.2026', 28.0), 'a.pdf', path=store_path)
+    assert invoice_store.promote_part('2026-11', store_path) is None
+    invoice_store.upsert(_part('T/K1/X/0022/26', '03.11.2026 - 30.11.2026', 300.0), 'b.pdf', path=store_path)
+    assert invoice_store.promote_part('2026-11', store_path) is None
+
+
+def test_demote_without_stored_pdf_does_not_share_pdf_with_part(store_path):
+    invoice_store.upsert(_part('T/K1/X/0021/26', '01.11.2026 - 02.11.2026', 28.0), 'a.pdf', path=store_path)
+    invoice_store.upsert(_part('T/K1/X/0022/26', '03.11.2026 - 30.11.2026', 300.0), 'b.pdf',
+                         pdf_bytes=b'%PDF-2', path=store_path)
+    stored = invoice_store.load(store_path)
+    part = next(v for k, v in stored.items() if '~cz~' in k)
+    assert not part.get('pdf_path')
+
+
+def test_remove_part_key_deletes_pdf_and_keeps_main(store_path):
+    invoice_store.upsert(_part('T/K1/X/0021/26', '01.11.2026 - 02.11.2026', 28.0), 'a.pdf',
+                         pdf_bytes=b'%PDF-1', path=store_path)
+    invoice_store.upsert(_part('T/K1/X/0022/26', '03.11.2026 - 30.11.2026', 300.0), 'b.pdf',
+                         pdf_bytes=b'%PDF-2', path=store_path)
+    pk = invoice_store.part_keys(invoice_store.load(store_path), '2026-11')[0]
+    assert invoice_store.remove(pk, store_path)
+    assert invoice_store.load_pdf(pk, store_path) is None
+    assert invoice_store.load_pdf('2026-11', store_path) == b'%PDF-2'
+    assert invoice_store.part_keys(invoice_store.load(store_path), '2026-11') == []
+
+
+def test_mark_reconciled_clear_training_false_keeps_needs_training(store_path):
+    invoice_store.upsert(_data(), 'a.pdf', path=store_path)
+    doc = invoice_store._load_document(store_path)
+    doc['invoices']['2025-10']['needs_training'] = True
+    invoice_store._save_document(doc, store_path)
+    invoice_store.mark_reconciled('2025-10', store_path, clear_training=False)
+    rec = invoice_store.get('2025-10', store_path)
+    assert rec['reconciled'] is True and rec['needs_training'] is True
+
+
+def test_same_period_start_different_number_overwrites_instead_of_part(store_path):
+    invoice_store.upsert(_part('T/K1/X/0030/26', '03.11.2026 - 30.11.2026', 300.0), 'a.pdf', path=store_path)
+    invoice_store.upsert(_part('T/K1/X/0031/26', '03.11.2026 - 30.11.2026', 310.0), 'b.pdf', path=store_path)
+    stored = invoice_store.load(store_path)
+    assert not [k for k in stored if '~cz~' in k]
+    assert stored['2026-11']['invoice_number'] == 'T/K1/X/0031/26'
+
+
+def test_demote_removes_stale_base_pdf_when_new_invoice_has_no_pdf(store_path):
+    invoice_store.upsert(_part('T/K1/X/0021/26', '01.11.2026 - 02.11.2026', 28.0), 'a.pdf',
+                         pdf_bytes=b'%PDF-1', path=store_path)
+    invoice_store.upsert(_part('T/K1/X/0022/26', '03.11.2026 - 30.11.2026', 300.0), 'b.pdf', path=store_path)
+    assert invoice_store.load_pdf('2026-11', store_path) is None
+    pk = invoice_store.part_keys(invoice_store.load(store_path), '2026-11')[0]
+    assert invoice_store.load_pdf(pk, store_path) == b'%PDF-1'

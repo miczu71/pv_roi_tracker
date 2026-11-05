@@ -641,13 +641,11 @@ def _build_degradation(records, today):
 
 
 def _build_invoices_data(records, stored: dict):
+    from . import invoice_store as _istore
     out = []
     # Only iterate billing records and stubs — corrections/notas are attached
     # as nested sub-rows via the 'corrections' list on each billing row.
-    billing_and_stubs = {
-        k: v for k, v in stored.items()
-        if '~kor~' not in k and '~nota~' not in k
-    }
+    billing_and_stubs = {k: v for k, v in stored.items() if not _istore.is_extra_key(k)}
     for key, inv in sorted(billing_and_stubs.items(), key=lambda kv: kv[0]):
         try:
             # Synthetic keys like "unparsed-<ts>-<name>" — month unknown yet
@@ -658,10 +656,12 @@ def _build_invoices_data(records, stored: dict):
                     iy, im = int(key[:4]), int(key[5:7])
                     hist_rec = next((r for r in records if r.year == iy and r.month == im), None)
                     if hist_rec:
-                        if hist_rec.purchased_kwh is not None and inv.get('imported_kwh') is not None:
-                            diff_imp = round(inv['imported_kwh'] - hist_rec.purchased_kwh, 2)
-                        if hist_rec.exported_kwh is not None and inv.get('exported_kwh') is not None:
-                            diff_exp = round(inv['exported_kwh'] - hist_rec.exported_kwh, 2)
+                        # Miesiąc rozliczony dwiema fakturami: porównujemy sumę kWh części
+                        total = _istore.combined_kwh(stored, key)
+                        if hist_rec.purchased_kwh is not None and total['imported_kwh'] is not None:
+                            diff_imp = round(total['imported_kwh'] - hist_rec.purchased_kwh, 2)
+                        if hist_rec.exported_kwh is not None and total['exported_kwh'] is not None:
+                            diff_exp = round(total['exported_kwh'] - hist_rec.exported_kwh, 2)
                 except (ValueError, TypeError):
                     pass
 
@@ -690,6 +690,23 @@ def _build_invoices_data(records, stored: dict):
                         'filename': cor.get('filename'),
                         'has_pdf': bool(cor.get('pdf_path')),
                         'warnings': cor.get('warnings', []),
+                    })
+
+            # Części miesiąca (druga faktura rozliczeniowa, zmiana taryfy) — jak korekty, pod-wiersze
+            parts = []
+            if not is_stub:
+                for part_key in _istore.part_keys(stored, key):
+                    part = stored[part_key]
+                    parts.append({
+                        'key': part_key,
+                        'invoice_number': part.get('invoice_number'),
+                        'billing_period_raw': part.get('billing_period_raw'),
+                        'imported_kwh': part.get('imported_kwh'),
+                        'exported_kwh': part.get('exported_kwh'),
+                        'amount_due': part.get('amount_due_pln'),
+                        'filename': part.get('filename'),
+                        'has_pdf': bool(part.get('pdf_path')),
+                        'warnings': part.get('warnings', []),
                     })
 
             inv_warnings = inv.get('warnings', [])
@@ -735,9 +752,10 @@ def _build_invoices_data(records, stored: dict):
                 'fixed_abonament_net': inv.get('fixed_abonament_net'),
                 'fixed_stalysieciowy_net': inv.get('fixed_stalysieciowy_net'),
                 'corrections': corrections,
+                'parts': parts,
             })
         except Exception:
-            pass
+            log.exception('Invoice row %s skipped', key)
     return out
 
 

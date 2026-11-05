@@ -474,3 +474,23 @@ def test_diverged_billing_heals_despite_pending_nota(store, invoices):
     # i idempotentnie — nota nie wraca przy kolejnym starcie
     assert historic_store.reconcile_pending_invoices(invoices, store) == 0
     assert historic_store.load(store)[0].exported_kwh == pytest.approx(307.0)
+
+
+def test_month_with_two_invoices_reconciles_sum_and_is_stable(store, invoices):
+    """Zmiana taryfy w miesiącu: historic dostaje SUMĘ kWh obu faktur, a kolejny start nie
+    uznaje miesiąca za rozjechany (brak pętli re-rekonsyliacji)."""
+    import dataclasses
+    from pv_roi_tracker import invoice_store
+    first = dataclasses.replace(_invoice(), year=2026, month=3, imported_kwh=28.0, exported_kwh=1.0,
+                                invoice_number='T/K1/X/0021/26', billing_period_raw='01.03.2026 - 02.03.2026')
+    second = dataclasses.replace(_invoice(), year=2026, month=3, imported_kwh=300.0, exported_kwh=40.0,
+                                 invoice_number='T/K1/X/0022/26', billing_period_raw='03.03.2026 - 31.03.2026')
+    historic_store.save([_rec(2026, 3, produced=643.98, exported=0.0)], store)
+    invoice_store.upsert(first, 'a.pdf', reconciled=True, path=invoices)
+    invoice_store.upsert(second, 'b.pdf', reconciled=False, path=invoices)
+
+    assert historic_store.reconcile_pending_invoices(invoices, store) == 1
+    m = historic_store.load(store)[0]
+    assert m.purchased_kwh == pytest.approx(328.0)
+    assert m.exported_kwh == pytest.approx(41.0)
+    assert historic_store.reconcile_pending_invoices(invoices, store) == 0

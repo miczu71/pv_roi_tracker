@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.56.5] — 2026-11-05
+
+### Naprawiono
+- Miesiąc rozliczony dwiema fakturami (zmiana taryfy w trakcie miesiąca, np. G12W → G13) nie traci już pierwszej faktury: druga faktura rozliczeniowa o innym numerze nie nadpisuje poprzedniej (wcześniej obie dostawały klucz `YYYY-MM`, pierwsza przestawała być „znana” i mogła wracać w pętli importu). Wcześniejsza (wg początku okresu, bez dat — wg kolejności napływu) trafia pod `YYYY-MM~cz~<numer>` razem z PDF-em; ten sam numer nadal nadpisuje w miejscu, a ten sam początek okresu przy innym numerze traktowany jest jak ponowne wystawienie (nadpisanie).
+- Uzgodnienie z historią (`historic.json`) i różnica kWh w zakładce Faktury liczą się z SUMY kWh obu faktur miesiąca.
+- Usunięcie jednej z dwóch faktur miesiąca nie cofa już historii do stanu sprzed uzgodnienia (liczy ją ponownie z pozostałej), a po usunięciu głównej pozostała część awansuje na główną — wcześniej zostawała niewidoczna i nieusuwalna.
+
+### Dodano
+- Zakładka Faktury: część miesiąca jako pod-wiersz „CZĘŚĆ MIESIĄCA” pod fakturą miesiąca (okres, kWh, kwota, PDF, Usuń).
+
+### Znane ograniczenia
+- Koszty/depozyt miesiąca i taryfa w historii pochodzą z faktury późniejszej (kWh są sumowane); strefy peak/offpeak sumują się mimo różnych taryf.
+
 ## [0.56.4] — 2026-11-05
 
 ### Naprawiono

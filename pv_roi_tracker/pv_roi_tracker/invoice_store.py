@@ -166,12 +166,26 @@ def _doc_signature(filename: str) -> str:
     return sig if re.search(r'\d{4,}', sig) else ''
 
 
+def _clean_num(num: Optional[str]) -> str:
+    """Numer faktury do sufiksu klucza: tylko znaki alfanumeryczne i '/', ostatnie 30."""
+    return re.sub(r'[^a-zA-Z0-9/]', '_', num or '')[-30:]
+
+
+def _safe_suffix(data: InvoiceData, filename: str = '') -> str:
+    """Sufiks klucza z numeru faktury (tylko znaki alfanumeryczne i '/', ostatnie 30), a gdy
+    parser numeru nie odczytał — z sygnatury nazwy pliku; timestamp tylko ostatecznie."""
+    return (_clean_num(data.invoice_number)
+            or _doc_signature(filename)[-30:]
+            or str(int(time.time())))
+
+
 def _make_key(data: InvoiceData, filename: str = '') -> str:
     """Build the storage key for an InvoiceData record.
 
     Billing invoices:  'YYYY-MM'              (unchanged, backward-compatible)
     Korekty:           'YYYY-MM~kor~<suffix>'  (suffix = safe invoice_number tail)
     Noty:              'YYYY-MM~nota~<suffix>'
+    (druga faktura rozliczeniowa tego samego miesiąca: 'YYYY-MM~cz~<suffix>' — patrz `upsert`)
 
     The suffix is derived from the invoice_number so that re-uploading the
     same document overwrites the same key (idempotent upsert / dedup). Gdy parser
@@ -183,13 +197,40 @@ def _make_key(data: InvoiceData, filename: str = '') -> str:
     doc_type = getattr(data, 'doc_type', 'rozliczeniowa')
     if doc_type in ('korekta', 'nota'):
         tag = 'kor' if doc_type == 'korekta' else 'nota'
-        inv_num = data.invoice_number or ''
-        # Keep only alphanumeric and slash; replace the rest; take last 30 chars
-        safe = (re.sub(r'[^a-zA-Z0-9/]', '_', inv_num)[-30:]
-                or _doc_signature(filename)[-30:]
-                or str(int(time.time())))
-        return f'{base}~{tag}~{safe}'
+        return f'{base}~{tag}~{_safe_suffix(data, filename)}'
     return base
+
+
+def _period_start(raw: Optional[str]) -> Optional[tuple]:
+    """(rok, miesiąc, dzień) początku okresu z `billing_period_raw` ('03.11.2026 - 30.11.2026')."""
+    m = re.search(r'(\d{2})[./](\d{2})[./](\d{4})', raw or '')
+    return (int(m.group(3)), int(m.group(2)), int(m.group(1))) if m else None
+
+
+def _resolve_billing_key(invoices: dict, data: InvoiceData, filename: str):
+    """Klucz dla faktury rozliczeniowej. Zwraca (klucz, klucz_do_przeniesienia_do_części|None).
+
+    Druga faktura o innym numerze w tym samym miesiącu (zmiana taryfy w trakcie miesiąca)
+    nie nadpisuje pierwszej: wcześniejsza wg początku okresu (przy braku dat — starsza
+    w kolejności napływu) trafia pod 'YYYY-MM~cz~<numer>', pod 'YYYY-MM' zostaje późniejsza."""
+    base = f'{data.year}-{data.month:02d}'
+    num = data.invoice_number
+    if num:
+        for k in part_keys(invoices, base):
+            if invoices[k].get('invoice_number') == num:
+                return k, None
+    cur = invoices.get(base)
+    if (not num or not cur or cur.get('needs_training')
+            or cur.get('doc_type', 'rozliczeniowa') != 'rozliczeniowa'
+            or not cur.get('invoice_number') or cur['invoice_number'] == num):
+        return base, None
+    part_key = f'{base}~cz~{_safe_suffix(data, filename)}'
+    new_start, cur_start = _period_start(data.billing_period_raw), _period_start(cur.get('billing_period_raw'))
+    if new_start and new_start == cur_start:
+        return base, None              # ten sam początek okresu → ponowne wystawienie, nadpisanie jak dotąd
+    if new_start and cur_start and new_start < cur_start:
+        return part_key, None          # nowa jest wcześniejsza → od razu jako część
+    return base, f'{base}~cz~{_clean_num(cur["invoice_number"])}'
 
 
 def upsert(
@@ -204,14 +245,29 @@ def upsert(
     """Store or overwrite the invoice record for data.year / data.month. Returns the key.
 
     Key depends on doc_type:
-      - 'rozliczeniowa' (default) → 'YYYY-MM' (overwrites existing billing record)
+      - 'rozliczeniowa' (default) → 'YYYY-MM' (overwrites existing billing record
+        of the same invoice_number; a different one moves the earlier to 'YYYY-MM~cz~<num>')
       - 'korekta'                 → 'YYYY-MM~kor~<inv_num_suffix>'
       - 'nota'                    → 'YYYY-MM~nota~<inv_num_suffix>'
     """
-    key = _make_key(data, filename)
-    pdf_path = save_pdf(key, pdf_bytes, path) if pdf_bytes else None
     doc = _load_document(path)
     invoices: dict = doc.setdefault('invoices', {})
+    key, demote_to = _make_key(data, filename), None
+    if getattr(data, 'doc_type', 'rozliczeniowa') == 'rozliczeniowa':
+        key, demote_to = _resolve_billing_key(invoices, data, filename)
+    if demote_to:
+        old = invoices[key]
+        old_pdf = load_pdf(key, path)
+        if old_pdf:
+            old['pdf_path'] = save_pdf(demote_to, old_pdf, path)
+            delete_pdf(key, path)    # plik bazy nie może zostać, gdy nowa faktura nie ma PDF
+        else:
+            old['pdf_path'] = None   # inaczej część wskazywałaby PDF nowej faktury (ten sam plik co baza)
+            logger.warning('Invoice %s had no stored PDF to move to %s', key, demote_to)
+        invoices[demote_to] = old
+        pre_reconcile = old.get('pre_reconcile') or pre_reconcile   # stan miesiąca sprzed PIERWSZEJ rekonsyliacji
+        logger.info('Invoice %s moved to part %s (second billing invoice in month)', key, demote_to)
+    pdf_path = save_pdf(key, pdf_bytes, path) if pdf_bytes else None
     invoices[key] = _to_record(data, filename, reconciled, pre_reconcile, raw_text, pdf_path)
     _save_document(doc, path)
     logger.info('Invoice stored: %s (reconciled=%s)', key, reconciled)
@@ -287,12 +343,36 @@ def remove(key: str, path: Path = DEFAULT_PATH) -> Optional[dict]:
     return record
 
 
-def mark_reconciled(month_key: str, path: Path = DEFAULT_PATH) -> None:
-    """Set reconciled=True for an existing entry."""
+def promote_part(month_key: str, path: Path = DEFAULT_PATH) -> Optional[str]:
+    """Gdy zniknęła główna faktura 'YYYY-MM', a została część ('~cz~'): awansuje najpóźniejszą
+    (wg początku okresu, przy braku dat — ostatnią w kolejności kluczy) na 'YYYY-MM', razem z PDF.
+    Bez tego część byłaby niewidoczna w UI i niemożliwa do usunięcia. Zwraca awansowany klucz."""
+    doc = _load_document(path)
+    invoices = doc.get('invoices', {})
+    parts = part_keys(invoices, month_key)
+    if month_key in invoices or not parts:
+        return None
+    src = max(parts, key=lambda k: (_period_start(invoices[k].get('billing_period_raw')) or (0, 0, 0), k))
+    rec = invoices.pop(src)
+    pdf = load_pdf(src, path)
+    if pdf:
+        rec['pdf_path'] = save_pdf(month_key, pdf, path)
+        delete_pdf(src, path)
+    else:
+        rec['pdf_path'] = None
+    invoices[month_key] = rec
+    _save_document(doc, path)
+    logger.info('Invoice part %s promoted to %s', src, month_key)
+    return src
+
+
+def mark_reconciled(month_key: str, path: Path = DEFAULT_PATH, clear_training: bool = True) -> None:
+    """Set reconciled=True for an existing entry (and, by default, needs_training=False)."""
     doc = _load_document(path)
     if month_key in doc.get('invoices', {}):
         doc['invoices'][month_key]['reconciled'] = True
-        doc['invoices'][month_key]['needs_training'] = False
+        if clear_training:
+            doc['invoices'][month_key]['needs_training'] = False
         _save_document(doc, path)
         logger.info('Invoice %s marked reconciled', month_key)
 
@@ -350,10 +430,41 @@ def filter_billing(stored: dict) -> dict:
     """
     return {
         k: v for k, v in stored.items()
-        if not k.startswith('unparsed-')
-        and '~kor~' not in k
-        and '~nota~' not in k
+        if not k.startswith('unparsed-') and not is_extra_key(k)
     }
+
+
+def is_extra_key(key: str) -> bool:
+    """Klucz korekty, noty albo części miesiąca (nie główna faktura miesiąca)."""
+    return '~kor~' in key or '~nota~' in key or '~cz~' in key
+
+
+def part_keys(stored: dict, month_key: str) -> list:
+    """Posortowane klucze części ('~cz~') miesiąca 'YYYY-MM'."""
+    return sorted(k for k in stored if k.startswith(f'{month_key}~cz~'))
+
+
+_KWH_FIELDS = ('imported_kwh', 'exported_kwh', 'imported_kwh_peak', 'imported_kwh_offpeak')
+
+
+def combined_kwh(stored: dict, month_key: str) -> dict:
+    """Suma kWh faktury 'YYYY-MM' i jej części ('~cz~'): miesiąc rozliczony dwiema fakturami
+    (zmiana taryfy) ma w historic.json sumę. Pole None, gdy żadna faktura go nie podaje."""
+    recs = [stored[month_key]] if month_key in stored else []
+    recs += [stored[k] for k in part_keys(stored, month_key)]
+    out = {}
+    for f in _KWH_FIELDS:
+        vals = [r[f] for r in recs if r.get(f) is not None]
+        out[f] = round(sum(vals), 3) if vals else None
+    return out
+
+
+def month_data(stored: dict, month_key: str) -> InvoiceData:
+    """Faktura 'YYYY-MM' z kWh zsumowanymi z jej częściami — wejście dla rekonsyliacji historic."""
+    rec = stored[month_key]
+    fields = {k: rec.get(k) for k in InvoiceData.__dataclass_fields__}
+    fields.update(combined_kwh(stored, month_key))
+    return InvoiceData(**fields)  # type: ignore[arg-type]
 
 
 def corrections_for(stored: dict, month_key: str) -> list:

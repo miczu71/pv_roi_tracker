@@ -359,13 +359,13 @@ def reconcile_pending_invoices(
     nadpisywała eksport 307 kWh zerem po każdym restarcie add-onu).
     """
     from . import invoice_store
-    from .invoice_parser import InvoiceData
 
     months_by_key = {(m.get('year'), m.get('month')): m
                      for m in _load_document(historic_path).get('months', [])}
 
+    stored = invoice_store.load(invoice_path)
     candidates: list[dict] = []
-    for key, rec in invoice_store.load(invoice_path).items():
+    for key, rec in stored.items():
         if (rec.get('needs_training', False)
                 or key.startswith('unparsed-') or '~' in key
                 or rec.get('doc_type', 'rozliczeniowa') != 'rozliczeniowa'):
@@ -374,7 +374,8 @@ def reconcile_pending_invoices(
             candidates.append(rec)   # pending
             continue
         m = months_by_key.get((rec.get('year'), rec.get('month')))
-        if m is not None and _invoice_kwh_diverged(rec, m):
+        if m is not None and _invoice_kwh_diverged(
+                {**rec, **invoice_store.combined_kwh(stored, key)}, m):
             logger.warning(
                 'Invoice %s oznaczona reconciled, ale kWh rozjechane z historic '
                 '(eksport %s vs %s, import %s vs %s) — ponowna rekonsyliacja',
@@ -385,10 +386,10 @@ def reconcile_pending_invoices(
     count = 0
     for rec in candidates:
         try:
-            fields = {k: rec.get(k) for k in InvoiceData.__dataclass_fields__}
-            data = InvoiceData(**fields)  # type: ignore[arg-type]
+            month_key = f'{rec.get("year")}-{rec.get("month"):02d}'
+            data = invoice_store.month_data(stored, month_key)
             if reconcile_invoice(data, historic_path):
-                invoice_store.mark_reconciled(f'{data.year}-{data.month:02d}', invoice_path)
+                invoice_store.mark_reconciled(month_key, invoice_path)
                 count += 1
         except Exception:
             logger.exception('Failed to auto-reconcile invoice %s-%s',

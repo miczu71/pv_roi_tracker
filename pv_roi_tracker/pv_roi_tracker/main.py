@@ -528,10 +528,15 @@ def main() -> None:
                             data.invoice_number or '', data.year, data.month, doc_type)
             else:
                 snap = historic_store.snapshot_month(data.year, data.month, HISTORIC_PATH)
-                reconciled = historic_store.reconcile_invoice(data, HISTORIC_PATH)
-                invoice_store.upsert(data, filename=filename, reconciled=reconciled,
+                invoice_store.upsert(data, filename=filename, reconciled=False,
                                      pre_reconcile=snap, raw_text=raw_text, pdf_bytes=pdf_bytes,
                                      path=INVOICE_PATH)
+                # Miesiąc rozliczony dwiema fakturami (zmiana taryfy) rekonsyliuje sumą kWh.
+                month_key = f'{data.year}-{data.month:02d}'
+                reconciled = historic_store.reconcile_invoice(
+                    invoice_store.month_data(invoice_store.load(INVOICE_PATH), month_key), HISTORIC_PATH)
+                if reconciled:
+                    invoice_store.mark_reconciled(month_key, INVOICE_PATH, clear_training=False)
                 logger.info('Invoice %d-%02d ingested (reconciled=%s)',
                             data.year, data.month, reconciled)
         poll_and_publish()
@@ -541,6 +546,16 @@ def main() -> None:
     def _invoice_remove(key: str) -> dict:
         """Remove an invoice and revert its historic.json snapshot if present."""
         record = invoice_store.remove(key, INVOICE_PATH)
+        month_key = key[:7]
+        if record and not any(t in key for t in ('~kor~', '~nota~')) and not key.startswith('unparsed-'):
+            # Miesiąc rozliczony dwiema fakturami: po usunięciu jednej druga zostaje, więc historic
+            # liczymy z niej (nie cofamy do stanu sprzed rekonsyliacji); snapshot tylko gdy nic nie zostało.
+            invoice_store.promote_part(month_key, INVOICE_PATH)
+            stored = invoice_store.load(INVOICE_PATH)
+            if month_key in stored:
+                if historic_store.reconcile_invoice(invoice_store.month_data(stored, month_key), HISTORIC_PATH):
+                    invoice_store.mark_reconciled(month_key, INVOICE_PATH, clear_training=False)
+                record = {**record, 'pre_reconcile': None}
         if record and record.get('pre_reconcile') and record.get('year') and record.get('month'):
             historic_store.restore_month(record['year'], record['month'],
                                          record['pre_reconcile'], HISTORIC_PATH)
