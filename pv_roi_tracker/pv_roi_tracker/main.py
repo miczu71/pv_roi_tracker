@@ -862,8 +862,9 @@ def main() -> None:
                 if shape.get('skeleton'):
                     shape['skeleton'] = mask(shape['skeleton'])
                 req = list_probe.get('request') or {}
-                if req.get('view_model_context'):
-                    req['view_model_context'] = mask(req['view_model_context'])
+                for field in ('view_model_context', 'medium_type_context', 'medium_type'):
+                    if req.get(field):
+                        req[field] = mask(req[field])
             except Exception as exc:
                 logger.warning('eBOK diag: sonda listy faktur nie powiodła się (%s)', type(exc).__name__)
                 list_probe = {'error': mask(f'{type(exc).__name__}: {exc}')}

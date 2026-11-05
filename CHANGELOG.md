@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.55.9] — 2026-11-05
+
+- **Diagnostyka eBOK: sonda listy faktur z `serializedViewModel` jako obiektem.** Obiekt JS ze strony Faktury jest wyciągany dopasowaniem nawiasów i wysyłany jak `jQuery.param` (`parentViewModel[...]`); domyślny rodzaj medium z `#SearchType`. Do wyniku `diag` trafiają tylko liczba kluczy i rodzaj medium (krótkie słowo), kontekst kodu jest maskowany.
+
 ## [0.55.8] — 2026-11-05
 
 - **Diagnostyka eBOK: sonda listy faktur jak w JS strony.** `GET api/ebok/diag` → `invoice_list` robi POST `LoadMoreInvoicesProducts` z `serializedViewModel` odczytanym ze strony Faktury (wartość nie opuszcza metody) i zwraca tylko kształt odpowiedzi (klucze, liczności, szkielet wiersza tabeli, liczba sygnatur). Bez `serializedViewModel` POST jest pomijany, a w wyniku jest kontekst kodu bez treści literałów.

@@ -888,6 +888,7 @@ def test_probe_invoice_list_posts_like_page_js_and_hides_view_model():
     assert data['PickupMediumType'] == 'Energy'
     assert data['parentViewModel'] == 'AAAA{"Payer":"' + _PAYER + '"}BBBB'   # odkodowane z JS
     assert out['request'] == {'view_model_found': True, 'view_model_kind': 'string', 'view_model_keys': 0,
+                              'view_model_object_unparsed': False,
                               'view_model_len': len(data['parentViewModel']), 'medium_type_found': True,
                               'medium_type': 'Energy', 'medium_type_source': 'literal'}
     tree = out['shape']['tree']
@@ -1028,3 +1029,36 @@ def test_probe_invoice_list_posts_flattened_object_view_model_and_hides_values()
     assert out['shape']['tree']['ResultHtml']['rows'] == 2
     text = json.dumps(out, ensure_ascii=False)
     assert _PAYER not in text and 'XX000000' not in text
+
+
+def test_search_type_default_ignores_foreign_value_and_data_id():
+    from pv_roi_tracker.ebok_client import _search_type_default
+    assert _search_type_default('<input id="SearchType" type="text"><input value="Submit">') is None
+    assert _search_type_default('<input data-id="SearchType" value="Evil">') is None
+    assert _search_type_default('<input id="SearchType" value="Energy">') == 'Energy'
+
+
+def test_probe_invoice_list_rejects_odd_medium_literal_empty_and_unparsed_object():
+    def run(page):
+        client, session = _probe_client()
+        session._responses.insert(0, ('/Home/Pages/Faktury', _FakeResponse(text=page)))
+        session.when('EbokInvoiceList/LoadMoreInvoicesProducts', _FakeResponse(text='{}'))
+        return client.probe_invoice_list(), session
+    out, s = run("<script>var mediumType = 'x y 123'; var serializedViewModel = {\"A\":\"b\"};</script>")
+    assert out['request']['medium_type'] is None and 'x y 123' not in json.dumps(out)
+    out, s = run('<script>var serializedViewModel = {};</script>')
+    assert out['ok'] is False and not [c for c in s.calls if c[0] == 'POST' and 'LoadMore' in c[1]]
+    out, s = run("<script>var serializedViewModel = {'A':'b'};</script>")
+    assert out['ok'] is False and out['request']['view_model_object_unparsed'] is True
+
+
+def test_flatten_params_integral_float_like_js():
+    from pv_roi_tracker.ebok_client import _flatten_params
+    assert _flatten_params({'a': 1.0, 'b': 1.5}, 'p') == [('p[a]', '1'), ('p[b]', '1.5')]
+
+
+def test_var_context_masks_literal_cut_by_window_edge():
+    from pv_roi_tracker.ebok_client import _var_context
+    html = 'x = "' + 'SECRETTEXT' * 12 + '"; serializedViewModel = foo("' + 'LEAKYVALUE' * 12 + '");'
+    ctx = _var_context(html, 'serializedViewModel')
+    assert 'SECRET' not in ctx and 'LEAKY' not in ctx

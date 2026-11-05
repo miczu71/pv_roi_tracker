@@ -375,9 +375,12 @@ class EbokClient:
             raise EbokError('Nie wybrano płatnika (select_payer)')
         page_url = f'{SERVICE}/Home/Pages/Faktury?' + urlencode({'sid': SYSTEM, 'pp': self._payer_id})
         html = self._get(page_url, REQUEST_TIMEOUT).text or ''
-        view_obj = _js_object_var(html, 'serializedViewModel')
+        view_obj = _js_object_var(html, 'serializedViewModel') or None   # pusty {} = brak danych do wysłania
+        object_unparsed = view_obj is None and bool(re.search(r'(?<![\w.$])serializedViewModel\s*=\s*\{', html))
         view_text = None if view_obj is not None else _js_string_var(html, 'serializedViewModel')
         medium = _js_string_var(html, 'mediumType')
+        if medium is not None and not _MEDIUM_RE.fullmatch(medium):
+            medium = None   # nietypowa wartość nie trafia ani do POST-a, ani do diag
         medium_source = 'literal' if medium is not None else None
         if medium is None:
             medium = _search_type_default(html)
@@ -385,13 +388,14 @@ class EbokClient:
         request = {'view_model_found': view_obj is not None or view_text is not None,
                    'view_model_kind': 'object' if view_obj is not None else ('string' if view_text is not None else None),
                    'view_model_keys': len(view_obj) if view_obj is not None else 0,
+                   'view_model_object_unparsed': object_unparsed,
                    'view_model_len': len(view_text or ''),
                    'medium_type_found': medium is not None,
                    'medium_type': medium, 'medium_type_source': medium_source}
         if view_obj is None and view_text is None:
             request['view_model_context'] = _var_context(html, 'serializedViewModel')
             return {'ok': False, 'request': request,
-                    'skipped': 'brak serializedViewModel jako obiektu ani literału tekstowego — POST pominięty'}
+                    'skipped': 'brak (lub nie do sparsowania) serializedViewModel jako obiektu ani literału tekstowego — POST pominięty'}
         if medium is None:
             request['medium_type_context'] = _var_context(html, 'mediumType')
         form = [('startingIndex', 0), ('searchTerm', ''), ('PickupMediumType', medium or '')]
@@ -471,6 +475,8 @@ def _flatten_params(value, prefix: str) -> list:
     """Spłaszczenie jak `jQuery.param`: obiekt → `p[k]`, tablica prymitywów → `p[]`, tablica
     obiektów/tablic → `p[i]`; null → pusty tekst, bool → true/false. Puste tablice nic nie wysyłają."""
     def scalar(v):
+        if isinstance(v, float) and v.is_integer():
+            v = int(v)   # JS: 1.0 → "1"
         return '' if v is None else ('true' if v is True else 'false' if v is False else str(v))
     if isinstance(value, dict):
         out = []
@@ -486,23 +492,27 @@ def _flatten_params(value, prefix: str) -> list:
     return [(prefix, scalar(value))]
 
 
-_SEARCH_TYPE_RE = re.compile(r'<(select|input)\b[^>]*\bid=["\']SearchType["\'][^>]*>(.*?)(?:</select>|$)', re.I | re.S)
+_MEDIUM_RE = re.compile(r'[A-Za-z]{1,20}')
+_SEARCH_TYPE_TAG_RE = re.compile(r'<(select|input)\b(?=[^>]*(?<![-\w])id=["\']SearchType["\'])[^>]*>', re.I)
+_VALUE_ATTR_RE = re.compile(r'(?<![-\w])value=["\']([^"\']*)["\']', re.I)
 
 
 def _search_type_default(html: str) -> Optional[str]:
-    """Domyślna wartość kontrolki `#SearchType` (select: opcja `selected` albo pierwsza; input: `value`)
-    — tylko krótkie słowo (rodzaj medium), inaczej None."""
-    m = _SEARCH_TYPE_RE.search(html or '')
+    """Domyślna wartość kontrolki `#SearchType` (select: opcja `selected` albo pierwsza; input: `value`
+    z samego znacznika) — tylko krótkie słowo (rodzaj medium), inaczej None."""
+    html = html or ''
+    m = _SEARCH_TYPE_TAG_RE.search(html)
     if not m:
         return None
     if m.group(1).lower() == 'input':
-        v = re.search(r'\bvalue=["\']([^"\']*)["\']', m.group(0), re.I)
+        v = _VALUE_ATTR_RE.search(m.group(0))
     else:
-        opts = re.findall(r'<option\b([^>]*)>', m.group(2), re.I)
+        body = html[m.end():].split('</select>', 1)[0]
+        opts = re.findall(r'<option\b([^>]*)>', body, re.I)
         pick = next((o for o in opts if re.search(r'\bselected\b', o, re.I)), opts[0] if opts else '')
-        v = re.search(r'\bvalue=["\']([^"\']*)["\']', pick, re.I)
+        v = _VALUE_ATTR_RE.search(pick)
     value = v.group(1) if v else None
-    return value if value and re.fullmatch(r'[A-Za-z]{1,20}', value) else None
+    return value if value and _MEDIUM_RE.fullmatch(value) else None
 
 
 def _var_context(html: str, name: str, width: int = 100) -> str:
@@ -511,8 +521,11 @@ def _var_context(html: str, name: str, width: int = 100) -> str:
     m = re.search(r'(?<![\w.$])' + re.escape(name), html or '')
     if not m:
         return '<brak zmiennej>'
-    chunk = html[max(0, m.start() - width):m.end() + width]
-    chunk = re.sub(r'(["\'])(?:\\.|(?!\1).)*\1', '"…"', chunk, flags=re.S)
+    # literały zamieniamy na szerokim oknie (żeby cudzysłów na brzegu nie rozparował wzorca), dopiero potem tniemy
+    wide = html[max(0, m.start() - 4 * width):m.end() + 4 * width]
+    wide = re.sub(r'(["\'])(?:\\.|(?!\1).)*\1', '"…"', wide, flags=re.S)
+    k = wide.find(name)
+    chunk = wide[max(0, k - width):k + len(name) + width]
     return re.sub(r'\d', '9', re.sub(r'\s+', ' ', chunk))
 
 
