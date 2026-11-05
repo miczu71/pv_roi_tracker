@@ -25,7 +25,7 @@ faktura obejmująca koniec miesiąca (źródło stawek/depozytu). Rekonsyliacja 
   liczone względem sumy kWh; `app.js` — etykieta „część miesiąca”.
 - DONE: test web + podgląd w Playwright (po wydaniu na żywo, bo dane prod mają jedną fakturę).
 
-## E3 — wydanie 0.56.5 (ostatni etap)
+## E3 — wydanie 0.56.5 (ostatni etap) — ZROBIONE 2026-11-05: v0.56.5 opublikowane, na żywo (Supervisor 0.56.5, tabela Faktur bez regresji, konsola 0 błędów, pytest 1463 passed, 23 skipped)
 simplify → code-review (+ silent-failure-hunter, pr-test-analyzer, security) → release → weryfikacja.
 
 ### E3 — wyniki przeglądu (2026-11-05)
