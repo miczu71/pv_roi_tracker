@@ -366,21 +366,63 @@ class EbokClient:
                 'item_skeleton': _html_skeleton(html)}
 
     def probe_invoice_list(self) -> dict:
-        """Sonda E0b (0.55.6, tylko odczyt): jedno wywołanie `LoadMoreInvoicesProducts` z `sid` i `pp`
-        (pozostałe parametry dokłada JS strony — patrz `js_context` z `probe_invoices_page`).
-        Zwraca wyłącznie kształt odpowiedzi (`_response_shape`): bez kwot, numerów i płatnika."""
+        """Sonda E0d (0.55.8, tylko odczyt): jak JS strony Faktury (`loadMoreItems`) — POST
+        `LoadMoreInvoicesProducts?sid&pp` z `startingIndex`, `searchTerm`, `PickupMediumType`
+        i `parentViewModel` (zmienna JS `serializedViewModel` ze strony, przekazywana bez zmian).
+        Zwraca wyłącznie kształt odpowiedzi (`_response_shape`): bez kwot, numerów i płatnika;
+        wartość `serializedViewModel` nie opuszcza metody."""
         if not self._payer_id:
             raise EbokError('Nie wybrano płatnika (select_payer)')
-        r = self._get(f'{SERVICE}/api/sitecore/EbokInvoiceList/LoadMoreInvoicesProducts?'
-                      + urlencode({'pp': self._payer_id, 'sid': SYSTEM}), REQUEST_TIMEOUT)
-        return {'status': r.status_code, 'ok': r.status_code == 200, 'content_type': r.headers.get('Content-Type', ''),
-                'size': len(r.text or ''), 'shape': _response_shape(r.text or '')}
-
+        page_url = f'{SERVICE}/Home/Pages/Faktury?' + urlencode({'sid': SYSTEM, 'pp': self._payer_id})
+        html = self._get(page_url, REQUEST_TIMEOUT).text or ''
+        view_model = _js_string_var(html, 'serializedViewModel')
+        medium = _js_string_var(html, 'mediumType')
+        request = {'view_model_found': view_model is not None, 'view_model_len': len(view_model or ''),
+                   'medium_type_found': medium is not None}
+        if view_model is None:
+            request['view_model_context'] = _var_context(html, 'serializedViewModel')
+        r = self._session.post(
+            f'{SERVICE}/api/sitecore/EbokInvoiceList/LoadMoreInvoicesProducts?'
+            + urlencode({'sid': SYSTEM, 'pp': self._payer_id}),
+            data={'startingIndex': 0, 'searchTerm': '', 'PickupMediumType': medium or '',
+                  'parentViewModel': view_model or ''},
+            headers={'User-Agent': USER_AGENT, 'X-Requested-With': 'XMLHttpRequest', 'Referer': page_url},
+            timeout=REQUEST_TIMEOUT)
+        if _is_login_page(r):
+            raise EbokError('Sesja eBOK wygasła przy zapytaniu o listę faktur')
+        return {'status': r.status_code, 'ok': r.status_code == 200, 'request': request,
+                'content_type': r.headers.get('Content-Type', ''), 'size': len(r.text or ''),
+                'shape': _response_shape(r.text or '')}
 
 _STATUS_WORD_RE = re.compile(
     r'Nieopłacon\w*|Opłacon\w*|Do zapłaty|Po terminie|Rozliczon\w*|Korekt\w*|Faktur\w*|Zaległ\w*', re.I)
 _ITEM_START_RE = re.compile(r'<tr\b[^>]*>(?=\s*<td)', re.I)   # wiersz tabeli z komórkami (nie menu `data-item`)
 _JS_ANCHOR = 'LoadMoreInvoicesProducts'
+
+
+def _js_string_var(html: str, name: str) -> Optional[str]:
+    """Wartość tekstowa przypisania `<name> = '...'` / `"..."` z JS strony (z dekodowaniem
+    sekwencji ucieczki JS); None, gdy zmiennej nie ma lub nie jest literałem tekstowym."""
+    m = re.search(re.escape(name) + r'\s*=\s*(["\'])((?:\\.|(?!\1).)*)\1', html or '', re.S)
+    if not m:
+        return None
+    quote, body = m.groups()
+    if quote == "'":
+        body = re.sub(r'\\.|"', lambda t: {"\\'": "'", '"': '\\"'}.get(t.group(0), t.group(0)), body)
+    try:
+        return json.loads('"' + body + '"')
+    except ValueError:
+        return m.group(2)
+
+
+def _var_context(html: str, name: str, width: int = 120) -> str:
+    """Zamaskowany fragment kodu wokół pierwszego użycia zmiennej (gdy nie jest literałem tekstowym)."""
+    m = re.search(re.escape(name), html or '')
+    if not m:
+        return '<brak zmiennej>'
+    chunk = html[max(0, m.start() - width):m.end() + width]
+    chunk = re.sub(r'[A-Za-z0-9+/=_-]{32,}', '<token>', chunk)
+    return re.sub(r'\s+', ' ', re.sub(r'\d{5,}', '<num>', chunk))
 
 
 def _js_contexts(js: str, width: int = 600) -> list:
@@ -430,15 +472,21 @@ def _html_skeleton(html: str, limit: int = 1500) -> str:
     return ''.join(parser.parts)[:limit]
 
 
-def _json_shape(value, depth: int = 0):
+def _json_shape(value, depth: int = 0, key: str = ''):
     if isinstance(value, dict):
-        return {re.sub(r'\d', '9', str(k)): _json_shape(v, depth + 1) for k, v in value.items()} if depth < 4 else 'object'
+        return {re.sub(r'\d', '9', str(k)): _json_shape(v, depth + 1, str(k)) for k, v in value.items()} \
+            if depth < 4 else 'object'
     if isinstance(value, list):
         return {'list': len(value), 'item': _json_shape(value[0], depth + 1) if value and depth < 4 else None}
     if isinstance(value, str):
-        if _ITEM_START_RE.search(value):
-            return {'html': _html_skeleton(value)}
+        if '<' in value:
+            return {'html': _html_skeleton(value), 'len': len(value),
+                    'rows': len(_ITEM_START_RE.findall(value)),
+                    'signatures': len(set(_SIGNATURE_RE.findall(value))),
+                    'tags': dict(Counter(re.findall(r'<([a-z][a-z0-9]*)', value, re.I)).most_common(8))}
         return value if _STATUS_WORD_RE.fullmatch(value) else 'str'
+    if isinstance(value, int) and not isinstance(value, bool) and key.endswith('Count'):
+        return value   # TotalCount / ReturnedCount: liczności, nie dane
     return type(value).__name__
 
 
@@ -453,8 +501,7 @@ def _response_shape(text: str) -> dict:
                 'signatures': len(set(_SIGNATURE_RE.findall(text))),
                 'tags': dict(Counter(re.findall(r'<([a-z][a-z0-9]*)', text, re.I)).most_common(8)),
                 'skeleton': _html_skeleton(text)}
-    return {'type': 'json', 'tree': _json_shape(data),
-            'signatures': len(set(_SIGNATURE_RE.findall(text)))}
+    return {'type': 'json', 'tree': _json_shape(data)}
 
 
 def _api_paths(text: str) -> set:

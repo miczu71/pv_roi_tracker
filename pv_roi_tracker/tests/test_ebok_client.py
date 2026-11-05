@@ -863,52 +863,69 @@ def test_probe_invoices_page_returns_js_context_and_item_skeleton():
     assert '123' not in skel and 'XX000000' not in skel
 
 
-def test_probe_invoice_list_json_shape_without_values():
+_VM = 'AAAA{\\"Payer\\":\\"' + _PAYER + '\\"}BBBB'
+_LIST_PAGE = ("<script>var mediumType = 'Energy'; var serializedViewModel = '" + _VM + "';"
+              " var other = 1;</script>")
+
+
+def _list_client(post_body):
     client, session = _probe_client()
-    body = json.dumps({'Status': 'OK', 'Documents': [{'Number': 'T/K1/XX000000/0020/26', 'Amount': 12.5,
-                                                      'Status': 'Nieopłacona'}], 'Total': 1})
-    session.when('EbokInvoiceList/LoadMoreInvoicesProducts', _FakeResponse(text=body))
+    session._responses.insert(0, ('/Home/Pages/Faktury', _FakeResponse(text=_LIST_PAGE)))
+    session.when('EbokInvoiceList/LoadMoreInvoicesProducts', post_body)
+    return client, session
+
+
+def test_probe_invoice_list_posts_like_page_js_and_hides_view_model():
+    body = json.dumps({'ResultHtml': _ITEM_HTML * 2, 'TotalCount': 3, 'ReturnedCount': 2})
+    client, session = _list_client(_FakeResponse(text=body))
     out = client.probe_invoice_list()
-    assert out['status'] == 200
-    shape = out['shape']
-    assert shape['type'] == 'json' and shape['signatures'] == 1
-    assert shape['tree']['Documents'] == {'list': 1, 'item': {'Number': 'str', 'Amount': 'float',
-                                                                'Status': 'Nieopłacona'}}
-    assert 'XX000000' not in json.dumps(out) and '12.5' not in json.dumps(out)
-    assert any('LoadMoreInvoicesProducts?' in c[1] and 'sid=T18' in c[1] and f'pp={_PAYER}' in c[1]
-               for c in session.calls if c[0] == 'GET')
+    post = [c for c in session.calls if c[0] == 'POST' and 'LoadMoreInvoicesProducts' in c[1]]
+    assert len(post) == 1
+    _, url, kw = post[0]
+    assert 'sid=T18' in url and f'pp={_PAYER}' in url
+    assert kw['data']['startingIndex'] == 0 and kw['data']['searchTerm'] == ''
+    assert kw['data']['PickupMediumType'] == 'Energy'
+    assert kw['data']['parentViewModel'] == 'AAAA{"Payer":"' + _PAYER + '"}BBBB'   # odkodowane z JS
+    assert out['request'] == {'view_model_found': True, 'view_model_len': len(kw['data']['parentViewModel']),
+                              'medium_type_found': True}
+    tree = out['shape']['tree']
+    assert tree['TotalCount'] == 3 and tree['ReturnedCount'] == 2
+    assert tree['ResultHtml']['rows'] == 2 and tree['ResultHtml']['signatures'] == 1
+    assert tree['ResultHtml']['html'].startswith('<tr.row.paid[data-item]>')
+    text = json.dumps(out, ensure_ascii=False)
+    assert _PAYER not in text and 'AAAA' not in text and 'XX000000' not in text and '123' not in text
+
+
+def test_probe_invoice_list_without_view_model_reports_masked_context():
+    client, session = _probe_client()
+    session._responses.insert(0, ('/Home/Pages/Faktury', _FakeResponse(
+        text='<script>var serializedViewModel = ' + 'Z' * 40 + '(' + _PAYER + ');</script>')))
+    session.when('EbokInvoiceList/LoadMoreInvoicesProducts', _FakeResponse(text='<html></html>'))
+    out = client.probe_invoice_list()
+    assert out['request']['view_model_found'] is False
+    assert 'serializedViewModel' in out['request']['view_model_context']
+    assert 'Z' * 40 not in json.dumps(out)
 
 
 def test_probe_invoice_list_json_does_not_leak_strings_containing_status_words():
-    client, session = _probe_client()
     body = json.dumps({'Status': 'OK', 'T/K1/XX000000/0020/26': {'Name': 'Faktura T/K1/XX000000/0020/26',
                                                                  'Note': 'Opłacona 123,45 zł'}})
-    session.when('EbokInvoiceList/LoadMoreInvoicesProducts', _FakeResponse(text=body))
+    client, session = _list_client(_FakeResponse(text=body))
     out = json.dumps(client.probe_invoice_list(), ensure_ascii=False)
     assert 'XX000000' not in out and '123,45' not in out
 
 
-def test_probe_invoice_list_unwraps_html_inside_json():
-    client, session = _probe_client()
-    session.when('EbokInvoiceList/LoadMoreInvoicesProducts',
-                 _FakeResponse(text=json.dumps({'Html': _ITEM_HTML})))
-    html = client.probe_invoice_list()['shape']['tree']['Html']['html']
-    assert html.startswith('<tr.row.paid[data-item]>') and '"Nieopłacona"' in html and '123' not in html
-
-
-def test_js_context_masks_long_tokens_and_numbers():
-    from pv_roi_tracker.ebok_client import _js_contexts
-    out = _js_contexts("x='%s'; a(\"LoadMoreInvoicesProducts\", 1234567)" % ('A' * 40))
-    assert 'A' * 40 not in out[0] and '1234567' not in out[0]
-
-
-def test_probe_invoice_list_html_shape():
-    client, session = _probe_client()
-    session.when('EbokInvoiceList/LoadMoreInvoicesProducts', _FakeResponse(text=_ITEM_HTML * 2))
+def test_probe_invoice_list_html_response_shape():
+    client, session = _list_client(_FakeResponse(text=_ITEM_HTML * 2))
     shape = client.probe_invoice_list()['shape']
     assert shape['type'] == 'html' and shape['items'] == 2 and shape['signatures'] == 1
     assert shape['tags']['td'] == 6
-    assert '"Nieopłacona"' in shape['skeleton'] and '123' not in shape['skeleton']
+
+
+def test_probe_invoice_list_login_page_raises():
+    client, session = _list_client(_FakeResponse(text=_LOGIN_FORM_HTML))
+    with pytest.raises(EbokError, match='wygasła'):
+        client.probe_invoice_list()
 
 
 def test_probe_invoice_list_requires_selected_payer():
@@ -916,6 +933,12 @@ def test_probe_invoice_list_requires_selected_payer():
     client._payer_id = None
     with pytest.raises(EbokError, match='płatnika'):
         client.probe_invoice_list()
+
+
+def test_js_context_masks_long_tokens_and_numbers():
+    from pv_roi_tracker.ebok_client import _js_contexts
+    out = _js_contexts("x='%s'; a(\"LoadMoreInvoicesProducts\", 1234567)" % ('A' * 40))
+    assert 'A' * 40 not in out[0] and '1234567' not in out[0]
 
 
 class _RaisingScriptSession(_SequenceSession):
