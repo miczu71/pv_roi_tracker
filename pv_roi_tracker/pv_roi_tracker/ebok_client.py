@@ -1215,10 +1215,6 @@ def parse_documents_json(data: dict) -> list:
     return docs
 
 
-_GUID_RE = re.compile(r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}')
-_CHECKSUM_RE = re.compile(r'[0-9a-fA-F]{64}')
-
-
 class _UnpaidSourceParser(HTMLParser):
     def __init__(self):
         super().__init__()
@@ -1245,7 +1241,7 @@ def parse_unpaid_source(result_html: str) -> Optional[dict]:
         return None
     source_id = (attrs.get('data-source-id') or '').strip()
     checksum = (attrs.get('data-contractor-number-checksum') or '').strip()
-    if not _GUID_RE.fullmatch(source_id) or not _CHECKSUM_RE.fullmatch(checksum):
+    if not _GUID_RE.fullmatch(source_id) or not _HEX64_RE.fullmatch(checksum):
         return None
     return {'source_id': source_id, 'checksum': checksum}
 
@@ -1316,13 +1312,13 @@ def parse_unpaid_invoices_html(html: str) -> list:
         pass
     docs = []
     for row in parser.rows:
-        signature = ' '.join(unescape(row['number']).split())
+        signature = _plain(row['number'])
         if not signature:
             continue
-        cells = [' '.join(unescape(''.join(c)).split()) for c in row['cells']]
+        cells = [_plain(''.join(c)) for c in row['cells']]
         issued = _parse_date(cells[1]) if len(cells) > 1 else None
         due = _parse_date(cells[3]) if len(cells) > 3 else None
-        amount = ' '.join(unescape(row['amount']).split()).replace('zł', '').strip()
+        amount = _plain(row['amount']).replace('zł', '').strip()
         base = (row['base'] or '').strip()
         doc_type = 'FV'
         pdf_url = None
@@ -1333,7 +1329,7 @@ def parse_unpaid_invoices_html(html: str) -> list:
                 doc_type = found[0].strip()
         docs.append(EbokDocument(
             signature=signature,
-            doc_name=' '.join(unescape(row['type']).split()),
+            doc_name=_plain(row['type']),
             issued_on=issued.strftime('%d.%m.%Y') if issued else '',
             amount_gross_pln=_to_float(amount),
             due_date=due,
