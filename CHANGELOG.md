@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.55.4] — 2026-11-05
+
+- **Taryfa G13: pobór peak/offpeak liczy się z trzech stref.** Rola „peak” = stary `sensor.daily_energy_peak` + `sensor.g13_energia_morning_peak` + `sensor.g13_energia_evening_peak`, rola „offpeak” = stary `sensor.daily_energy_offpeak` + `sensor.g13_energia_other`. Stare liczniki G12w są zamrożone (historia zostaje w statystykach), brak encji jest pomijany. Dotyczy okna energii, miesiąca ze statystyk i bieżącego miesiąca.
+- Znane długi (nieblokujące): fallback REST `sensor.monthly_energy_*` przy braku statystyk stoi po zamrożeniu liczników; brakująca encja strefy G13 jest pomijana bez ostrzeżenia; brak testów `get_energy_window` i `read_current_month` dla sumy G13.
+- Testy: 1350 passed (23 skipped).
+
 ## [0.55.3] — 2026-11-02
 
 - **Formularz nowego okresu cennika zapisuje tylko zmienione stawki (d).** Do tej pory każde pole było wysyłane z wartością wstępną, więc zapis „zamrażał” wszystkie stawki okresu. Teraz do korekty trafiają wyłącznie pola, które edytowano; zapis do miesiąca z istniejącą korektą scala się z nią (pozostałe pola zostają), a brak zmian daje komunikat „Nic nie zmieniono”. Backend odrzuca patch bez żadnej liczby.
