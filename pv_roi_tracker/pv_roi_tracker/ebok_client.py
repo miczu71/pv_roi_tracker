@@ -348,7 +348,8 @@ class EbokClient:
                     continue
                 fetched += 1
                 api_paths.update(_api_paths(js.text))
-                js_context.extend(_js_contexts(js.text))
+                if len(js_context) < 2:
+                    js_context.extend(_js_contexts(js.text))
             except Exception as exc:
                 failed += 1
                 logger.warning('eBOK: sonda — skrypt niedostępny (%s)', type(exc).__name__)
@@ -371,23 +372,24 @@ class EbokClient:
             raise EbokError('Nie wybrano płatnika (select_payer)')
         r = self._get(f'{SERVICE}/api/sitecore/EbokInvoiceList/LoadMoreInvoicesProducts?'
                       + urlencode({'pp': self._payer_id, 'sid': SYSTEM}), REQUEST_TIMEOUT)
-        return {'status': r.status_code, 'content_type': r.headers.get('Content-Type', ''),
+        return {'status': r.status_code, 'ok': r.status_code == 200, 'content_type': r.headers.get('Content-Type', ''),
                 'size': len(r.text or ''), 'shape': _response_shape(r.text or '')}
 
 
 _STATUS_WORD_RE = re.compile(
     r'Nieopłacon\w*|Opłacon\w*|Do zapłaty|Po terminie|Rozliczon\w*|Korekt\w*|Faktur\w*|Zaległ\w*', re.I)
-_ITEM_START_RE = re.compile(r'<[^>]*\bdata-item\b[^>]*>')
+_ITEM_START_RE = re.compile(r'<[^>]*\bdata-item(?![\w-])[^>]*>')
 _JS_ANCHOR = 'LoadMoreInvoicesProducts'
 
 
 def _js_contexts(js: str, width: int = 450) -> list:
     """Fragmenty kodu JS wokół wywołania `LoadMoreInvoicesProducts` (jak JS buduje zapytanie).
-    Kod, nie dane — ale cyfry i hex 64 znaków i tak są wycinane."""
+    Kod, nie dane — ale długie literały (tokeny) i ciągi 5+ cyfr są wycinane."""
     out = []
     for m in re.finditer(_JS_ANCHOR, js or ''):
-        chunk = re.sub(r'\b[0-9a-fA-F]{64}\b', '<hex64>', js[max(0, m.start() - width):m.end() + width])
-        out.append(re.sub(r'\s+', ' ', chunk))
+        chunk = js[max(0, m.start() - width):m.end() + width]
+        chunk = re.sub(r'[A-Za-z0-9+/=_-]{32,}', '<token>', chunk)
+        out.append(re.sub(r'\s+', ' ', re.sub(r'\d{5,}', '<num>', chunk)))
         if len(out) == 2:
             break
     return out
@@ -405,6 +407,9 @@ class _SkeletonParser(HTMLParser):
         names += [f'[{a}]' for a, _ in attrs if a.startswith('data-')]
         self.parts.append('<' + tag + ''.join(names) + '>')
 
+    def handle_endtag(self, tag):
+        self.parts.append('</>')
+
     def handle_data(self, data):
         words = _STATUS_WORD_RE.findall(data)
         if words:
@@ -417,19 +422,22 @@ def _html_skeleton(html: str, limit: int = 1500) -> str:
     """Szkielet pierwszego elementu z `data-item` (kształt wiersza listy faktur), bez treści."""
     m = _ITEM_START_RE.search(html or '')
     if not m:
-        return ''
+        return '<brak data-item>'
     parser = _SkeletonParser()
     parser.feed(html[m.start():m.start() + 6000])
+    parser.close()
     return ''.join(parser.parts)[:limit]
 
 
 def _json_shape(value, depth: int = 0):
     if isinstance(value, dict):
-        return {k: _json_shape(v, depth + 1) for k, v in value.items()} if depth < 4 else 'object'
+        return {re.sub(r'\d', '9', str(k)): _json_shape(v, depth + 1) for k, v in value.items()} if depth < 4 else 'object'
     if isinstance(value, list):
-        return {'list': len(value), 'item': _json_shape(value[0], depth + 1) if value else None}
+        return {'list': len(value), 'item': _json_shape(value[0], depth + 1) if value and depth < 4 else None}
     if isinstance(value, str):
-        return 'str' if len(value) > 40 or not _STATUS_WORD_RE.search(value) else value
+        if _ITEM_START_RE.search(value):
+            return {'html': _html_skeleton(value)}
+        return value if _STATUS_WORD_RE.fullmatch(value) else 'str'
     return type(value).__name__
 
 

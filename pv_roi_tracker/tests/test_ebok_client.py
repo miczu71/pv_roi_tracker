@@ -869,6 +869,29 @@ def test_probe_invoice_list_json_shape_without_values():
                for c in session.calls if c[0] == 'GET')
 
 
+def test_probe_invoice_list_json_does_not_leak_strings_containing_status_words():
+    client, session = _probe_client()
+    body = json.dumps({'Status': 'OK', 'T/K1/XX000000/0020/26': {'Name': 'Faktura T/K1/XX000000/0020/26',
+                                                                 'Note': 'Opłacona 123,45 zł'}})
+    session.when('EbokInvoiceList/LoadMoreInvoicesProducts', _FakeResponse(text=body))
+    out = json.dumps(client.probe_invoice_list(), ensure_ascii=False)
+    assert 'XX000000' not in out and '123,45' not in out
+
+
+def test_probe_invoice_list_unwraps_html_inside_json():
+    client, session = _probe_client()
+    session.when('EbokInvoiceList/LoadMoreInvoicesProducts',
+                 _FakeResponse(text=json.dumps({'Html': _ITEM_HTML})))
+    html = client.probe_invoice_list()['shape']['tree']['Html']['html']
+    assert html.startswith('<div.row.paid[data-item]>') and '"Nieopłacona"' in html and '123' not in html
+
+
+def test_js_context_masks_long_tokens_and_numbers():
+    from pv_roi_tracker.ebok_client import _js_contexts
+    out = _js_contexts("x='%s'; a(\"LoadMoreInvoicesProducts\", 1234567)" % ('A' * 40))
+    assert 'A' * 40 not in out[0] and '1234567' not in out[0]
+
+
 def test_probe_invoice_list_html_shape():
     client, session = _probe_client()
     session.when('EbokInvoiceList/LoadMoreInvoicesProducts', _FakeResponse(text=_ITEM_HTML * 2))

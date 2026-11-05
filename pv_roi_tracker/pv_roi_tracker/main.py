@@ -857,7 +857,10 @@ def main() -> None:
                 logger.warning('eBOK diag: sonda strony Faktury nie powiodła się (%s)', type(exc).__name__)
                 probe = {'error': mask(f'{type(exc).__name__}: {exc}')}
             try:
-                list_probe = client.probe_invoice_list()   # tylko typy i słowa statusu — bez wartości
+                list_probe = client.probe_invoice_list()
+                shape = list_probe.get('shape') or {}
+                if shape.get('skeleton'):
+                    shape['skeleton'] = mask(shape['skeleton'])
             except Exception as exc:
                 logger.warning('eBOK diag: sonda listy faktur nie powiodła się (%s)', type(exc).__name__)
                 list_probe = {'error': mask(f'{type(exc).__name__}: {exc}')}
