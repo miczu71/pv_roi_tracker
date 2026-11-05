@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.55.8] — 2026-11-05
+
+- **Diagnostyka eBOK: sonda listy faktur jak w JS strony.** `GET api/ebok/diag` → `invoice_list` robi POST `LoadMoreInvoicesProducts` z `serializedViewModel` odczytanym ze strony Faktury (wartość nie opuszcza metody) i zwraca tylko kształt odpowiedzi (klucze, liczności, szkielet wiersza tabeli, liczba sygnatur). Bez `serializedViewModel` POST jest pomijany, a w wyniku jest kontekst kodu bez treści literałów.
+
 ## [0.55.7] — 2026-11-05
 
 - **Diagnostyka eBOK: sonda listy faktur, poprawka.** Kontekst wywołania `LoadMoreInvoicesProducts` jest szukany także w skryptach inline strony Faktury, a szkielet dotyczy wiersza tabeli `<tr><td>` (nie pozycji menu). Odpowiedź HTML dostaje histogram znaczników. Nadal tylko odczyt, bez kwot, numerów i płatnika.
