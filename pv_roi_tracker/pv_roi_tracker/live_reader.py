@@ -881,8 +881,8 @@ def read_current_month(
     aborting the poll.
 
     peak/offpeak specifically must come from the LTS call, not a raw REST
-    read of _ZONE_PEAK_METER/_ZONE_OFFPEAK_METER (sensor.daily_energy_peak/
-    offpeak): those reset every day, so _get_state() on them only ever
+    read of the zone meters (_ZONE_PEAK_METERS/_ZONE_OFFPEAK_METERS: sensor.daily_energy_peak/
+    offpeak plus the G13 g13_energia_* meters): those reset every day, so _get_state() on them only ever
     returns today's import, not the month's — confirmed live 2 days into
     August 2026 (monthly_energy_offpeak=7.58 kWh vs daily_energy_offpeak=
     2.49 kWh, already diverged). The REST fallback below reads the old
