@@ -305,7 +305,11 @@ class EbokClient:
         r = self._get(pdf_url, REQUEST_TIMEOUT)
         if r.status_code != 200:
             raise EbokError(f'Pobranie PDF nie powiodło się (status {r.status_code})')
-        data = _json_or_layout_error(r, 'PDF')
+        try:
+            data = _json_or_layout_error(r, 'PDF')
+        except EbokLayoutChanged:
+            logger.warning('eBOK: odpowiedź PDF nie jest OK (%s)', _pdf_response_shape(r, pdf_url))
+            raise
         try:
             pdf = base64.b64decode(data.get('Document') or '', validate=False)
         except (binascii.Error, ValueError, TypeError) as exc:
@@ -1075,6 +1079,31 @@ def _api_paths(text: str) -> set:
 
 def _is_login_page(r) -> bool:
     return b'id="kc-form-login"' in (r.content or b'')
+
+
+def _pdf_response_shape(r, pdf_url: str) -> str:
+    """Zamaskowany opis nieudanej odpowiedzi PDF do logu: docType/docMode z adresu (krótkie słowa
+    i cyfry), klucze JSON, słowo Status i długości wartości. Bez numerów, checksum i treści."""
+    query = parse_qs(urlparse(pdf_url).query)
+    params = []
+    for name in ('docType', 'docMode'):
+        value = (query.get(name) or [''])[0]
+        params.append(f'{name}={value if re.fullmatch(r"[A-Za-z0-9]{1,8}", value) else "?"}')
+    try:
+        data = json.loads(r.text)
+    except ValueError:
+        return f'{" ".join(params)} nie-JSON, {len(r.text or "")} zn.'
+    if not isinstance(data, dict):
+        return f'{" ".join(params)} JSON typu {type(data).__name__}'
+    fields = []
+    for key, value in sorted(data.items(), key=lambda kv: str(kv[0])):
+        name = key if re.fullmatch(r'[A-Za-z]{1,30}', str(key)) else '?'
+        if isinstance(value, str):
+            word = value if key == 'Status' and re.fullmatch(r'[A-Za-z]{1,20}', value) else None
+            fields.append(f'{name}={word!r}' if word else f'{name}=str[{len(value)}]')
+        else:
+            fields.append(f'{name}={type(value).__name__}')
+    return f'{" ".join(params)} pola: {", ".join(fields)}'
 
 
 def _json_or_layout_error(r, what: str) -> dict:

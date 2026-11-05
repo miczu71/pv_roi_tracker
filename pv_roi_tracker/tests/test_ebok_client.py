@@ -517,6 +517,34 @@ def test_download_pdf_non_json_or_bad_status_raises():
         client2.download_pdf('https://moj.tauron.pl/api/x/GetDocumentImage?id=1')
 
 
+def test_download_pdf_error_status_logs_masked_shape(caplog):
+    client, session = _client_with_successful_login()
+    body = json.dumps({'Status': 'Error', 'Message': 'Dokument SECRET-123 niedostepny',
+                       'Document': None, 'Extra': {'a': 1}})
+    session.when('GetDocumentImage', _FakeResponse(text=body))
+    url = ('https://moj.tauron.pl/api/sitecore/EbokArchiveDocuments/GetDocumentImage'
+           '?clientNumber=CLIENT42&clientNumberCheckSum=' + 'ab' * 32
+           + '&system=T18&docNumber=DOCNUM9&docType=FV&sodId=SOD7&docMode=1')
+    with caplog.at_level('WARNING'):
+        with pytest.raises(EbokError):
+            client.download_pdf(url)
+    text = caplog.text
+    assert 'docType=FV' in text and 'docMode=1' in text
+    assert 'Status' in text and "'Error'" in text
+    assert 'Message' in text and 'Document' in text and 'Extra' in text
+    for secret in ('SECRET-123', 'CLIENT42', 'DOCNUM9', 'SOD7', 'ab' * 32):
+        assert secret not in text
+
+
+def test_download_pdf_non_json_logs_length_only(caplog):
+    client, session = _client_with_successful_login()
+    session.when('GetDocumentImage', _FakeResponse(text='<html>tajne 555</html>'))
+    with caplog.at_level('WARNING'):
+        with pytest.raises(EbokError):
+            client.download_pdf('https://moj.tauron.pl/api/x/GetDocumentImage?docType=FV&docMode=2')
+    assert 'docMode=2' in caplog.text and 'tajne' not in caplog.text
+
+
 def test_known_signatures_uses_invoice_number_and_ebok_filename():
     known = known_signatures([
         {'invoice_number': 'T/K1/X/0017/26', 'filename': 'upload.pdf'},
