@@ -134,3 +134,9 @@ Repo: `~/dev/pv_roi_tracker` (gałąź `main`, PUBLIC), kopia do `/config/addons
 - Claimcheck: „brak punktów w raporcie” (raport nie był wypunktowany) — pominięty.
 - **Nie zweryfikowane na żywo** — dopiero po wydaniu 0.56.0 (diag / sync / payment-status, kryterium: 3 faktury, 104,48 zł).
 - **Następny: E2** (dług G13, `/config/docs/ROADMAP_energy_panel_g13.md`): (a) ostrzeżenie o brakującej encji strefy w `live_reader._sum_role_month`, (b) fallback bez zamrożonego `sensor.monthly_energy_*` w `read_current_month`/`get_energy_window`, (c) testy sumy 3 stref G13. Plan etapu z sekcją Wykonawca → `docs/PLAN_EBOK_NOWA_FAKTURA_E2.md` przed implementacją. Potem wydanie 0.56.0 (E1+E2).
+
+## STATUS E2 2026-11-05 (ZROBIONE, commit dev `568d7ef`, bez wydania; testy 1423 passed / 23 skipped)
+
+- (a) `_sum_role_month(..., warn_missing)`: ostrzeżenie raz na encję/proces przy częściowym odczycie, tylko w `read_current_month` (stare miesiące nie mają `g13_energia_*`). (b) `read_current_month` nie używa zamrożonych `sensor.monthly_energy_*`: brak LTS peak/offpeak → `None` + ostrzeżenie (przy każdym wywołaniu). (c) testy sumy 3 stref G13 dla `read_current_month` i `get_energy_window` (+ brak strefy, ujemny `change`). `get_energy_window` bez zmian kodu.
+- haiku-worker + verifier ACCEPT. Nieblokujące: ostrzeżenie o braku peak/offpeak leci co poll (nie raz na proces); test fallbacku przechodzi też na starym kodzie, regresję (b) chroni `test_read_current_month_none_peak_offpeak_when_lts_empty_warns`; nieużywane stany `monthly_energy_*` w `test_timezone_fix.py`.
+- **Następny: wydanie 0.56.0** (E1+E2): simplify → code-review + silent-failure-hunter + pr-test-analyzer + security na `v0.55.14..HEAD` → release → weryfikacja na żywo.
