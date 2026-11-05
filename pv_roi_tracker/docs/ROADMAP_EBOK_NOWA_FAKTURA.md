@@ -52,3 +52,10 @@ Repo: `~/dev/pv_roi_tracker` (gałąź `main`, PUBLIC), kopia do `/config/addons
 - Logowanie do eBOK tylko przez diag i sync, maks. kilka razy dziennie (ryzyko blokady Taurona).
 - Numer płatnika, adres i checksum nie trafiają do repo, pamięci ani czatu (fixture neutralne, pre-commit pubguard).
 - Bez restartu HA. Add-on aktualizuje Supervisor przez `ha_manage_updates`.
+
+## STATUS 2026-11-05
+
+- **E0 ZROBIONE:** 0.55.5 wydane (tag `v0.55.5`, published), zainstalowane na żywo (`installed_version` 0.55.5, logi startu czyste), commity dev `91312b3`, `756cd3b`, wydanie `9240e69`, kopia /config `30a9863`. Testy 1360 passed / 23 skipped. Przeglądy: silent-failure-hunter, pr-test-analyzer, security, code-review bez blokujących; poprawki wprowadzone (regex sygnatur 2 formaty, statystyki skryptów, nazwy parametrów, roadmapa bez prawdziwych numerów).
+- **Wynik sondy (`GET api/ebok/diag` → `invoices_page`):** strona Faktury (status 200, 45 KB, 6 skryptów pobranych) nie zawiera sygnatur w HTML (`signatures_total: 0`). Lista faktur ładuje się przez `GET /api/sitecore/EbokInvoiceList/LoadMoreInvoicesProducts?pp&sid` (parametry pokazane tylko jako nazwy; mogą być też inne, dynamiczne). Inne: `EbokInvoiceList/Payment?ids`, `EbokInvoiceList/SetName`. Archiwum (`GetDocuments`) nadal 79 dok., najnowszy to korekta z 31.10.
+- **Następny: E0b (0.55.6, mała sonda):** `diag` woła `LoadMoreInvoicesProducts` (sid=T18, pp=<płatnik>, pozostałe parametry z kodu JS strony) i zwraca TYLKO kształt odpowiedzi: typ (JSON/HTML), klucze/tagi, liczbę wierszy, sygnatury `T/K1/…` i statusy (bez kwot, płatnika, checksum). Dopiero potem E1 (plan z sekcją Wykonawca po poznaniu formatu). Wydanie 0.55.6 może od razu nieść E1, jeśli format jest prosty.
+- Dług z review sondy (nieblokujący): sonda woła ~9 żądań do Taurona przy każdym `diag`; brak testu `ebok_diag` (closure w `main()`).
