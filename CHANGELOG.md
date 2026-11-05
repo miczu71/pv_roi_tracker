@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.56.1] — 2026-11-05
+
+- **eBOK: diagnostyka nieudanego pobrania PDF.** Gdy Tauron zwraca błąd zamiast PDF, w logu pojawia się zamaskowany kształt odpowiedzi (`docType`, `docMode`, nazwy pól, słowo `Status`, długości wartości; bez numerów, sum kontrolnych i treści). Pozwala ustalić, czemu jeden dokument z listy „do zapłaty” nie daje się pobrać.
+
 ## [0.56.0] — 2026-11-05
 
 - **eBOK: import faktur nierozliczonych.** Archiwum dokumentów pokazuje tylko faktury rozliczone, więc nowa nieopłacona faktura nie była importowana, a pasek płatności i przypomnienia jej nie widziały. Synchronizacja dociąga teraz listę „do zapłaty” (strona Faktury → `GetInvoices`, z paginacją), łączy ją z archiwum (przy duplikacie wygrywa archiwum) i traktuje jako aktywną płatność z terminem i linkiem do PDF. Błąd tego źródła nie psuje importu archiwum. Rozpoznawany jest też numer w formacie `K1N…/NNN`.
