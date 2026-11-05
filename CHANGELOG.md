@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.56.2] — 2026-11-05
+
+- **eBOK: odporniejsza lista „do zapłaty”.** Jedno ponowienie po błędzie połączenia; przy porażce wynik synchronizacji ma `unpaid_failed`, ostrzeżenie w logu i wzmiankę w stanie zadania (stan płatności nie jest kasowany).
+- **eBOK: lista brakujących dokumentów w synchronizacji.** Wynik i log zawierają zamaskowaną listę (miesiąc, sygnatura z cyframi jako `<n>`, rodzaj, źródło) — pozwala ustalić, dlaczego część dokumentów wraca do importu przy każdej synchronizacji.
+- **eBOK: PDF dokumentu z listy „do zapłaty”.** Po porażce pobrania próby z `docMode` 0 i 2 (tylko dla takich dokumentów).
+
 ## [0.56.1] — 2026-11-05
 
 - **eBOK: diagnostyka nieudanego pobrania PDF.** Gdy Tauron zwraca błąd zamiast PDF, w logu pojawia się zamaskowany kształt odpowiedzi (`docType`, `docMode`, nazwy pól, słowo `Status`, długości wartości; bez numerów, sum kontrolnych i treści). Pozwala ustalić, czemu jeden dokument z listy „do zapłaty” nie daje się pobrać.
