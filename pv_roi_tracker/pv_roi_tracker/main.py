@@ -861,6 +861,11 @@ def main() -> None:
                 shape = list_probe.get('shape') or {}
                 if shape.get('skeleton'):
                     shape['skeleton'] = mask(shape['skeleton'])
+                result_html = ((shape.get('tree') or {}).get('ResultHtml') or {})
+                for holder in (result_html, result_html.get('dl_blocks') or {}):
+                    for field in ('html', 'skeleton'):
+                        if isinstance(holder.get(field), str):
+                            holder[field] = mask(holder[field])
                 req = list_probe.get('request') or {}
                 for field in ('view_model_context', 'medium_type_context', 'medium_type'):
                     if req.get(field):

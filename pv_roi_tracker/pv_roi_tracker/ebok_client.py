@@ -576,6 +576,115 @@ def _html_skeleton(html: str, limit: int = 1500) -> str:
     return ''.join(parser.parts)[:limit]
 
 
+_VOID_TAGS = frozenset({'img', 'input', 'br', 'hr', 'meta', 'link', 'source', 'wbr', 'col'})
+
+
+class _Node:
+    __slots__ = ('tag', 'classes', 'data', 'children', 'parent', 'texts')
+
+    def __init__(self, tag, classes, data, parent):
+        self.tag, self.classes, self.data, self.parent = tag, classes, data, parent
+        self.children: list = []
+        self.texts: list = []
+
+    def sig(self):
+        return (self.tag, tuple(self.classes))
+
+    def text(self) -> str:
+        return ' '.join(' '.join(self.texts + [c.text() for c in self.children]).split())
+
+    def walk(self):
+        yield self
+        for c in self.children:
+            yield from c.walk()
+
+
+class _TreeParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.root = _Node('#root', [], [], None)
+        self._cur = self.root
+
+    def handle_starttag(self, tag, attrs):
+        node = _Node(tag, [c for a, v in attrs if a == 'class' for c in (v or '').split()],
+                     [a for a, _ in attrs if a.startswith('data-')], self._cur)
+        self._cur.children.append(node)
+        for a, v in attrs:   # `value="Zapłać"` na przycisku to etykieta UI, jak tekst
+            if a == 'value' and tag == 'input' and v:
+                node.texts.append(v)
+        if tag not in _VOID_TAGS:
+            self._cur = node
+
+    def handle_endtag(self, tag):
+        n = self._cur
+        while n is not self.root and n.tag != tag:
+            n = n.parent
+        if n is not self.root:
+            self._cur = n.parent
+
+    def handle_data(self, data):
+        self._cur.texts.append(data)
+
+
+def _node_skeleton(node: '_Node') -> str:
+    head = '<' + node.tag + ''.join(f'.{c}' for c in node.classes) + ''.join(f'[{a}]' for a in node.data) + '>'
+    own = ' '.join(' '.join(node.texts).split())
+    words = _STATUS_WORD_RE.findall(own)
+    body = ('"' + ' '.join(words) + '"') if words else ('…' if own else '')
+    return head + body + ''.join(_node_skeleton(c) for c in node.children) + '</>'
+
+
+def _mask_value_shape(text: str, limit: int = 40) -> str:
+    """Cyfry → 9, litery → a; reszta (separatory, spacje) bez zmian. Nie niesie wartości."""
+    out = ''.join('9' if ch.isdigit() else 'a' if ch.isalpha() else ch for ch in ' '.join(text.split()))
+    return out[:limit]
+
+
+def _invoice_block_shape(html: str, limit: int = 1500) -> Optional[dict]:
+    """Sonda E0f: szkielet powtarzającego się bloku faktury w układzie `dl/dt/dd` (bez `<tr>`).
+    Blok = najniższy przodek pierwszego `dt` powtórzony u rodzeństwa (a gdy jest jeden —
+    przodek z tekstem „Zapłać”, w ostateczności rodzic `dl`). Dla każdego `dt`: etykieta UI
+    (tylko bez cyfr i ≤40 znaków), zamaskowany kształt wartości i element, w którym leży."""
+    parser = _TreeParser()
+    parser.feed(html or '')
+    parser.close()
+    dts = [n for n in parser.root.walk() if n.tag == 'dt']
+    if not dts:
+        return None
+    block = None
+    node = dts[0].parent
+    while node is not None and node is not parser.root:
+        if node.parent is not None and sum(1 for s in node.parent.children if s.sig() == node.sig()) >= 2:
+            block = node
+            break
+        node = node.parent
+    if block is None:
+        node = dts[0].parent
+        while node is not None and node is not parser.root:
+            if re.search(r'zapłać', node.text(), re.I):
+                block = node
+                break
+            node = node.parent
+    if block is None:
+        block = dts[0].parent
+    count = sum(1 for s in block.parent.children if s.sig() == block.sig()) if block.parent else 1
+    fields = []
+    for dt in (n for n in block.walk() if n.tag == 'dt'):
+        label = dt.text()
+        siblings = dt.parent.children
+        dd = next((s for s in siblings[siblings.index(dt) + 1:] if s.tag in ('dd', 'dt')), None)
+        dd = dd if dd is not None and dd.tag == 'dd' else None
+        path, cur = 'dd', dd
+        while cur is not None and len(cur.children) == 1 and not ' '.join(cur.texts).strip():
+            cur = cur.children[0]
+            path += '>' + cur.tag
+        fields.append({'label': label if len(label) <= 40 and not re.search(r'\d', label) else 'str',
+                       'shape': _mask_value_shape(dd.text()) if dd is not None else None,
+                       'in': path if dd is not None else None})
+    return {'blocks': count, 'children': len(list(block.walk())) - 1, 'fields': fields,
+            'skeleton': _node_skeleton(block)[:limit]}
+
+
 def _json_shape(value, depth: int = 0, key: str = ''):
     if isinstance(value, dict):
         return {re.sub(r'\d', '9', str(k)): _json_shape(v, depth + 1, str(k)) for k, v in value.items()} \
@@ -587,6 +696,7 @@ def _json_shape(value, depth: int = 0, key: str = ''):
             return {'html': _html_skeleton(value), 'len': len(value),
                     'rows': len(_ITEM_START_RE.findall(value)),
                     'signatures': len(set(_SIGNATURE_RE.findall(value))),
+                    'dl_blocks': _invoice_block_shape(value),
                     'tags': dict(Counter(re.findall(r'<([a-z][a-z0-9]*)', value, re.I)).most_common(8))}
         return value if _STATUS_WORD_RE.fullmatch(value) else 'str'
     if isinstance(value, int) and not isinstance(value, bool) and key.endswith('Count'):

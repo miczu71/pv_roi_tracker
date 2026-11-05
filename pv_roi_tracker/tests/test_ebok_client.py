@@ -1062,3 +1062,40 @@ def test_var_context_masks_literal_cut_by_window_edge():
     html = 'x = "' + 'SECRETTEXT' * 12 + '"; serializedViewModel = foo("' + 'LEAKYVALUE' * 12 + '");'
     ctx = _var_context(html, 'serializedViewModel')
     assert 'SECRET' not in ctx and 'LEAKY' not in ctx
+
+
+_DL_BLOCK = (
+    '<div class="inv"><div class="head"><dl><dt>Numer</dt><dd><a href="/x">K1AB000000/037</a></dd>'
+    '<dt>Data wystawienia</dt><dd><span>31.10.2026</span></dd>'
+    '<dt>Termin płatności</dt><dd>14.11.2026</dd>'
+    '<dt>Kwota do zapłaty</dt><dd><span class="amt">95,32 zł</span></dd></dl>'
+    '<input type="button" value="Zapłać"></div></div>')
+
+
+def test_invoice_block_shape_describes_dl_layout_without_values():
+    from pv_roi_tracker.ebok_client import _invoice_block_shape
+    out = _invoice_block_shape('<div id="itemList">' + _DL_BLOCK * 3 + '</div>')
+    assert out['blocks'] == 3
+    labels = [f['label'] for f in out['fields']]
+    assert labels == ['Numer', 'Data wystawienia', 'Termin płatności', 'Kwota do zapłaty']
+    by = {f['label']: f for f in out['fields']}
+    assert by['Numer']['shape'] == 'a9aa999999/999'
+    assert by['Numer']['in'] == 'dd>a'
+    assert by['Kwota do zapłaty']['shape'] == '99,99 aa'
+    assert by['Termin płatności']['shape'] == '99.99.9999' and by['Termin płatności']['in'] == 'dd'
+    assert out['skeleton'].startswith('<div.inv>')
+    text = json.dumps(out, ensure_ascii=False)
+    assert '95,32' not in text and '000000' not in text and '2026' not in text
+
+
+def test_invoice_block_shape_single_block_and_no_dl():
+    from pv_roi_tracker.ebok_client import _invoice_block_shape
+    one = _invoice_block_shape('<div id="itemList">' + _DL_BLOCK + '</div>')
+    assert one['blocks'] == 1 and len(one['fields']) == 4
+    assert _invoice_block_shape('<div><p>nic</p></div>') is None
+
+
+def test_json_shape_html_without_rows_includes_dl_blocks():
+    from pv_roi_tracker.ebok_client import _json_shape
+    out = _json_shape({'ResultHtml': _DL_BLOCK * 2})
+    assert out['ResultHtml']['rows'] == 0 and out['ResultHtml']['dl_blocks']['blocks'] == 2
