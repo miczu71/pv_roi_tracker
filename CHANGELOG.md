@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.56.0] — 2026-11-05
+
+- **eBOK: import faktur nierozliczonych.** Archiwum dokumentów pokazuje tylko faktury rozliczone, więc nowa nieopłacona faktura nie była importowana, a pasek płatności i przypomnienia jej nie widziały. Synchronizacja dociąga teraz listę „do zapłaty” (strona Faktury → `GetInvoices`, z paginacją), łączy ją z archiwum (przy duplikacie wygrywa archiwum) i traktuje jako aktywną płatność z terminem i linkiem do PDF. Błąd tego źródła nie psuje importu archiwum. Rozpoznawany jest też numer w formacie `K1N…/NNN`.
+- **Taryfa G13: bezpieczniejszy odczyt bieżącego miesiąca.** Brak encji strefy G13 w statystykach jest logowany (raz na encję). Bieżący miesiąc nie używa już zamrożonych `sensor.monthly_energy_*`: bez statystyk stref podział peak/offpeak zostaje pusty, a zamknięcie miesiąca nie zapisuje wtedy niepełnego rekordu.
+- Poprawka sondy: zdublowana definicja wyrażenia GUID zmieniała wynik diagnostyki E0j.
+
 ## [0.55.14] — 2026-11-05
 
 - **Diagnostyka eBOK: źródło parametrów listy faktur do zapłaty.** `diag` pokazuje, gdzie na stronie Faktury i w odpowiedzi listy występują GUID-y i 64-znakowe tokeny (tag i atrybut, bez wartości), klucze view-modelu przypominające identyfikator źródła lub sumę kontrolną (kształt zamaskowany) oraz kod wokół `GetInvoices`. Tylko odczyt.
