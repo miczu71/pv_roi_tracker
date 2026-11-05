@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.55.11] — 2026-11-05
+
+- **Diagnostyka eBOK: blok faktury wybierany po liczności `ReturnedCount`.** Sonda listy faktur opisuje powtarzający się kontener o tylu wystąpieniach, ile zwrócono faktur, i jego liście (ścieżka, zamaskowany kształt, etykiety tylko ze stałej listy słów UI); bez kwot i numerów w wyniku `diag`.
+
 ## [0.55.10] — 2026-11-05
 
 - **Diagnostyka eBOK: szkielet bloku faktury w układzie `dl/dt/dd`.** Sonda listy faktur opisuje powtarzający się blok (znaczniki, klasy, etykiety pól UI) i zamaskowany kształt wartości (cyfry → 9, litery → a); żadnych kwot ani numerów w wyniku `diag`.
