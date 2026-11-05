@@ -852,10 +852,16 @@ def main() -> None:
                     known | {_ec.normalize_signature(d.signature) for d in docs})
                 probe = {k: ([mask(x) for x in v] if isinstance(v, list) else v)
                          for k, v in page.items()}
+                probe['item_skeleton'] = mask(probe.get('item_skeleton') or '')
             except Exception as exc:
                 logger.warning('eBOK diag: sonda strony Faktury nie powiodła się (%s)', type(exc).__name__)
                 probe = {'error': mask(f'{type(exc).__name__}: {exc}')}
-            return {'ok': True, 'total': len(docs), 'invoices_page': probe,
+            try:
+                list_probe = client.probe_invoice_list()   # tylko typy i słowa statusu — bez wartości
+            except Exception as exc:
+                logger.warning('eBOK diag: sonda listy faktur nie powiodła się (%s)', type(exc).__name__)
+                list_probe = {'error': mask(f'{type(exc).__name__}: {exc}')}
+            return {'ok': True, 'total': len(docs), 'invoices_page': probe, 'invoice_list': list_probe,
                     'statuses': sorted({d.status for d in docs}),
                     'newest': [mask(f'{d.issued_on} {d.signature} | {d.status}')
                                for d in _ebok_newest(docs)],

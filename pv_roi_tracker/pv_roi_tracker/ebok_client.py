@@ -34,6 +34,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from html import unescape
+from html.parser import HTMLParser
 from typing import Callable, Optional
 from urllib.parse import urlencode, urljoin
 
@@ -338,6 +339,7 @@ class EbokClient:
             if url.startswith(SERVICE + '/') and url not in scripts:
                 scripts.append(url)
         fetched = failed = 0
+        js_context = []
         for url in scripts[:MAX_PROBE_SCRIPTS]:
             try:
                 js = self._get_retrying(url, headers={'User-Agent': USER_AGENT}, timeout=REQUEST_TIMEOUT)
@@ -346,6 +348,7 @@ class EbokClient:
                     continue
                 fetched += 1
                 api_paths.update(_api_paths(js.text))
+                js_context.extend(_js_contexts(js.text))
             except Exception as exc:
                 failed += 1
                 logger.warning('eBOK: sonda — skrypt niedostępny (%s)', type(exc).__name__)
@@ -356,7 +359,92 @@ class EbokClient:
                 'scripts': {'total': len(scripts), 'fetched': fetched, 'failed': failed,
                             'skipped': max(0, len(scripts) - MAX_PROBE_SCRIPTS)},
                 'signatures_total': len(signatures),
-                'unknown_signatures': sorted(s for s in signatures if not is_known(s, known))}
+                'unknown_signatures': sorted(s for s in signatures if not is_known(s, known)),
+                'js_context': js_context[:2],
+                'item_skeleton': _html_skeleton(html)}
+
+    def probe_invoice_list(self) -> dict:
+        """Sonda E0b (0.55.6, tylko odczyt): jedno wywołanie `LoadMoreInvoicesProducts` z `sid` i `pp`
+        (pozostałe parametry dokłada JS strony — patrz `js_context` z `probe_invoices_page`).
+        Zwraca wyłącznie kształt odpowiedzi (`_response_shape`): bez kwot, numerów i płatnika."""
+        if not self._payer_id:
+            raise EbokError('Nie wybrano płatnika (select_payer)')
+        r = self._get(f'{SERVICE}/api/sitecore/EbokInvoiceList/LoadMoreInvoicesProducts?'
+                      + urlencode({'pp': self._payer_id, 'sid': SYSTEM}), REQUEST_TIMEOUT)
+        return {'status': r.status_code, 'content_type': r.headers.get('Content-Type', ''),
+                'size': len(r.text or ''), 'shape': _response_shape(r.text or '')}
+
+
+_STATUS_WORD_RE = re.compile(
+    r'Nieopłacon\w*|Opłacon\w*|Do zapłaty|Po terminie|Rozliczon\w*|Korekt\w*|Faktur\w*|Zaległ\w*', re.I)
+_ITEM_START_RE = re.compile(r'<[^>]*\bdata-item\b[^>]*>')
+_JS_ANCHOR = 'LoadMoreInvoicesProducts'
+
+
+def _js_contexts(js: str, width: int = 450) -> list:
+    """Fragmenty kodu JS wokół wywołania `LoadMoreInvoicesProducts` (jak JS buduje zapytanie).
+    Kod, nie dane — ale cyfry i hex 64 znaków i tak są wycinane."""
+    out = []
+    for m in re.finditer(_JS_ANCHOR, js or ''):
+        chunk = re.sub(r'\b[0-9a-fA-F]{64}\b', '<hex64>', js[max(0, m.start() - width):m.end() + width])
+        out.append(re.sub(r'\s+', ' ', chunk))
+        if len(out) == 2:
+            break
+    return out
+
+
+class _SkeletonParser(HTMLParser):
+    """Znaczniki + klasy + nazwy data-*, tekst zastąpiony „…”, poza słowami statusu."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts: list = []
+
+    def handle_starttag(self, tag, attrs):
+        names = [f'.{c}' for a, v in attrs if a == 'class' for c in (v or '').split()]
+        names += [f'[{a}]' for a, _ in attrs if a.startswith('data-')]
+        self.parts.append('<' + tag + ''.join(names) + '>')
+
+    def handle_data(self, data):
+        words = _STATUS_WORD_RE.findall(data)
+        if words:
+            self.parts.append('"' + ' '.join(words) + '"')
+        elif data.strip():
+            self.parts.append('…')
+
+
+def _html_skeleton(html: str, limit: int = 1500) -> str:
+    """Szkielet pierwszego elementu z `data-item` (kształt wiersza listy faktur), bez treści."""
+    m = _ITEM_START_RE.search(html or '')
+    if not m:
+        return ''
+    parser = _SkeletonParser()
+    parser.feed(html[m.start():m.start() + 6000])
+    return ''.join(parser.parts)[:limit]
+
+
+def _json_shape(value, depth: int = 0):
+    if isinstance(value, dict):
+        return {k: _json_shape(v, depth + 1) for k, v in value.items()} if depth < 4 else 'object'
+    if isinstance(value, list):
+        return {'list': len(value), 'item': _json_shape(value[0], depth + 1) if value else None}
+    if isinstance(value, str):
+        return 'str' if len(value) > 40 or not _STATUS_WORD_RE.search(value) else value
+    return type(value).__name__
+
+
+def _response_shape(text: str) -> dict:
+    """Kształt odpowiedzi: JSON → drzewo kluczy z typami; HTML → szkielet pierwszego `data-item`
+    i liczba elementów `data-item`; sygnatury `T/K1/…` tylko jako liczba."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return {'type': 'html' if '<' in text else 'text',
+                'items': len(_ITEM_START_RE.findall(text)),
+                'signatures': len(set(_SIGNATURE_RE.findall(text))),
+                'skeleton': _html_skeleton(text)}
+    return {'type': 'json', 'tree': _json_shape(data),
+            'signatures': len(set(_SIGNATURE_RE.findall(text)))}
 
 
 def _api_paths(text: str) -> set:

@@ -833,6 +833,57 @@ def test_probe_invoices_page_expired_session_raises():
         client.probe_invoices_page(known=set())
 
 
+# ── E0b: kontekst JS, szkielet wiersza, kształt LoadMoreInvoicesProducts (0.55.6) ──
+
+_ITEM_HTML = ('<div class="list"><div class="row paid" data-item="1"><span class="no">T/K1/XX000000/0020/26</span>'
+              '<span class="amt">123,45 zł</span><em class="st">Nieopłacona</em></div></div>')
+
+
+def test_probe_invoices_page_returns_js_context_and_item_skeleton():
+    client, session = _probe_client()
+    session._responses.insert(0, ('/assets/invoices.js', _FakeResponse(
+        text="$.get('/api/sitecore/EbokInvoiceList/LoadMoreInvoicesProducts?pp=' + pp + '&page=' + n + '&k=" + 'c' * 64 + "');")))
+    session._responses.insert(0, ('/Home/Pages/Faktury', _FakeResponse(
+        text=_ITEM_HTML + '<script src="/assets/invoices.js"></script>')))
+    out = client.probe_invoices_page(known=set())
+    assert len(out['js_context']) == 1 and "'&page=' + n" in out['js_context'][0]
+    assert 'c' * 64 not in json.dumps(out)
+    skel = out['item_skeleton']
+    assert skel.startswith('<div.row.paid[data-item]>') and '"Nieopłacona"' in skel
+    assert '123' not in skel and 'XX000000' not in skel
+
+
+def test_probe_invoice_list_json_shape_without_values():
+    client, session = _probe_client()
+    body = json.dumps({'Status': 'OK', 'Documents': [{'Number': 'T/K1/XX000000/0020/26', 'Amount': 12.5,
+                                                      'Status': 'Nieopłacona'}], 'Total': 1})
+    session.when('EbokInvoiceList/LoadMoreInvoicesProducts', _FakeResponse(text=body))
+    out = client.probe_invoice_list()
+    assert out['status'] == 200
+    shape = out['shape']
+    assert shape['type'] == 'json' and shape['signatures'] == 1
+    assert shape['tree']['Documents'] == {'list': 1, 'item': {'Number': 'str', 'Amount': 'float',
+                                                                'Status': 'Nieopłacona'}}
+    assert 'XX000000' not in json.dumps(out) and '12.5' not in json.dumps(out)
+    assert any('LoadMoreInvoicesProducts?' in c[1] and 'sid=T18' in c[1] and f'pp={_PAYER}' in c[1]
+               for c in session.calls if c[0] == 'GET')
+
+
+def test_probe_invoice_list_html_shape():
+    client, session = _probe_client()
+    session.when('EbokInvoiceList/LoadMoreInvoicesProducts', _FakeResponse(text=_ITEM_HTML * 2))
+    shape = client.probe_invoice_list()['shape']
+    assert shape['type'] == 'html' and shape['items'] == 2 and shape['signatures'] == 1
+    assert '"Nieopłacona"' in shape['skeleton'] and '123' not in shape['skeleton']
+
+
+def test_probe_invoice_list_requires_selected_payer():
+    client, session = _probe_client()
+    client._payer_id = None
+    with pytest.raises(EbokError, match='płatnika'):
+        client.probe_invoice_list()
+
+
 class _RaisingScriptSession(_SequenceSession):
     def get(self, url, **kwargs):
         if url.endswith('/assets/invoices.js'):
