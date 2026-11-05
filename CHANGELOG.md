@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.55.12] — 2026-11-05
+
+- **Diagnostyka eBOK: handler rozwijania punktu poboru.** `diag` zwraca fragmenty kodu JS strony „Faktury” wokół rozwijania szczegółów (selektory, nazwy zdarzeń i ścieżki `/api/sitecore/…` z samymi nazwami parametrów; pozostałe literały i cyfry zamaskowane) oraz nazwy atrybutów `data-*` przycisków rozwijania z maską kształtu wartości. Tylko odczyt.
+
 ## [0.55.11] — 2026-11-05
 
 - **Diagnostyka eBOK: blok faktury wybierany po liczności `ReturnedCount`.** Sonda listy faktur opisuje powtarzający się kontener o tylu wystąpieniach, ile zwrócono faktur, i jego liście (ścieżka, zamaskowany kształt, etykiety tylko ze stałej listy słów UI); bez kwot i numerów w wyniku `diag`.

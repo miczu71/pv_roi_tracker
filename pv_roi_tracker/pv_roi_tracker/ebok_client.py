@@ -550,17 +550,26 @@ def _js_contexts(js: str, width: int = 600) -> list:
 
 _EXPAND_KEYWORDS = ('expand-init', 'toggle-details', 'toggle-box', 'check-all-in-pp', 'agreement', 'EbokInvoiceList')
 _INLINE_SCRIPT_RE = re.compile(r'<script\b(?![^>]*\bsrc=)[^>]*>(.*?)</script>', re.S | re.I)
-_JS_LITERAL_RE = re.compile(r'(["\'])(?:\\.|(?!\1).)*\1', re.S)
-_KEEP_SELECTOR_RE = re.compile(r'[#.\[][\w\-.\[\]=:>, #]{0,58}')
-_KEEP_WORD_RE = re.compile(r'(?:click|change|GET|POST|json|html)|[a-z][a-z0-9]*(?:-[a-z0-9]+)+')
+_JS_TOKEN_RE = re.compile(   # jednoznaczne (bez ReDoS): literały per rodzaj cudzysłowu, komentarze
+    r'''"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`|/\*.*?\*/|//[^\n]*''', re.S)
+_KEEP_SELECTOR_RE = re.compile(r'[#.\[][\w\-.#\[\]=]{0,58}')
+_KEEP_WORD_RE = re.compile(r'click|change|GET|POST|json|html')
+_KEEP_KEBAB_RE = re.compile(r'(?=.*(?:data|agreement|expand|toggle|details|check|invoice|button|box))[a-z][a-z0-9]*(?:-[a-z0-9]+)+')
 _MAX_CODE_SCAN = 400_000
 
 
 def _keep_js_literal(m: 're.Match') -> str:
-    """Literał tekstowy z kodu JS: zostaje tylko to, co opisuje mechanikę (selektor, nazwa zdarzenia,
-    nazwa atrybutu kebab-case, ścieżka `/api/sitecore/…` bez wartości parametrów); reszta → „…”."""
-    inner = m.group(0)[1:-1]
-    if len(inner) <= 60 and (_KEEP_SELECTOR_RE.fullmatch(inner) or _KEEP_WORD_RE.fullmatch(inner)):
+    """Token JS: komentarze znikają, backticki → „…”; z literałów zostaje tylko to, co opisuje mechanikę
+    (selektor bez spacji, nazwa zdarzenia, kebab-case z listy słów kluczowych, ścieżka `/api/sitecore/…`
+    bez wartości parametrów); reszta → „…”."""
+    tok = m.group(0)
+    if tok[0] == '/':
+        return ' '
+    if tok[0] == '`':
+        return '"…"'
+    inner = tok[1:-1]
+    if len(inner) <= 60 and (_KEEP_SELECTOR_RE.fullmatch(inner) or _KEEP_WORD_RE.fullmatch(inner)
+                             or _KEEP_KEBAB_RE.fullmatch(inner)):
         return '"' + inner + '"'
     paths = _api_paths(inner) if len(inner) <= 300 else set()
     if len(paths) == 1:
@@ -571,7 +580,7 @@ def _keep_js_literal(m: 're.Match') -> str:
 def _code_contexts(js: str, keywords: tuple, width: int = 300, limit: int = 8) -> list:
     """Sonda E0h: fragmenty kodu JS wokół słów kluczowych (handler rozwijania punktu poboru).
     Literały tekstowe maskowane przez `_keep_js_literal`, ciągi 32+ znaków → <token>, cyfry → 9."""
-    code = _JS_LITERAL_RE.sub(_keep_js_literal, (js or '')[:_MAX_CODE_SCAN])
+    code = _JS_TOKEN_RE.sub(_keep_js_literal, (js or '')[:_MAX_CODE_SCAN])
     code = re.sub(r'[A-Za-z0-9+=_-]{32,}', '<token>', code)
     out, last = [], -10 ** 9
     for m in sorted(re.finditer('|'.join(re.escape(k) for k in keywords), code), key=lambda x: x.start()):
@@ -604,7 +613,7 @@ class _ExpandAttrParser(HTMLParser):
             if not name.startswith('data-'):
                 continue
             paths = _api_paths(value)
-            shaped[name] = next(iter(paths)) if len(paths) == 1 else _mask_value_shape(value)
+            shaped[re.sub(r'\d', '9', name)] = next(iter(paths)) if len(paths) == 1 else _mask_value_shape(value)
         self.found.append({'tag': tag, 'class': re.sub(r'\d', '9', ' '.join(classes)), 'attrs': shaped})
 
 

@@ -1221,3 +1221,23 @@ def test_probe_invoices_page_returns_expand_context_from_inline_and_scripts():
     assert 'GetInvoicesForAgreement' in joined and '.toggle-box' in joined
     assert _PAYER not in json.dumps(out) and 'Tajny' not in json.dumps(out)
     assert len(out['expand_context']) <= 8
+
+
+def test_code_contexts_no_redos_and_masks_comments_backticks_and_loose_literals():
+    import time
+    from pv_roi_tracker.ebok_client import _code_contexts
+    t = time.time()
+    _code_contexts("x = 'a" + '\\' * 60 + " toggle-box", ('toggle-box',))
+    assert time.time() - t < 1
+    js = ("// don't leak Anna Nowak\n/* Jan Kowalski */ var a = `Jan Kowalski ${x}`;\n"
+          "var n = 'jan-kowalski'; var s = '.Jan Kowalski, Wroclaw'; var k = 'toggle-box';")
+    text = ' '.join(_code_contexts(js, ('toggle-box',), width=400))
+    for leak in ('Nowak', 'Kowalski', 'Wroclaw', 'jan-kowalski'):
+        assert leak not in text
+    assert 'toggle-box' in text
+
+
+def test_expand_attrs_masks_digits_in_attribute_names():
+    from pv_roi_tracker.ebok_client import _expand_attrs
+    out = _expand_attrs('<a class="toggle-button" data-agreement-123456="x"></a>')
+    assert 'data-agreement-999999' in out[0]['attrs'] and '123456' not in json.dumps(out)
