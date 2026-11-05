@@ -1138,7 +1138,7 @@ def test_repeated_block_shape_picks_container_with_returned_count_not_first_dt()
 
 def test_repeated_block_shape_no_match_returns_none():
     from pv_roi_tracker.ebok_client import _repeated_block_shape
-    assert _repeated_block_shape('<div><p>a</p></div>', 3) is None
+    assert _repeated_block_shape('<div><p>a</p></div>', 3) == {'no_group': True, 'count': 3}
     assert _repeated_block_shape(_ROW_BLOCK * 2, 0) is None
 
 
@@ -1146,3 +1146,11 @@ def test_json_shape_passes_returned_count_to_item_blocks():
     from pv_roi_tracker.ebok_client import _json_shape
     out = _json_shape({'ResultHtml': '<div id="l">' + _ROW_BLOCK * 3 + '</div>', 'TotalCount': 3, 'ReturnedCount': 3})
     assert out['ResultHtml']['item_blocks']['blocks'] == 3
+
+
+def test_repeated_block_shape_pay_button_in_later_block_only():
+    from pv_roi_tracker.ebok_client import _repeated_block_shape
+    paid = '<div class="row item"><span>x</span><a class="btn">a</a><a class="btn">b</a></div>'
+    html = '<div>' + paid + _ROW_BLOCK + '</div>'
+    assert _repeated_block_shape(html, 2)['skeleton'].startswith('<div.row.item>')
+    assert _repeated_block_shape(html, 2)['blocks'] == 2

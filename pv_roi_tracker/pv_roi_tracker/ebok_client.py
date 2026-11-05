@@ -742,12 +742,12 @@ def _repeated_block_shape(html: str, count: int, limit: int = 3000) -> Optional[
         for members in groups.values():
             if len(members) != count:
                 continue
-            pay = bool(re.search(r'zapłać', members[0].text(), re.I))
+            pay = any(re.search(r'zapłać', m.text(), re.I) for m in members)
             key = (0 if pay else 1, _node_depth(members[0]))
             if best is None or key < best[0]:
                 best = (key, members[0])
     if best is None:
-        return None
+        return {'no_group': True, 'count': count}   # ReturnedCount nie zgadza się z żadną grupą rodzeństwa
     block = best[1]
     return {'blocks': count, 'children': len(list(block.walk())) - 1,
             'leaves': _leaf_fields(block), 'skeleton': _node_skeleton(block)[:limit]}
