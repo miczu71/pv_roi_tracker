@@ -1154,3 +1154,70 @@ def test_repeated_block_shape_pay_button_in_later_block_only():
     html = '<div>' + paid + _ROW_BLOCK + '</div>'
     assert _repeated_block_shape(html, 2)['skeleton'].startswith('<div.row.item>')
     assert _repeated_block_shape(html, 2)['blocks'] == 2
+
+
+# ── E0h: handler rozwijania punktu (data-expand-init / toggle-details-button) ──
+
+_EXPAND_JS = (
+    "var serializedViewModel = {\"Name\":\"Jan Tajny\",\"Id\":1234567890};\n"
+    "$('.toggle-details-button').on('click', function () {\n"
+    "  var id = $(this).data('agreement-id');\n"
+    "  $.get('/api/sitecore/EbokInvoiceList/GetInvoicesForAgreement?pp=" + _PAYER + "&agreementId=' + id, function (r) {\n"
+    "    $('.toggle-box').html(r.ResultHtml); var tok = '" + 'A' * 40 + "'; });\n"
+    "});")
+
+
+def test_code_contexts_keep_selectors_and_paths_mask_other_literals():
+    from pv_roi_tracker.ebok_client import _code_contexts
+    out = _code_contexts(_EXPAND_JS, ('toggle-details-button',), width=400)
+    assert len(out) == 1
+    text = out[0]
+    assert '.toggle-details-button' in text and '/api/sitecore/EbokInvoiceList/GetInvoicesForAgreement' in text
+    assert 'agreementId' in text            # nazwa parametru zostaje
+    for secret in (_PAYER, 'Tajny', '1234567890', 'A' * 40):
+        assert secret not in text
+
+
+def test_code_contexts_limit_and_no_keyword():
+    from pv_roi_tracker.ebok_client import _code_contexts
+    assert _code_contexts('abc', ('toggle-box',)) == []
+    assert len(_code_contexts('toggle-box ' * 20, ('toggle-box',), width=5, limit=4)) == 4
+
+
+def test_expand_attrs_shows_names_masked_shapes_and_paths_only():
+    from pv_roi_tracker.ebok_client import _expand_attrs
+    html = ('<a class="toggle-button" data-expand-init="/api/sitecore/EbokInvoiceList/Expand?pp=123456&sid=T18"'
+            ' data-target="#box-77">x</a>'
+            '<a class="toggle-details-button" data-agreement-id="9988776655">Pokaż szczegóły</a>'
+            '<input class="check-all-in-pp-expanded" data-agreement-id="9988776655">')
+    out = _expand_attrs(html)
+    assert out[0]['class'] == 'toggle-button'
+    assert out[0]['attrs']['data-expand-init'] == '/api/sitecore/EbokInvoiceList/Expand?pp&sid'
+    assert out[0]['attrs']['data-target'] == '#aaa-99'
+    assert out[1]['attrs']['data-agreement-id'] == '9999999999'
+    text = json.dumps(out)
+    assert '123456' not in text and '9988776655' not in text
+
+
+def test_expand_attrs_empty_and_limited():
+    from pv_roi_tracker.ebok_client import _expand_attrs
+    assert _expand_attrs('<div>x</div>') == []
+    assert len(_expand_attrs('<a class="toggle-button" data-expand-init="1"></a>' * 20)) == 6
+
+
+def test_json_shape_html_includes_expand_attrs():
+    from pv_roi_tracker.ebok_client import _json_shape
+    out = _json_shape({'ResultHtml': '<div><a class="toggle-button" data-expand-init="x">a</a></div>'})
+    assert out['ResultHtml']['expand_attrs'][0]['attrs'] == {'data-expand-init': 'a'}
+
+
+def test_probe_invoices_page_returns_expand_context_from_inline_and_scripts():
+    client, session = _probe_client()
+    session._responses.insert(0, ('/Home/Pages/Faktury', _FakeResponse(
+        text='<script>' + _EXPAND_JS + '</script><script src="/assets/invoices.js"></script>')))
+    session._responses.insert(0, ('/assets/invoices.js', _FakeResponse(text="$('.toggle-box').hide();")))
+    out = client.probe_invoices_page(known=set())
+    joined = ' '.join(out['expand_context'])
+    assert 'GetInvoicesForAgreement' in joined and '.toggle-box' in joined
+    assert _PAYER not in json.dumps(out) and 'Tajny' not in json.dumps(out)
+    assert len(out['expand_context']) <= 8

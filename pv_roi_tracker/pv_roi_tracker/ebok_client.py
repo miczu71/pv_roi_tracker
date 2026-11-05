@@ -341,6 +341,9 @@ class EbokClient:
                 scripts.append(url)
         fetched = failed = 0
         js_context = _js_contexts(html)   # kod wywołania bywa inline w HTML strony
+        expand_context = []
+        for inline in _INLINE_SCRIPT_RE.findall(html):
+            expand_context.extend(_code_contexts(inline, _EXPAND_KEYWORDS))
         for url in scripts[:MAX_PROBE_SCRIPTS]:
             try:
                 js = self._get_retrying(url, headers={'User-Agent': USER_AGENT}, timeout=REQUEST_TIMEOUT)
@@ -351,6 +354,8 @@ class EbokClient:
                 api_paths.update(_api_paths(js.text))
                 if len(js_context) < 3:
                     js_context.extend(_js_contexts(js.text))
+                if len(expand_context) < 8:
+                    expand_context.extend(_code_contexts(js.text, _EXPAND_KEYWORDS))
             except Exception as exc:
                 failed += 1
                 logger.warning('eBOK: sonda — skrypt niedostępny (%s)', type(exc).__name__)
@@ -363,6 +368,7 @@ class EbokClient:
                 'signatures_total': len(signatures),
                 'unknown_signatures': sorted(s for s in signatures if not is_known(s, known)),
                 'js_context': js_context[:3],
+                'expand_context': expand_context[:8],
                 'item_skeleton': _html_skeleton(html)}
 
     def probe_invoice_list(self) -> dict:
@@ -540,6 +546,75 @@ def _js_contexts(js: str, width: int = 600) -> list:
         if len(out) == 3:
             break
     return out
+
+
+_EXPAND_KEYWORDS = ('expand-init', 'toggle-details', 'toggle-box', 'check-all-in-pp', 'agreement', 'EbokInvoiceList')
+_INLINE_SCRIPT_RE = re.compile(r'<script\b(?![^>]*\bsrc=)[^>]*>(.*?)</script>', re.S | re.I)
+_JS_LITERAL_RE = re.compile(r'(["\'])(?:\\.|(?!\1).)*\1', re.S)
+_KEEP_SELECTOR_RE = re.compile(r'[#.\[][\w\-.\[\]=:>, #]{0,58}')
+_KEEP_WORD_RE = re.compile(r'(?:click|change|GET|POST|json|html)|[a-z][a-z0-9]*(?:-[a-z0-9]+)+')
+_MAX_CODE_SCAN = 400_000
+
+
+def _keep_js_literal(m: 're.Match') -> str:
+    """Literał tekstowy z kodu JS: zostaje tylko to, co opisuje mechanikę (selektor, nazwa zdarzenia,
+    nazwa atrybutu kebab-case, ścieżka `/api/sitecore/…` bez wartości parametrów); reszta → „…”."""
+    inner = m.group(0)[1:-1]
+    if len(inner) <= 60 and (_KEEP_SELECTOR_RE.fullmatch(inner) or _KEEP_WORD_RE.fullmatch(inner)):
+        return '"' + inner + '"'
+    paths = _api_paths(inner) if len(inner) <= 300 else set()
+    if len(paths) == 1:
+        return '"' + next(iter(paths)) + '"'
+    return '"…"'
+
+
+def _code_contexts(js: str, keywords: tuple, width: int = 300, limit: int = 8) -> list:
+    """Sonda E0h: fragmenty kodu JS wokół słów kluczowych (handler rozwijania punktu poboru).
+    Literały tekstowe maskowane przez `_keep_js_literal`, ciągi 32+ znaków → <token>, cyfry → 9."""
+    code = _JS_LITERAL_RE.sub(_keep_js_literal, (js or '')[:_MAX_CODE_SCAN])
+    code = re.sub(r'[A-Za-z0-9+=_-]{32,}', '<token>', code)
+    out, last = [], -10 ** 9
+    for m in sorted(re.finditer('|'.join(re.escape(k) for k in keywords), code), key=lambda x: x.start()):
+        if m.start() - last < width:
+            continue
+        last = m.start()
+        chunk = code[max(0, m.start() - width):m.end() + width]
+        out.append(re.sub(r'\d', '9', re.sub(r'\s+', ' ', chunk)))
+        if len(out) >= limit:
+            break
+    return out
+
+
+class _ExpandAttrParser(HTMLParser):
+    _CLASSES = ('toggle-button', 'toggle-details-button', 'check-all-in-pp-expanded')
+
+    def __init__(self, limit: int):
+        super().__init__(convert_charrefs=True)
+        self.limit, self.found = limit, []
+
+    def handle_starttag(self, tag, attrs):
+        if len(self.found) >= self.limit:
+            return
+        d = {a: (v or '') for a, v in attrs}
+        classes = d.get('class', '').split()
+        if 'data-expand-init' not in d and not any(c in classes for c in self._CLASSES):
+            return
+        shaped = {}
+        for name, value in d.items():
+            if not name.startswith('data-'):
+                continue
+            paths = _api_paths(value)
+            shaped[name] = next(iter(paths)) if len(paths) == 1 else _mask_value_shape(value)
+        self.found.append({'tag': tag, 'class': re.sub(r'\d', '9', ' '.join(classes)), 'attrs': shaped})
+
+
+def _expand_attrs(html: str, limit: int = 6) -> list:
+    """Sonda E0h: elementy rozwijania w odpowiedzi listy (`toggle-button`, `data-expand-init`, …):
+    nazwy `data-*` i wartości tylko jako maska kształtu albo ścieżka API z samymi nazwami parametrów."""
+    parser = _ExpandAttrParser(limit)
+    parser.feed(html or '')
+    parser.close()
+    return parser.found
 
 
 class _SkeletonParser(HTMLParser):
@@ -781,6 +856,7 @@ def _json_shape(value, depth: int = 0, key: str = '', returned: Optional[int] = 
                     'signatures': len(set(_SIGNATURE_RE.findall(value))),
                     'dl_blocks': _safe_block_shape(value),
                     'item_blocks': _safe_repeated_block_shape(value, returned),
+                    'expand_attrs': _expand_attrs(value),
                     'tags': dict(Counter(re.findall(r'<([a-z][a-z0-9]*)', value, re.I)).most_common(8))}
         return value if _STATUS_WORD_RE.fullmatch(value) else 'str'
     if isinstance(value, int) and not isinstance(value, bool) and key.endswith('Count'):
