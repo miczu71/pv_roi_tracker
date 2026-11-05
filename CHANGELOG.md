@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.55.14] — 2026-11-05
+
+- **Diagnostyka eBOK: źródło parametrów listy faktur do zapłaty.** `diag` pokazuje, gdzie na stronie Faktury i w odpowiedzi listy występują GUID-y i 64-znakowe tokeny (tag i atrybut, bez wartości), klucze view-modelu przypominające identyfikator źródła lub sumę kontrolną (kształt zamaskowany) oraz kod wokół `GetInvoices`. Tylko odczyt.
+
 ## [0.55.13] — 2026-11-05
 
 - **Diagnostyka eBOK: ukryte szczegóły punktu poboru.** `diag` opisuje kontenery `row-details-container` i wiersze z `data-charge-id` w odpowiedzi listy faktur (szkielet, liście z maską kształtu, nazwy `data-*`); bez kwot, numerów i identyfikatorów. Tylko odczyt.
