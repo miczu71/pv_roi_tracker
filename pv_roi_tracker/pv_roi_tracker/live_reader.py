@@ -65,6 +65,10 @@ _TEMPLATE_PRODUCED_METER = 'sensor.inverter_total_yield'
 # dashboard's own grid-import total.
 _ZONE_PEAK_METER    = 'sensor.daily_energy_peak'
 _ZONE_OFFPEAK_METER = 'sensor.daily_energy_offpeak'
+# Od 05.11.2026 (G13): bieżący pobór liczy 3-strefowy licznik `g13_energia`; stare liczniki G12w są zamrożone
+# (historia w statystykach). Rola peak/offpeak = suma starego i nowych liczników; brak encji jest pomijany.
+_ZONE_PEAK_METERS    = [_ZONE_PEAK_METER, 'sensor.g13_energia_morning_peak', 'sensor.g13_energia_evening_peak']
+_ZONE_OFFPEAK_METERS = [_ZONE_OFFPEAK_METER, 'sensor.g13_energia_other']
 
 # Minimalna produkcja miesięczna uznawana za „licznik po resecie".
 # Nawet pochmurny czerwiec w Polsce produkuje >5 kWh — poniżej tej wartości
@@ -553,7 +557,7 @@ def get_energy_window(start_date: date, end_date_exclusive: date) -> dict:
     sources = get_energy_dashboard_sources()
     arb_entity = 'sensor.battery_grid_charge_off_peak_monthly'
     entity_ids = (_all_role_entities(sources)
-                 + [_ZONE_PEAK_METER, _ZONE_OFFPEAK_METER, arb_entity])
+                 + _ZONE_PEAK_METERS + _ZONE_OFFPEAK_METERS + [arb_entity])
     start_iso = _dt(start_date.year, start_date.month, start_date.day,
                     tzinfo=ZoneInfo(_TZ_NAME)).isoformat()
     end_iso = _dt(end_date_exclusive.year, end_date_exclusive.month, end_date_exclusive.day,
@@ -589,8 +593,8 @@ def get_energy_window(start_date: date, end_date_exclusive: date) -> dict:
         'produced':          _role_sum(sources['solar']),
         'exported':          _role_sum(sources['grid_export']),
         'imported':          _role_sum(sources['grid_import']),
-        'peak':              _entity_sum(_ZONE_PEAK_METER),
-        'offpeak':           _entity_sum(_ZONE_OFFPEAK_METER),
+        'peak':              _role_sum(_ZONE_PEAK_METERS),
+        'offpeak':           _role_sum(_ZONE_OFFPEAK_METERS),
         'battery_charge':    _role_sum(sources['battery_charge']),
         'battery_discharge': _role_sum(sources['battery_discharge']),
         'arb_kwh':           _entity_sum(arb_entity),
@@ -813,7 +817,7 @@ def read_month_from_statistics(
     """
     sources = get_energy_dashboard_sources()
     entity_ids = (_all_role_entities(sources)
-                 + [_ZONE_PEAK_METER, _ZONE_OFFPEAK_METER,
+                 + [*_ZONE_PEAK_METERS, *_ZONE_OFFPEAK_METERS,
                     'sensor.battery_grid_charge_off_peak_monthly', _TEMPLATE_PRODUCED_METER])
     vals = _fetch_lifetime_month_stats(year, month, entity_ids)
     month_key = f'{year}-{month:02d}'
@@ -832,7 +836,7 @@ def read_month_from_statistics(
     )
     return _build_record(
         year, month, produced, exported,
-        vals.get(_ZONE_PEAK_METER), vals.get(_ZONE_OFFPEAK_METER),
+        _sum_role_month(vals, _ZONE_PEAK_METERS), _sum_role_month(vals, _ZONE_OFFPEAK_METERS),
         vals.get('sensor.battery_grid_charge_off_peak_monthly'), rcem_price,
         peak_gross=peak_gross, offpeak_gross=offpeak_gross,
         imported=imported,
@@ -914,7 +918,7 @@ def read_current_month(
 
     sources = get_energy_dashboard_sources()
     entity_ids = (_all_role_entities(sources)
-                 + [_TEMPLATE_PRODUCED_METER, _ZONE_PEAK_METER, _ZONE_OFFPEAK_METER])
+                 + [_TEMPLATE_PRODUCED_METER, *_ZONE_PEAK_METERS, *_ZONE_OFFPEAK_METERS])
     vals = _fetch_lifetime_month_stats(year, month, entity_ids)
 
     produced = _sum_role_month(vals, sources['solar'])
@@ -923,10 +927,10 @@ def read_current_month(
     exported = _sum_role_month(vals, sources['grid_export'])
     if exported is None:
         exported = exported_live
-    peak = vals.get(_ZONE_PEAK_METER)
+    peak = _sum_role_month(vals, _ZONE_PEAK_METERS)
     if peak is None:
         peak = peak_live
-    offpeak = vals.get(_ZONE_OFFPEAK_METER)
+    offpeak = _sum_role_month(vals, _ZONE_OFFPEAK_METERS)
     if offpeak is None:
         offpeak = offpeak_live
     imported = _sum_role_month(vals, sources['grid_import'])

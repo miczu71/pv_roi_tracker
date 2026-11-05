@@ -272,6 +272,65 @@ def test_read_month_from_statistics_none_when_solar_missing():
     assert rec is None
 
 
+def test_read_month_from_statistics_sums_g13_zone_meters():
+    """Od 05.11.2026 bieżący pobór liczy licznik g13_energia (3 strefy); stare
+    liczniki są zamrożone. peak = stary peak + morning_peak + evening_peak,
+    offpeak = stary offpeak + other."""
+    lts_values = {
+        'sensor.energy_pv':                  {'2026-03': 643.98},
+        'sensor.power_meter_exported':        {'2026-03': 307.0},
+        'sensor.daily_energy_peak':           {'2026-03': 20.0},
+        'sensor.daily_energy_offpeak':        {'2026-03': 15.0},
+        'sensor.battery_total_charge':        {'2026-03': 100.0},
+        'sensor.battery_total_discharge':     {'2026-03': 95.0},
+        'sensor.g13_energia_morning_peak':    {'2026-03': 3.0},
+        'sensor.g13_energia_evening_peak':    {'2026-03': 2.0},
+        'sensor.g13_energia_other':           {'2026-03': 5.0},
+        lr._TEMPLATE_PRODUCED_METER:          {'2026-03': 685.53},
+    }
+    # Po E2 panel Energia ma nowe liczniki w grid_import — suma importu jest autorytatywna
+    # dla _build_record (dzieli ją proporcją stref), więc musi je zawierać.
+    sources = _fixed_sources()
+    sources['grid_import'] = sources['grid_import'] + [
+        'sensor.g13_energia_morning_peak', 'sensor.g13_energia_evening_peak',
+        'sensor.g13_energia_other',
+    ]
+    with (
+        patch.object(lr, 'get_energy_dashboard_sources', return_value=sources),
+        patch.object(lr, 'get_ha_monthly_stats',
+                    side_effect=lambda entity_ids, start_month=None, end_month=None:
+                        {eid: lts_values.get(eid, {}) for eid in entity_ids}),
+    ):
+        rec = lr.read_month_from_statistics(2026, 3, rcem_price=0.35)
+    assert rec is not None
+    assert rec.purchased_kwh_peak == pytest.approx(25.0)    # 20 + 3 + 2
+    assert rec.purchased_kwh_offpeak == pytest.approx(20.0)  # 15 + 5
+
+
+def test_zone_sum_ignores_missing_g13_meters():
+    """Brak encji g13_energia (przed E2 / przed 05.11.2026) jest pomijany:
+    wynik jak dotychczas, bez zerowania i bez wyjątku."""
+    lts_values = {
+        'sensor.energy_pv':                  {'2026-03': 643.98},
+        'sensor.power_meter_exported':        {'2026-03': 307.0},
+        'sensor.daily_energy_peak':           {'2026-03': 20.0},
+        'sensor.daily_energy_offpeak':        {'2026-03': 15.0},
+        'sensor.battery_total_charge':        {'2026-03': 100.0},
+        'sensor.battery_total_discharge':     {'2026-03': 95.0},
+        lr._TEMPLATE_PRODUCED_METER:          {'2026-03': 685.53},
+    }
+    with (
+        patch.object(lr, 'get_energy_dashboard_sources', return_value=_fixed_sources()),
+        patch.object(lr, 'get_ha_monthly_stats',
+                    side_effect=lambda entity_ids, start_month=None, end_month=None:
+                        {eid: lts_values.get(eid, {}) for eid in entity_ids}),
+    ):
+        rec = lr.read_month_from_statistics(2026, 3, rcem_price=0.35)
+    assert rec is not None
+    assert rec.purchased_kwh_peak == pytest.approx(20.0)
+    assert rec.purchased_kwh_offpeak == pytest.approx(15.0)
+
+
 # ── read_current_month: dashboard correction with graceful fallback ────────
 
 def test_read_current_month_corrects_produced_exported_from_dashboard_sources():
