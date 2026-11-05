@@ -375,19 +375,32 @@ class EbokClient:
             raise EbokError('Nie wybrano płatnika (select_payer)')
         page_url = f'{SERVICE}/Home/Pages/Faktury?' + urlencode({'sid': SYSTEM, 'pp': self._payer_id})
         html = self._get(page_url, REQUEST_TIMEOUT).text or ''
-        view_model = _js_string_var(html, 'serializedViewModel')
+        view_obj = _js_object_var(html, 'serializedViewModel')
+        view_text = None if view_obj is not None else _js_string_var(html, 'serializedViewModel')
         medium = _js_string_var(html, 'mediumType')
-        request = {'view_model_found': view_model is not None, 'view_model_len': len(view_model or ''),
-                   'medium_type_found': medium is not None}
-        if view_model is None:
+        medium_source = 'literal' if medium is not None else None
+        if medium is None:
+            medium = _search_type_default(html)
+            medium_source = 'SearchType' if medium is not None else None
+        request = {'view_model_found': view_obj is not None or view_text is not None,
+                   'view_model_kind': 'object' if view_obj is not None else ('string' if view_text is not None else None),
+                   'view_model_keys': len(view_obj) if view_obj is not None else 0,
+                   'view_model_len': len(view_text or ''),
+                   'medium_type_found': medium is not None,
+                   'medium_type': medium, 'medium_type_source': medium_source}
+        if view_obj is None and view_text is None:
             request['view_model_context'] = _var_context(html, 'serializedViewModel')
             return {'ok': False, 'request': request,
-                    'skipped': 'brak serializedViewModel jako literału tekstowego — POST pominięty'}
+                    'skipped': 'brak serializedViewModel jako obiektu ani literału tekstowego — POST pominięty'}
+        if medium is None:
+            request['medium_type_context'] = _var_context(html, 'mediumType')
+        form = [('startingIndex', 0), ('searchTerm', ''), ('PickupMediumType', medium or '')]
+        form += _flatten_params(view_obj, 'parentViewModel') if view_obj is not None \
+            else [('parentViewModel', view_text)]
         r = self._session.post(
             f'{SERVICE}/api/sitecore/EbokInvoiceList/LoadMoreInvoicesProducts?'
             + urlencode({'sid': SYSTEM, 'pp': self._payer_id}),
-            data={'startingIndex': 0, 'searchTerm': '', 'PickupMediumType': medium or '',
-                  'parentViewModel': view_model or ''},
+            data=form,
             headers={'User-Agent': USER_AGENT, 'X-Requested-With': 'XMLHttpRequest', 'Referer': page_url},
             timeout=REQUEST_TIMEOUT)
         if _is_login_page(r):
@@ -421,6 +434,75 @@ def _js_string_var(html: str, name: str) -> Optional[str]:
             return value
         found = value
     return found
+
+
+def _js_object_var(html: str, name: str) -> Optional[dict]:
+    """Literał obiektu `<name> = {...}` z JS strony (dopasowanie nawiasów z uwzględnieniem
+    cudzysłowów) sparsowany jako JSON. None, gdy zmiennej nie ma, nie jest obiektem JSON
+    albo nawiasy się nie domykają."""
+    for m in re.finditer(r'(?<![\w.$])' + re.escape(name) + r'\s*=\s*(?=\{)', html or ''):
+        start, depth, quote, i = m.end(), 0, None, m.end()
+        while i < len(html):
+            ch = html[i]
+            if quote:
+                if ch == '\\':
+                    i += 1
+                elif ch == quote:
+                    quote = None
+            elif ch in '"\'':
+                quote = ch
+            elif ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    try:
+                        value = json.loads(html[start:i + 1])
+                    except ValueError:
+                        break
+                    if isinstance(value, dict):
+                        return value
+                    break
+            i += 1
+    return None
+
+
+def _flatten_params(value, prefix: str) -> list:
+    """Spłaszczenie jak `jQuery.param`: obiekt → `p[k]`, tablica prymitywów → `p[]`, tablica
+    obiektów/tablic → `p[i]`; null → pusty tekst, bool → true/false. Puste tablice nic nie wysyłają."""
+    def scalar(v):
+        return '' if v is None else ('true' if v is True else 'false' if v is False else str(v))
+    if isinstance(value, dict):
+        out = []
+        for k, v in value.items():
+            out += _flatten_params(v, f'{prefix}[{k}]')
+        return out
+    if isinstance(value, list):
+        out = []
+        for i, v in enumerate(value):
+            nested = isinstance(v, (dict, list))
+            out += _flatten_params(v, f'{prefix}[{i if nested else ""}]')
+        return out
+    return [(prefix, scalar(value))]
+
+
+_SEARCH_TYPE_RE = re.compile(r'<(select|input)\b[^>]*\bid=["\']SearchType["\'][^>]*>(.*?)(?:</select>|$)', re.I | re.S)
+
+
+def _search_type_default(html: str) -> Optional[str]:
+    """Domyślna wartość kontrolki `#SearchType` (select: opcja `selected` albo pierwsza; input: `value`)
+    — tylko krótkie słowo (rodzaj medium), inaczej None."""
+    m = _SEARCH_TYPE_RE.search(html or '')
+    if not m:
+        return None
+    if m.group(1).lower() == 'input':
+        v = re.search(r'\bvalue=["\']([^"\']*)["\']', m.group(0), re.I)
+    else:
+        opts = re.findall(r'<option\b([^>]*)>', m.group(2), re.I)
+        pick = next((o for o in opts if re.search(r'\bselected\b', o, re.I)), opts[0] if opts else '')
+        v = re.search(r'\bvalue=["\']([^"\']*)["\']', pick, re.I)
+    value = v.group(1) if v else None
+    return value if value and re.fullmatch(r'[A-Za-z]{1,20}', value) else None
 
 
 def _var_context(html: str, name: str, width: int = 100) -> str:

@@ -883,11 +883,13 @@ def test_probe_invoice_list_posts_like_page_js_and_hides_view_model():
     assert len(post) == 1
     _, url, kw = post[0]
     assert 'sid=T18' in url and f'pp={_PAYER}' in url
-    assert kw['data']['startingIndex'] == 0 and kw['data']['searchTerm'] == ''
-    assert kw['data']['PickupMediumType'] == 'Energy'
-    assert kw['data']['parentViewModel'] == 'AAAA{"Payer":"' + _PAYER + '"}BBBB'   # odkodowane z JS
-    assert out['request'] == {'view_model_found': True, 'view_model_len': len(kw['data']['parentViewModel']),
-                              'medium_type_found': True}
+    data = dict(kw['data'])
+    assert data['startingIndex'] == 0 and data['searchTerm'] == ''
+    assert data['PickupMediumType'] == 'Energy'
+    assert data['parentViewModel'] == 'AAAA{"Payer":"' + _PAYER + '"}BBBB'   # odkodowane z JS
+    assert out['request'] == {'view_model_found': True, 'view_model_kind': 'string', 'view_model_keys': 0,
+                              'view_model_len': len(data['parentViewModel']), 'medium_type_found': True,
+                              'medium_type': 'Energy', 'medium_type_source': 'literal'}
     tree = out['shape']['tree']
     assert tree['TotalCount'] == 3 and tree['ReturnedCount'] == 2
     assert tree['ResultHtml']['rows'] == 2 and tree['ResultHtml']['signatures'] == 1
@@ -977,3 +979,52 @@ def test_probe_invoices_page_script_login_page_counts_as_failed():
     session._responses.insert(0, ('/assets/invoices.js', _FakeResponse(text=_LOGIN_FORM_HTML)))
     out = client.probe_invoices_page(known=set())
     assert out['scripts']['failed'] == 1
+
+
+# ── E0e: serializedViewModel jako obiekt JS ──────────────────────────────────
+
+def test_js_object_var_matches_braces_aware_of_strings():
+    from pv_roi_tracker.ebok_client import _js_object_var
+    html = 'var a = 1; var serializedViewModel = {"A":null,"B":"x } { y \\" z","C":{"D":[1,2]}}; var b = {"q":1};'
+    assert _js_object_var(html, 'serializedViewModel') == {'A': None, 'B': 'x } { y " z', 'C': {'D': [1, 2]}}
+    assert _js_object_var('var serializedViewModel = {"A":', 'serializedViewModel') is None
+    assert _js_object_var('var serializedViewModel = JSON.parse("x");', 'serializedViewModel') is None
+    assert _js_object_var('x', 'serializedViewModel') is None
+
+
+def test_flatten_params_follows_jquery_param():
+    from pv_roi_tracker.ebok_client import _flatten_params
+    obj = {'N': None, 'S': 'a', 'T': True, 'F': False, 'I': 5, 'P': [1, 'x'],
+           'O': [{'k': 'v', 'n': None}], 'D': {'in': 'z'}, 'E': []}
+    assert dict(_flatten_params(obj, 'parentViewModel')) == {
+        'parentViewModel[N]': '', 'parentViewModel[S]': 'a', 'parentViewModel[T]': 'true',
+        'parentViewModel[F]': 'false', 'parentViewModel[I]': '5', 'parentViewModel[P][]': 'x',
+        'parentViewModel[O][0][k]': 'v', 'parentViewModel[O][0][n]': '', 'parentViewModel[D][in]': 'z'}
+    assert _flatten_params({'P': [1, 'x']}, 'p') == [('p[P][]', '1'), ('p[P][]', 'x')]
+
+
+_OBJ_VM = '{"Payer":"' + _PAYER + '","Empty":null,"Items":[{"Id":"XX000000"}],"Flag":true}'
+_OBJ_PAGE = ('<select id="SearchType"><option value="Energy">E</option><option selected value="Gas">G</option>'
+             '</select><script>var mediumType = $("#SearchType").val(); var serializedViewModel = ' + _OBJ_VM
+             + '; var currentItemCount = 9;</script>')
+
+
+def test_probe_invoice_list_posts_flattened_object_view_model_and_hides_values():
+    body = json.dumps({'ResultHtml': _ITEM_HTML * 2, 'TotalCount': 3, 'ReturnedCount': 2})
+    client, session = _probe_client()
+    session._responses.insert(0, ('/Home/Pages/Faktury', _FakeResponse(text=_OBJ_PAGE)))
+    session.when('EbokInvoiceList/LoadMoreInvoicesProducts', _FakeResponse(text=body))
+    out = client.probe_invoice_list()
+    post = [c for c in session.calls if c[0] == 'POST' and 'LoadMoreInvoicesProducts' in c[1]]
+    assert len(post) == 1
+    data = post[0][2]['data']
+    assert isinstance(data, list)
+    pairs = dict(data)
+    assert pairs['startingIndex'] == 0 and pairs['searchTerm'] == '' and pairs['PickupMediumType'] == 'Gas'
+    assert pairs['parentViewModel[Payer]'] == _PAYER and pairs['parentViewModel[Empty]'] == ''
+    assert pairs['parentViewModel[Items][0][Id]'] == 'XX000000' and pairs['parentViewModel[Flag]'] == 'true'
+    assert out['request']['view_model_kind'] == 'object' and out['request']['view_model_keys'] == 4
+    assert out['request']['medium_type'] == 'Gas' and out['request']['medium_type_source'] == 'SearchType'
+    assert out['shape']['tree']['ResultHtml']['rows'] == 2
+    text = json.dumps(out, ensure_ascii=False)
+    assert _PAYER not in text and 'XX000000' not in text
