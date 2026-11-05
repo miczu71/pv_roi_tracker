@@ -1099,3 +1099,12 @@ def test_json_shape_html_without_rows_includes_dl_blocks():
     from pv_roi_tracker.ebok_client import _json_shape
     out = _json_shape({'ResultHtml': _DL_BLOCK * 2})
     assert out['ResultHtml']['rows'] == 0 and out['ResultHtml']['dl_blocks']['blocks'] == 2
+
+
+def test_invoice_block_shape_implied_end_tags_and_class_digits():
+    from pv_roi_tracker.ebok_client import _invoice_block_shape, _safe_block_shape
+    blk = '<div class="inv-12345"><dl><dt>Numer<dd>K1AB/037<dt>Termin płatności<dd>14.11.2026</dl></div>'
+    out = _invoice_block_shape(blk * 2)
+    assert [f['label'] for f in out['fields']] == ['Numer', 'Termin płatności']
+    assert out['fields'][1]['shape'] == '99.99.9999' and 'inv-99999' in out['skeleton'] and '12345' not in out['skeleton']
+    assert _safe_block_shape('<dl><dt>a' + '<li>' * 3000 + '</dl>') is not None

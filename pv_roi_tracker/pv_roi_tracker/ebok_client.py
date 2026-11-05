@@ -608,6 +608,14 @@ class _TreeParser(HTMLParser):
     def handle_starttag(self, tag, attrs):
         node = _Node(tag, [c for a, v in attrs if a == 'class' for c in (v or '').split()],
                      [a for a, _ in attrs if a.startswith('data-')], self._cur)
+        if tag in ('dt', 'dd'):   # HTML5: dt/dd domykają się przy kolejnym dt/dd
+            n = self._cur
+            while n is not self.root and n.tag not in ('dl', 'div', 'section', 'body'):
+                if n.tag in ('dt', 'dd'):
+                    self._cur = n.parent
+                    break
+                n = n.parent
+        node.parent = self._cur
         self._cur.children.append(node)
         for a, v in attrs:   # `value="Zapłać"` na przycisku to etykieta UI, jak tekst
             if a == 'value' and tag == 'input' and v:
@@ -627,7 +635,7 @@ class _TreeParser(HTMLParser):
 
 
 def _node_skeleton(node: '_Node') -> str:
-    head = '<' + node.tag + ''.join(f'.{c}' for c in node.classes) + ''.join(f'[{a}]' for a in node.data) + '>'
+    head = '<' + node.tag + ''.join('.' + re.sub(r'\d', '9', c) for c in node.classes) + ''.join(f'[{a}]' for a in node.data) + '>'
     own = ' '.join(' '.join(node.texts).split())
     words = _STATUS_WORD_RE.findall(own)
     body = ('"' + ' '.join(words) + '"') if words else ('…' if own else '')
@@ -685,6 +693,13 @@ def _invoice_block_shape(html: str, limit: int = 1500) -> Optional[dict]:
             'skeleton': _node_skeleton(block)[:limit]}
 
 
+def _safe_block_shape(html: str):
+    try:
+        return _invoice_block_shape(html)
+    except RecursionError:
+        return {'error': 'RecursionError'}   # głęboko zagnieżdżony HTML nie może zepsuć reszty sondy
+
+
 def _json_shape(value, depth: int = 0, key: str = ''):
     if isinstance(value, dict):
         return {re.sub(r'\d', '9', str(k)): _json_shape(v, depth + 1, str(k)) for k, v in value.items()} \
@@ -696,7 +711,7 @@ def _json_shape(value, depth: int = 0, key: str = ''):
             return {'html': _html_skeleton(value), 'len': len(value),
                     'rows': len(_ITEM_START_RE.findall(value)),
                     'signatures': len(set(_SIGNATURE_RE.findall(value))),
-                    'dl_blocks': _invoice_block_shape(value),
+                    'dl_blocks': _safe_block_shape(value),
                     'tags': dict(Counter(re.findall(r'<([a-z][a-z0-9]*)', value, re.I)).most_common(8))}
         return value if _STATUS_WORD_RE.fullmatch(value) else 'str'
     if isinstance(value, int) and not isinstance(value, bool) and key.endswith('Count'):
