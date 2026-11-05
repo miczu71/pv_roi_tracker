@@ -580,3 +580,25 @@ def test_dedupe_v2_aborts_when_too_many_removals(store_path):
     assert result.get('aborted') is True and result['removed'] == []
     assert len(invoice_store.load(store_path)) == before
     assert 'dedupe_corrections_v2' not in invoice_store._load_document(store_path).get('migrations', [])
+
+
+# ── promote_stub: rekord pod tym samym kluczem nie może zniknąć (bug restartu 2026-11-05) ──
+
+def test_promote_stub_real_record_same_key_is_not_removed(store_path):
+    """Rekord z needs_training pod prawdziwym kluczem 'YYYY-MM' jest re-parsowany w miejscu;
+    po promocji nadal istnieje (wcześniej remove(stub_key) kasował świeży zapis)."""
+    key = invoice_store.upsert(_data(year=2024, month=1), filename='ebok_T-K1-1-24.pdf', path=store_path)
+    new_key = invoice_store.promote_stub(key, _data(year=2024, month=1), filename='ebok_T-K1-1-24.pdf',
+                                         reconciled=True, path=store_path)
+    assert new_key == key
+    assert key in invoice_store.load(store_path)
+
+
+def test_promote_stub_removes_stub_under_different_key(store_path):
+    stub_key = invoice_store.upsert_stub('scan.pdf', 'raw', 'err', store_path)
+    new_key = invoice_store.promote_stub(stub_key, _data(year=2025, month=3), filename='scan.pdf',
+                                         reconciled=False, path=store_path)
+    stored = invoice_store.load(store_path)
+    assert new_key == '2025-03'
+    assert new_key in stored
+    assert stub_key not in stored

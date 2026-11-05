@@ -611,10 +611,9 @@ def main() -> None:
                 data._filename = stub.get('filename', '')  # type: ignore[attr-defined]
                 snap = historic_store.snapshot_month(data.year, data.month, HISTORIC_PATH)
                 reconciled = historic_store.reconcile_invoice(data, HISTORIC_PATH)
-                invoice_store.upsert(data, filename=stub.get('filename', ''),
-                                     reconciled=reconciled, pre_reconcile=snap,
-                                     path=INVOICE_PATH)
-                invoice_store.remove(stub_key, INVOICE_PATH)
+                invoice_store.promote_stub(stub_key, data, filename=stub.get('filename', ''),
+                                           reconciled=reconciled, pre_reconcile=snap,
+                                           path=INVOICE_PATH)
                 promoted.append(f'{data.year}-{data.month:02d}')
                 logger.info('Auto-promoted stub %s → %d-%02d', stub_key, data.year, data.month)
             except InvoiceParseError:

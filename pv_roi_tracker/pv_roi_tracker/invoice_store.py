@@ -248,6 +248,25 @@ def upsert_stub(
     return key
 
 
+def promote_stub(
+    stub_key: str,
+    data: InvoiceData,
+    filename: str = '',
+    reconciled: bool = False,
+    pre_reconcile: Optional[dict] = None,
+    path: Path = DEFAULT_PATH,
+) -> str:
+    """Zapisz sparsowany rekord i usuń stary klucz, ale tylko gdy to INNY klucz. Rekord z
+    `needs_training` pod prawdziwym kluczem 'YYYY-MM' jest re-parsowany w miejscu — usunięcie
+    `stub_key` skasowałoby wtedy świeży zapis (05.11.2026: 2024-01 i 2026-11 znikały przy
+    każdym starcie add-onu i wracały jako „brakujące” w sync eBOK). Zwraca nowy klucz."""
+    new_key = upsert(data, filename=filename, reconciled=reconciled,
+                     pre_reconcile=pre_reconcile, path=path)
+    if new_key != stub_key:
+        remove(stub_key, path)
+    return new_key
+
+
 def remove(key: str, path: Path = DEFAULT_PATH) -> Optional[dict]:
     """
     Delete an invoice record by key. Returns the removed record (for snapshot revert),
