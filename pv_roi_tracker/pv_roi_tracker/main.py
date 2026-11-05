@@ -870,6 +870,8 @@ def main() -> None:
                 hints = list_probe.get('source_hints') or {}
                 if isinstance(hints.get('result_html_code'), list):
                     hints['result_html_code'] = [mask(c) for c in hints['result_html_code']]
+                for tok_field in ('page_tokens', 'result_html_tokens'):
+                    hints[tok_field] = [{**t, 'where': mask(t.get('where', ''))} for t in hints.get(tok_field) or []]
                 hints['view_model'] = {mask(k): mask(v) for k, v in (hints.get('view_model') or {}).items()}
                 req = list_probe.get('request') or {}
                 for field in ('view_model_context', 'medium_type_context', 'medium_type'):

@@ -418,21 +418,22 @@ class EbokClient:
         result_html = ''
         try:
             payload = json.loads(r.text or '')
-            result_html = payload.get('ResultHtml') or '' if isinstance(payload, dict) else ''
-        except ValueError:
+            rh = payload.get('ResultHtml') if isinstance(payload, dict) else None
+            result_html = rh if isinstance(rh, str) else ''
+        except (ValueError, RecursionError):
             pass
         code = [c for inline in _INLINE_SCRIPT_RE.findall(result_html)
                 for c in _code_contexts(inline, _SOURCE_KEYWORDS)]
         for inline in _INLINE_SCRIPT_RE.findall(html):
-            code.extend(_code_contexts(inline, ('GetInvoices', 'EbokInvoices', 'sourceId', 'checkSum')))
+            code.extend(_code_contexts(inline, _SOURCE_KEYWORDS))
         return {'status': r.status_code, 'ok': r.status_code == 200, 'request': request,
                 'content_type': r.headers.get('Content-Type', ''), 'size': len(r.text or ''),
                 'shape': _response_shape(r.text or ''),
                 'source_hints': {'view_model': _view_model_hints(view_obj) if view_obj is not None else {},
                                  'page_tokens': _token_hits(html),
                                  'result_html_tokens': _token_hits(result_html),
-                                 'result_html_code': [c for c in code if 'GetInvoices' in c or 'sourceId' in c
-                                                      or 'checkSum' in c or 'EbokInvoices' in c][:8]}}
+                                 'result_html_code': [c for c in code
+                                                      if any(k in c for k in _SOURCE_KEYWORDS)][:8]}}
 
 
 _STATUS_WORD_RE = re.compile(
