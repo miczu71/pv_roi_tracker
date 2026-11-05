@@ -415,9 +415,24 @@ class EbokClient:
             timeout=REQUEST_TIMEOUT)
         if _is_login_page(r):
             raise EbokError('Sesja eBOK wygasła przy zapytaniu o listę faktur')
+        result_html = ''
+        try:
+            payload = json.loads(r.text or '')
+            result_html = payload.get('ResultHtml') or '' if isinstance(payload, dict) else ''
+        except ValueError:
+            pass
+        code = [c for inline in _INLINE_SCRIPT_RE.findall(result_html)
+                for c in _code_contexts(inline, _SOURCE_KEYWORDS)]
+        for inline in _INLINE_SCRIPT_RE.findall(html):
+            code.extend(_code_contexts(inline, ('GetInvoices', 'EbokInvoices', 'sourceId', 'checkSum')))
         return {'status': r.status_code, 'ok': r.status_code == 200, 'request': request,
                 'content_type': r.headers.get('Content-Type', ''), 'size': len(r.text or ''),
-                'shape': _response_shape(r.text or '')}
+                'shape': _response_shape(r.text or ''),
+                'source_hints': {'view_model': _view_model_hints(view_obj) if view_obj is not None else {},
+                                 'page_tokens': _token_hits(html),
+                                 'result_html_tokens': _token_hits(result_html),
+                                 'result_html_code': [c for c in code if 'GetInvoices' in c or 'sourceId' in c
+                                                      or 'checkSum' in c or 'EbokInvoices' in c][:8]}}
 
 
 _STATUS_WORD_RE = re.compile(
@@ -904,6 +919,48 @@ def _json_shape(value, depth: int = 0, key: str = '', returned: Optional[int] = 
     if isinstance(value, int) and not isinstance(value, bool) and key.endswith('Count'):
         return value   # TotalCount / ReturnedCount: liczności, nie dane
     return type(value).__name__
+
+
+_GUID_RE = re.compile(r'\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b')
+_HEX64_RE = re.compile(r'(?<![0-9a-zA-Z])[0-9a-fA-F]{64}(?![0-9a-zA-Z])')
+_HINT_KEY_RE = re.compile(r'source|check|sum|contractor|guid|payer|client|agreement', re.I)
+_SOURCE_KEYWORDS = ('GetInvoices', 'EbokInvoices', 'sourceId', 'checkSum', 'contractorNumber')
+
+
+def _token_hits(text: str, limit: int = 20) -> list:
+    """Sonda E0j: gdzie w tekście stoją GUID-y i 64-znakowe hex-y (kandydaci na `sourceId` /
+    `checkSum`): rodzaj, miejsce (`tag[atrybut]` albo `script`/`text`) i liczba. Bez wartości."""
+    text = text or ''
+    counts: Counter = Counter()
+    for kind, rx in (('guid', _GUID_RE), ('hex64', _HEX64_RE)):
+        for m in rx.finditer(text):
+            lt, gt = text.rfind('<', 0, m.start()), text.rfind('>', 0, m.start())
+            where = 'text'
+            if lt > gt:   # wewnątrz znacznika → nazwa atrybutu
+                tag = re.match(r'<([A-Za-z][\w-]*)', text[lt:])
+                attr = re.search(r'([\w:-]+)\s*=\s*["\'][^"\']*$', text[lt:m.start()])
+                where = f"{tag.group(1).lower() if tag else '?'}[{attr.group(1).lower() if attr else '?'}]"
+            elif re.search(r'<script\b[^>]*>(?:(?!</script>).)*$', text[:m.start()], re.S | re.I):
+                where = 'script'
+            counts[(kind, re.sub(r'\d', '9', where))] += 1
+    return [{'kind': k, 'where': w, 'n': n} for (k, w), n in counts.most_common(limit)]
+
+
+def _view_model_hints(value, prefix: str = '', out: Optional[dict] = None) -> dict:
+    """Sonda E0j: ścieżki kluczy view-modelu przypominające `sourceId`/`checkSum`/numer płatnika
+    z zamaskowanym kształtem wartości (cyfry → 9, litery → a). Wartości nie opuszczają funkcji."""
+    out = {} if out is None else out
+    if isinstance(value, dict):
+        for k, v in value.items():
+            path = f'{prefix}.{k}' if prefix else str(k)
+            if isinstance(v, (dict, list)):
+                _view_model_hints(v, path, out)
+            elif _HINT_KEY_RE.search(str(k)) and v not in (None, ''):
+                out[re.sub(r'\d', '9', path)] = _mask_value_shape(str(v))
+    elif isinstance(value, list):
+        for v in value[:3]:
+            _view_model_hints(v, prefix + '[]', out)
+    return out
 
 
 def _response_shape(text: str) -> dict:

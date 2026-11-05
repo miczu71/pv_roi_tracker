@@ -1277,3 +1277,47 @@ def test_details_blocks_skeleton_masks_digits_in_data_attr_names():
     html = _DETAILS.replace('data-agreement-id="55"', 'data-agreement-123456="55"')
     out = _details_blocks(html)
     assert '123456' not in json.dumps(out) and 'data-agreement-999999' in out['charge_row_skeleton']
+
+
+# ── E0j: skąd wziąć sourceId / checkSum (sonda tokenów, bez wartości) ─────────
+
+_GUID = '0a1b2c3d-1111-2222-3333-444455556666'
+_HEX = 'ab' * 32
+
+
+def test_token_hits_reports_tag_attr_and_kind_without_values():
+    from pv_roi_tracker.ebok_client import _token_hits
+    html = (f'<div class="amount-column" data-source-id="{_GUID}" data-check="{_HEX}"></div>'
+            f'<script>var x = "{_GUID}";</script>')
+    hits = _token_hits(html)
+    assert {'kind': 'guid', 'where': 'div[data-source-id]', 'n': 1} in hits
+    assert {'kind': 'hex64', 'where': 'div[data-check]', 'n': 1} in hits
+    assert {'kind': 'guid', 'where': 'script', 'n': 1} in hits
+    text = json.dumps(hits)
+    assert _GUID not in text and _HEX not in text
+
+
+def test_view_model_hints_lists_matching_paths_with_masked_shape():
+    from pv_roi_tracker.ebok_client import _view_model_hints
+    vm = {'SourceId': _GUID, 'Other': 'x', 'Nested': {'CheckSum': _HEX, 'Items': [{'ContractorNumber': '123456'}]}}
+    hints = _view_model_hints(vm)
+    assert hints['SourceId'] == '9a9a9a9a-9999-9999-9999-999999999999'
+    assert 'Nested.CheckSum' in hints and 'Nested.Items[].ContractorNumber' in hints
+    assert 'Other' not in hints
+    assert _GUID not in json.dumps(hints) and _HEX not in json.dumps(hints)
+
+
+def test_probe_invoice_list_returns_source_hints():
+    body = json.dumps({'ResultHtml': f'<div data-source-id="{_GUID}"></div>'
+                       "<script>$.get('/api/sitecore/EbokInvoices/GetInvoices?sourceId=' + s)</script>",
+                       'TotalCount': 1, 'ReturnedCount': 1})
+    client, session = _probe_client()
+    session._responses.insert(0, ('/Home/Pages/Faktury', _FakeResponse(
+        text=f'<script>var serializedViewModel = {{"SourceId":"{_GUID}","Other":1}};</script>')))
+    session.when('EbokInvoiceList/LoadMoreInvoicesProducts', _FakeResponse(text=body))
+    out = client.probe_invoice_list()
+    hints = out['source_hints']
+    assert 'SourceId' in hints['view_model']
+    assert {'kind': 'guid', 'where': 'div[data-source-id]', 'n': 1} in hints['result_html_tokens']
+    assert any('GetInvoices' in c for c in hints['result_html_code'])
+    assert _GUID not in json.dumps(out)
