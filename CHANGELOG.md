@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.55.10] — 2026-11-05
+
+- **Diagnostyka eBOK: szkielet bloku faktury w układzie `dl/dt/dd`.** Sonda listy faktur opisuje powtarzający się blok (znaczniki, klasy, etykiety pól UI) i zamaskowany kształt wartości (cyfry → 9, litery → a); żadnych kwot ani numerów w wyniku `diag`.
+
 ## [0.55.9] — 2026-11-05
 
 - **Diagnostyka eBOK: sonda listy faktur z `serializedViewModel` jako obiektem.** Obiekt JS ze strony Faktury jest wyciągany dopasowaniem nawiasów i wysyłany jak `jQuery.param` (`parentViewModel[...]`); domyślny rodzaj medium z `#SearchType`. Do wyniku `diag` trafiają tylko liczba kluczy i rodzaj medium (krótkie słowo), kontekst kodu jest maskowany.
