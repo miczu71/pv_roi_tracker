@@ -772,7 +772,8 @@ def test_probe_invoices_page_finds_api_paths_and_unknown_signatures():
     assert out['status'] == 200
     assert out['size'] == len(_FAKTURY_HTML)
     assert out['api_paths'] == ['/api/sitecore/EbokInvoices/GetPdf',
-                                '/api/sitecore/EbokInvoices/GetUnpaid']
+                                '/api/sitecore/EbokInvoices/GetUnpaid?clientNumber&rangeFrom',
+                                '/api/sitecore/EbokInvoices/GetUnpaid?x']
     assert out['unknown_signatures'] == ['T/K1/XX000000/0020/26']
     assert 'data-client-checksum' in out['data_attrs']
 
@@ -798,4 +799,61 @@ def test_probe_invoices_page_script_failure_does_not_break_probe():
     session._responses.insert(0, ('/assets/invoices.js', _FakeResponse(text='', status_code=500)))
     out = client.probe_invoices_page(known=set())
     assert out['status'] == 200
-    assert '/api/sitecore/EbokInvoices/GetUnpaid' in out['api_paths']  # z atrybutu HTML
+    assert '/api/sitecore/EbokInvoices/GetUnpaid?clientNumber&rangeFrom' in out['api_paths']  # z atrybutu HTML
+
+
+def test_probe_invoices_page_matches_old_three_segment_signature():
+    client, session = _probe_client()
+    session._responses.insert(0, ('/Home/Pages/Faktury', _FakeResponse(
+        text='<td>T/K1/0143787/24</td><td>T/K1/XX000000/0020/26</td>')))
+    out = client.probe_invoices_page(known=set())
+    assert out['unknown_signatures'] == ['T/K1/0143787/24', 'T/K1/XX000000/0020/26']
+    assert out['signatures_total'] == 2
+
+
+def test_probe_invoices_page_reports_script_stats():
+    client, session = _probe_client()
+    session._responses.insert(0, ('/assets/invoices.js', _FakeResponse(text='', status_code=500)))
+    out = client.probe_invoices_page(known=set())
+    assert out['scripts'] == {'total': 1, 'fetched': 0, 'failed': 1, 'skipped': 0}
+
+
+def test_probe_invoices_page_requires_selected_payer():
+    client, session = _probe_client()
+    client._payer_id = None
+    with pytest.raises(EbokError, match='płatnika'):
+        client.probe_invoices_page(known=set())
+
+
+def test_probe_invoices_page_expired_session_raises():
+    client, session = _seq_client()
+    session.when_seq('/Home/Pages/Faktury', [_FakeResponse(text=_LOGIN_FORM_HTML)])
+    client._payer_id = _PAYER
+    with pytest.raises(EbokError, match='Sesja eBOK'):
+        client.probe_invoices_page(known=set())
+
+
+class _RaisingScriptSession(_SequenceSession):
+    def get(self, url, **kwargs):
+        if url.endswith('/assets/invoices.js'):
+            raise requests.exceptions.ReadTimeout('boom')
+        return super().get(url, **kwargs)
+
+
+def test_probe_invoices_page_script_exception_counts_as_failed():
+    session = _RaisingScriptSession()
+    session.when('logowanie.tauron.pl/realms/ext/protocol/cas/login', _FakeResponse(text=_LOGIN_FORM_HTML))
+    session.when('logowanie.tauron.pl/action', _FakeResponse(text=_LOGGED_IN_HTML))
+    session.when('/Home/Pages/Faktury', _FakeResponse(text=_FAKTURY_HTML))
+    client = EbokClient('user@example.com', 'secret', session=session)
+    client._sleep = lambda s: None
+    client._payer_id = _PAYER
+    out = client.probe_invoices_page(known=set())
+    assert out['scripts'] == {'total': 1, 'fetched': 0, 'failed': 1, 'skipped': 0}
+
+
+def test_probe_invoices_page_script_login_page_counts_as_failed():
+    client, session = _probe_client()
+    session._responses.insert(0, ('/assets/invoices.js', _FakeResponse(text=_LOGIN_FORM_HTML)))
+    out = client.probe_invoices_page(known=set())
+    assert out['scripts']['failed'] == 1

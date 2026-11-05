@@ -5,10 +5,10 @@ User widzi nową fakturę w Mój TAURON, ale add-on (0.55.4) jej nie importuje.
 
 Diagnoza na żywo z 05.11.2026 (read-only, `GET api/ebok/diag` przez ingress, `api/data`, `api/ebok/status`, logi add-onu):
 - Joby eBOK przechodzą bez błędu: `eBOK: 79 dok., brakujących 0` (04.11 i 05.11 o 07:30).
-- `GetDocuments` (archiwum dokumentów) zwraca 79 dokumentów. Najnowszy to `0019/26` z 31.10, status „Rozliczono”. To poprawna **korekta RCE** do faktury 0009/26 (miesiąc 11.2025) i została zaimportowana prawidłowo jako korekta.
-- Statusy w archiwum to wyłącznie {Opłacona, Rozliczono}. Ostatni miesiąc w magazynie faktur to 2026-09 (0018/26).
+- `GetDocuments` (archiwum dokumentów) zwraca 79 dokumentów. Najnowszy to korekta z końca października (status „Rozliczono”), poprawna **korekta RCE** do faktury za 11.2025 i została zaimportowana prawidłowo jako korekta.
+- Statusy w archiwum to wyłącznie {Opłacona, Rozliczono}. Ostatni miesiąc w magazynie faktur to wrzesień 2026.
 - **Hipoteza:** archiwum (`EbokArchiveDocuments/GetDocuments`) pokazuje tylko dokumenty rozliczone. Nowa, nieopłacona faktura jest na stronie „Faktury” (`/Home/Pages/Faktury?sid=T18&pp=…`) i pochodzi z innego zapytania API. To samo psuje pasek płatności, bo `payment_reminders` też bierze dane z tej listy, więc przypomnienie o niezapłaconej fakturze nigdy nie powstanie. ROADMAP_EBOK_MOJ_TAURON:234 oznaczał to jako „niesprawdzone do pierwszej nowej faktury”.
-- Do wyjaśnienia przy okazji: diag pokazuje `unknown: ["08.02.2024 T/K1/0143787/24 | Faktury"]`, a sync loguje `brakujących 0`.
+- Do wyjaśnienia przy okazji: diag pokazuje `unknown` z jednym dokumentem z 2024 (typ „Faktury”), a sync loguje `brakujących 0`.
 
 Decyzja usera: zamiast adresu z DevTools robimy **sondę diagnostyczną**. „Dług ze zmiany taryf” to długi z `/config/docs/ROADMAP_energy_panel_g13.md` (E1/E3):
 (a) brakująca encja strefy G13 jest pomijana bez ostrzeżenia, (b) fallback REST `sensor.monthly_energy_*` nadal wskazuje zamrożone liczniki G12w, (c) brak testów `get_energy_window` i `read_current_month` dla sumy G13.

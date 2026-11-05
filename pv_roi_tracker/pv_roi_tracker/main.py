@@ -853,6 +853,7 @@ def main() -> None:
                 probe = {k: ([mask(x) for x in v] if isinstance(v, list) else v)
                          for k, v in page.items()}
             except Exception as exc:
+                logger.warning('eBOK diag: sonda strony Faktury nie powiodła się (%s)', type(exc).__name__)
                 probe = {'error': mask(f'{type(exc).__name__}: {exc}')}
             return {'ok': True, 'total': len(docs), 'invoices_page': probe,
                     'statuses': sorted({d.status for d in docs}),

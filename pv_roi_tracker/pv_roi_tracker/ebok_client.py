@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from html import unescape
 from typing import Callable, Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urljoin
 
 import requests
 
@@ -325,27 +325,48 @@ class EbokClient:
         """Sonda diagnostyczna (0.55.5, tylko odczyt): strona „Faktury” i jej skrypty z tej samej
         domeny → ścieżki `/api/sitecore/<Kontroler>/<Akcja>`, nazwy atrybutów `data-*` oraz
         sygnatury dokumentów, których nie ma w `known`. Bez numeru płatnika i checksum w wyniku."""
+        if not self._payer_id:
+            raise EbokError('Nie wybrano płatnika (select_payer)')
         r = self._get(f'{SERVICE}/Home/Pages/Faktury?'
-                      + urlencode({'sid': SYSTEM, 'pp': self._payer_id or ''}), REQUEST_TIMEOUT)
+                      + urlencode({'sid': SYSTEM, 'pp': self._payer_id}), REQUEST_TIMEOUT)
         html = r.text or ''
-        api_paths = set(_API_PATH_RE.findall(html))
+        api_paths = _api_paths(html)
         scripts = []
+        page_url = f'{SERVICE}/Home/Pages/Faktury'
         for src in _SCRIPT_SRC_RE.findall(html):
-            url = src if src.startswith('http') else SERVICE + (src if src.startswith('/') else '/' + src)
+            url = urljoin(page_url, unescape(src))
             if url.startswith(SERVICE + '/') and url not in scripts:
                 scripts.append(url)
+        fetched = failed = 0
         for url in scripts[:MAX_PROBE_SCRIPTS]:
             try:
                 js = self._get_retrying(url, headers={'User-Agent': USER_AGENT}, timeout=REQUEST_TIMEOUT)
-                if js.status_code == 200:
-                    api_paths.update(_API_PATH_RE.findall(js.text or ''))
+                if js.status_code != 200 or _is_login_page(js):
+                    failed += 1
+                    continue
+                fetched += 1
+                api_paths.update(_api_paths(js.text))
             except Exception as exc:
+                failed += 1
                 logger.warning('eBOK: sonda — skrypt niedostępny (%s)', type(exc).__name__)
-        signatures = {m for m in _SIGNATURE_RE.findall(html) if not is_known(m, known)}
-        return {'status': r.status_code, 'size': len(html),
+        signatures = set(_SIGNATURE_RE.findall(html))
+        return {'status': r.status_code, 'ok': r.status_code == 200, 'size': len(html),
                 'api_paths': sorted(api_paths),
                 'data_attrs': sorted(set(_DATA_ATTR_RE.findall(html))),
-                'unknown_signatures': sorted(signatures)}
+                'scripts': {'total': len(scripts), 'fetched': fetched, 'failed': failed,
+                            'skipped': max(0, len(scripts) - MAX_PROBE_SCRIPTS)},
+                'signatures_total': len(signatures),
+                'unknown_signatures': sorted(s for s in signatures if not is_known(s, known))}
+
+
+def _api_paths(text: str) -> set:
+    """`/api/sitecore/<Kontroler>/<Akcja>` z tekstu; z zapytania zostają same nazwy parametrów
+    (`...?rangeFrom&clientNumber`), nigdy wartości — te niosą płatnika i checksum."""
+    found = set()
+    for path, query in _API_PATH_RE.findall(text or ''):
+        names = sorted(set(re.findall(r'([A-Za-z0-9_]+)=', unescape(query))))
+        found.add(path + ('?' + '&'.join(names) if names else ''))
+    return found
 
 
 def _is_login_page(r) -> bool:
@@ -385,10 +406,10 @@ def parse_client_checksum(html: str, payer_id: str) -> Optional[str]:
     return parse_clients(html).get(str(payer_id))
 
 
-_API_PATH_RE = re.compile(r'/api/sitecore/[A-Za-z0-9_]+/[A-Za-z0-9_]+')
+_API_PATH_RE = re.compile(r'(/api/sitecore/[A-Za-z0-9_]+/[A-Za-z0-9_]+)(?:\?([^"\'\s<>]*))?')
 _SCRIPT_SRC_RE = re.compile(r'<script[^>]+src="([^"]+)"', re.I)
 _DATA_ATTR_RE = re.compile(r'\b(data-[a-z0-9-]+)=', re.I)
-_SIGNATURE_RE = re.compile(r'\bT/K1/[A-Za-z0-9]+/\d{4}/\d{2}\b')
+_SIGNATURE_RE = re.compile(r'\bT/K1/[A-Za-z0-9]+(?:/\d{4})?/\d{2}\b')
 MAX_PROBE_SCRIPTS = 8
 _POINT_LINK_RE = re.compile(r'href="([^"]*punkty-poboru[^"]*)"')
 _DL_HORIZONTAL_RE = re.compile(r'<dl[^>]*\bdl-horizontal\b[^>]*>(.*?)</dl>', re.S | re.I)
