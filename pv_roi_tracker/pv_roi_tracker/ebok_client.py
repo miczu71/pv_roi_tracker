@@ -31,6 +31,7 @@ import json
 import logging
 import re
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from html import unescape
@@ -339,7 +340,7 @@ class EbokClient:
             if url.startswith(SERVICE + '/') and url not in scripts:
                 scripts.append(url)
         fetched = failed = 0
-        js_context = []
+        js_context = _js_contexts(html)   # kod wywołania bywa inline w HTML strony
         for url in scripts[:MAX_PROBE_SCRIPTS]:
             try:
                 js = self._get_retrying(url, headers={'User-Agent': USER_AGENT}, timeout=REQUEST_TIMEOUT)
@@ -348,7 +349,7 @@ class EbokClient:
                     continue
                 fetched += 1
                 api_paths.update(_api_paths(js.text))
-                if len(js_context) < 2:
+                if len(js_context) < 3:
                     js_context.extend(_js_contexts(js.text))
             except Exception as exc:
                 failed += 1
@@ -361,7 +362,7 @@ class EbokClient:
                             'skipped': max(0, len(scripts) - MAX_PROBE_SCRIPTS)},
                 'signatures_total': len(signatures),
                 'unknown_signatures': sorted(s for s in signatures if not is_known(s, known)),
-                'js_context': js_context[:2],
+                'js_context': js_context[:3],
                 'item_skeleton': _html_skeleton(html)}
 
     def probe_invoice_list(self) -> dict:
@@ -378,11 +379,11 @@ class EbokClient:
 
 _STATUS_WORD_RE = re.compile(
     r'Nieopłacon\w*|Opłacon\w*|Do zapłaty|Po terminie|Rozliczon\w*|Korekt\w*|Faktur\w*|Zaległ\w*', re.I)
-_ITEM_START_RE = re.compile(r'<[^>]*\bdata-item(?![\w-])[^>]*>')
+_ITEM_START_RE = re.compile(r'<tr\b[^>]*>(?=\s*<td)', re.I)   # wiersz tabeli z komórkami (nie menu `data-item`)
 _JS_ANCHOR = 'LoadMoreInvoicesProducts'
 
 
-def _js_contexts(js: str, width: int = 450) -> list:
+def _js_contexts(js: str, width: int = 600) -> list:
     """Fragmenty kodu JS wokół wywołania `LoadMoreInvoicesProducts` (jak JS buduje zapytanie).
     Kod, nie dane — ale długie literały (tokeny) i ciągi 5+ cyfr są wycinane."""
     out = []
@@ -390,7 +391,7 @@ def _js_contexts(js: str, width: int = 450) -> list:
         chunk = js[max(0, m.start() - width):m.end() + width]
         chunk = re.sub(r'[A-Za-z0-9+/=_-]{32,}', '<token>', chunk)
         out.append(re.sub(r'\s+', ' ', re.sub(r'\d{5,}', '<num>', chunk)))
-        if len(out) == 2:
+        if len(out) == 3:
             break
     return out
 
@@ -419,12 +420,12 @@ class _SkeletonParser(HTMLParser):
 
 
 def _html_skeleton(html: str, limit: int = 1500) -> str:
-    """Szkielet pierwszego elementu z `data-item` (kształt wiersza listy faktur), bez treści."""
+    """Szkielet pierwszego wiersza tabeli `<tr><td>` (kształt wiersza listy faktur), bez treści."""
     m = _ITEM_START_RE.search(html or '')
     if not m:
-        return '<brak data-item>'
+        return '<brak wiersza tabeli>'
     parser = _SkeletonParser()
-    parser.feed(html[m.start():m.start() + 6000])
+    parser.feed(html[m.start():m.start() + 3000])
     parser.close()
     return ''.join(parser.parts)[:limit]
 
@@ -450,6 +451,7 @@ def _response_shape(text: str) -> dict:
         return {'type': 'html' if '<' in text else 'text',
                 'items': len(_ITEM_START_RE.findall(text)),
                 'signatures': len(set(_SIGNATURE_RE.findall(text))),
+                'tags': dict(Counter(re.findall(r'<([a-z][a-z0-9]*)', text, re.I)).most_common(8)),
                 'skeleton': _html_skeleton(text)}
     return {'type': 'json', 'tree': _json_shape(data),
             'signatures': len(set(_SIGNATURE_RE.findall(text)))}

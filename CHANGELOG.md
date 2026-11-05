@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.55.7] — 2026-11-05
+
+- **Diagnostyka eBOK: sonda listy faktur, poprawka.** Kontekst wywołania `LoadMoreInvoicesProducts` jest szukany także w skryptach inline strony Faktury, a szkielet dotyczy wiersza tabeli `<tr><td>` (nie pozycji menu). Odpowiedź HTML dostaje histogram znaczników. Nadal tylko odczyt, bez kwot, numerów i płatnika.
+
 ## [0.55.6] — 2026-11-05
 
 - **Diagnostyka eBOK: sonda listy faktur.** `GET api/ebok/diag` zwraca dodatkowo `invoice_list` (jedno wywołanie `LoadMoreInvoicesProducts`: status, typ i kształt odpowiedzi) oraz w `invoices_page` fragmenty JS wokół tego wywołania i szkielet wiersza `data-item`. Tylko odczyt; w wyniku są wyłącznie typy, nazwy pól i słowa statusu (bez kwot, numerów, płatnika i checksum). Powód: poznać format listy faktur nierozliczonych przed ich importem.

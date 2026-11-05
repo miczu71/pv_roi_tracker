@@ -835,8 +835,18 @@ def test_probe_invoices_page_expired_session_raises():
 
 # ── E0b: kontekst JS, szkielet wiersza, kształt LoadMoreInvoicesProducts (0.55.6) ──
 
-_ITEM_HTML = ('<div class="list"><div class="row paid" data-item="1"><span class="no">T/K1/XX000000/0020/26</span>'
-              '<span class="amt">123,45 zł</span><em class="st">Nieopłacona</em></div></div>')
+_ITEM_HTML = ('<table class="list"><tr class="head"><th>Numer</th></tr><tr class="row paid" data-item="1">'
+              '<td class="no">T/K1/XX000000/0020/26</td><td class="amt">123,45 zł</td>'
+              '<td><em class="st">Nieopłacona</em></td></tr></table>')
+
+
+def test_probe_invoices_page_finds_inline_script_context():
+    client, session = _probe_client()
+    session._responses.insert(0, ('/Home/Pages/Faktury', _FakeResponse(
+        text="<script>$.get('/api/sitecore/EbokInvoiceList/LoadMoreInvoicesProducts?pp=' + pp + '&page=' + n)</script>")))
+    out = client.probe_invoices_page(known=set())
+    assert any("'&page=' + n" in c for c in out['js_context'])
+    assert out['item_skeleton'] == '<brak wiersza tabeli>'
 
 
 def test_probe_invoices_page_returns_js_context_and_item_skeleton():
@@ -849,7 +859,7 @@ def test_probe_invoices_page_returns_js_context_and_item_skeleton():
     assert len(out['js_context']) == 1 and "'&page=' + n" in out['js_context'][0]
     assert 'c' * 64 not in json.dumps(out)
     skel = out['item_skeleton']
-    assert skel.startswith('<div.row.paid[data-item]>') and '"Nieopłacona"' in skel
+    assert skel.startswith('<tr.row.paid[data-item]>') and '"Nieopłacona"' in skel
     assert '123' not in skel and 'XX000000' not in skel
 
 
@@ -883,7 +893,7 @@ def test_probe_invoice_list_unwraps_html_inside_json():
     session.when('EbokInvoiceList/LoadMoreInvoicesProducts',
                  _FakeResponse(text=json.dumps({'Html': _ITEM_HTML})))
     html = client.probe_invoice_list()['shape']['tree']['Html']['html']
-    assert html.startswith('<div.row.paid[data-item]>') and '"Nieopłacona"' in html and '123' not in html
+    assert html.startswith('<tr.row.paid[data-item]>') and '"Nieopłacona"' in html and '123' not in html
 
 
 def test_js_context_masks_long_tokens_and_numbers():
@@ -897,6 +907,7 @@ def test_probe_invoice_list_html_shape():
     session.when('EbokInvoiceList/LoadMoreInvoicesProducts', _FakeResponse(text=_ITEM_HTML * 2))
     shape = client.probe_invoice_list()['shape']
     assert shape['type'] == 'html' and shape['items'] == 2 and shape['signatures'] == 1
+    assert shape['tags']['td'] == 6
     assert '"Nieopłacona"' in shape['skeleton'] and '123' not in shape['skeleton']
 
 
