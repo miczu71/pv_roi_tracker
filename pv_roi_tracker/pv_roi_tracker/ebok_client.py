@@ -246,8 +246,8 @@ class EbokClient:
         except EbokLoginBlocked:
             raise
         except (EbokError, requests.exceptions.RequestException) as exc:
-            logger.warning('eBOK: lista faktur do zapłaty niedostępna (%s) — zwracam samo archiwum',
-                           type(exc).__name__)
+            logger.warning('eBOK: lista faktur do zapłaty niedostępna (%s: %s) — zwracam samo archiwum',
+                           type(exc).__name__, exc)
             return docs
         seen = {normalize_signature(d.signature) for d in docs}
         for doc in unpaid:
@@ -466,9 +466,13 @@ class EbokClient:
                 raise EbokLayoutChanged('Odpowiedź (faktury do zapłaty) ze statusem '
                                         f"{data.get('status') if isinstance(data, dict) else type(data).__name__!r}"
                                         ' zamiast "OK"')
-            docs.extend(parse_unpaid_invoices_html(data.get('html') or ''))
+            batch = parse_unpaid_invoices_html(data.get('html') or '')
+            docs.extend(batch)
             total = data.get('totalCount')
             skip += UNPAID_PAGE_SIZE
+            if not batch:   # serwer ignoruje skip / pusta strona przy dużym totalCount — nie pętlimy do MAX_PAGES
+                logger.warning('eBOK: pusta strona faktur do zapłaty przy skip=%d (totalCount=%r)', skip, total)
+                break
             if not isinstance(total, int) or skip >= total:
                 break
         else:

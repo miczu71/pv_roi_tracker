@@ -50,6 +50,12 @@ def close_month(
                        today.year, today.month)
         return False
 
+    if record.purchased_kwh_peak is None or record.purchased_kwh_offpeak is None:
+        # Bez LTS stref (G13) rekord miałby stawki zastępcze na stałe — nie dopisuj, import z LTS go zastąpi.
+        logger.warning('Month-close: brak podziału peak/offpeak (LTS) — snapshot pominięty dla %d-%02d',
+                       today.year, today.month)
+        return False
+
     appended = historic_store.append_month(record, historic_path)
     if appended:
         logger.info('Month-close: %d-%02d appended (rcem_status=%s)', today.year, today.month, record.rcem_status)

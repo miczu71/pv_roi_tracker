@@ -1414,6 +1414,13 @@ def test_list_unpaid_invoices_paginates_five_plus_two():
         assert part in urls[0]
 
 
+def test_list_unpaid_invoices_empty_page_stops_pagination():
+    client, session = _unpaid_client()
+    session.when('GetInvoices', _FakeResponse(text=json.dumps({'status': 'OK', 'html': '', 'totalCount': 50})))
+    assert client.list_unpaid_invoices() == []
+    assert len([c for c in session.calls if 'GetInvoices' in c[1]]) == 1
+
+
 def test_list_unpaid_invoices_without_source_returns_empty():
     client, session = _unpaid_client(result_html='<div>brak</div>')
     assert client.list_unpaid_invoices() == []
