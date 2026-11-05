@@ -896,15 +896,27 @@ def test_probe_invoice_list_posts_like_page_js_and_hides_view_model():
     assert _PAYER not in text and 'AAAA' not in text and 'XX000000' not in text and '123' not in text
 
 
-def test_probe_invoice_list_without_view_model_reports_masked_context():
+def test_probe_invoice_list_without_view_model_skips_post_and_reports_masked_context():
     client, session = _probe_client()
     session._responses.insert(0, ('/Home/Pages/Faktury', _FakeResponse(
-        text='<script>var serializedViewModel = ' + 'Z' * 40 + '(' + _PAYER + ');</script>')))
-    session.when('EbokInvoiceList/LoadMoreInvoicesProducts', _FakeResponse(text='<html></html>'))
+        text='<script>var serializedViewModel = JSON.parse("Z' + 'Z' * 40 + _PAYER + '");</script>')))
     out = client.probe_invoice_list()
-    assert out['request']['view_model_found'] is False
-    assert 'serializedViewModel' in out['request']['view_model_context']
-    assert 'Z' * 40 not in json.dumps(out)
+    assert out['ok'] is False and 'POST pominięty' in out['skipped']
+    assert not [c for c in session.calls if c[0] == 'POST' and 'LoadMoreInvoicesProducts' in c[1]]
+    ctx = out['request']['view_model_context']
+    assert 'serializedViewModel' in ctx and 'Z' * 10 not in ctx and _PAYER not in ctx
+
+
+def test_js_string_var_ignores_longer_names_and_empty_placeholders():
+    from pv_roi_tracker.ebok_client import _js_string_var
+    html = "window.serializedViewModelOld = 'x'; var serializedViewModel = ''; serializedViewModel = 'real';"
+    assert _js_string_var(html, 'serializedViewModel') == 'real'
+    assert _js_string_var("var a = 'x\\qz';", 'a') is None   # nieodkodowalne → None, nie surowa wartość
+
+
+def test_json_shape_plain_text_with_angle_bracket_is_not_html():
+    from pv_roi_tracker.ebok_client import _json_shape
+    assert _json_shape({'Msg': 'A < B'}) == {'Msg': 'str'}
 
 
 def test_probe_invoice_list_json_does_not_leak_strings_containing_status_words():

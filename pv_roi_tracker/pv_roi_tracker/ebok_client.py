@@ -381,6 +381,8 @@ class EbokClient:
                    'medium_type_found': medium is not None}
         if view_model is None:
             request['view_model_context'] = _var_context(html, 'serializedViewModel')
+            return {'ok': False, 'request': request,
+                    'skipped': 'brak serializedViewModel jako literału tekstowego — POST pominięty'}
         r = self._session.post(
             f'{SERVICE}/api/sitecore/EbokInvoiceList/LoadMoreInvoicesProducts?'
             + urlencode({'sid': SYSTEM, 'pp': self._payer_id}),
@@ -394,6 +396,7 @@ class EbokClient:
                 'content_type': r.headers.get('Content-Type', ''), 'size': len(r.text or ''),
                 'shape': _response_shape(r.text or '')}
 
+
 _STATUS_WORD_RE = re.compile(
     r'Nieopłacon\w*|Opłacon\w*|Do zapłaty|Po terminie|Rozliczon\w*|Korekt\w*|Faktur\w*|Zaległ\w*', re.I)
 _ITEM_START_RE = re.compile(r'<tr\b[^>]*>(?=\s*<td)', re.I)   # wiersz tabeli z komórkami (nie menu `data-item`)
@@ -401,28 +404,34 @@ _JS_ANCHOR = 'LoadMoreInvoicesProducts'
 
 
 def _js_string_var(html: str, name: str) -> Optional[str]:
-    """Wartość tekstowa przypisania `<name> = '...'` / `"..."` z JS strony (z dekodowaniem
-    sekwencji ucieczki JS); None, gdy zmiennej nie ma lub nie jest literałem tekstowym."""
-    m = re.search(re.escape(name) + r'\s*=\s*(["\'])((?:\\.|(?!\1).)*)\1', html or '', re.S)
-    if not m:
-        return None
-    quote, body = m.groups()
-    if quote == "'":
-        body = re.sub(r'\\.|"', lambda t: {"\\'": "'", '"': '\\"'}.get(t.group(0), t.group(0)), body)
-    try:
-        return json.loads('"' + body + '"')
-    except ValueError:
-        return m.group(2)
+    """Wartość tekstowa przypisania `<name> = '...'` / `"..."` z JS strony (z dekodowaniem sekwencji
+    ucieczki JS); pierwszy niepusty literał, a gdy są tylko puste — pusty. None, gdy zmiennej nie ma,
+    nie jest literałem tekstowym albo nie da się jej odkodować (nie wysyłamy zepsutej wartości)."""
+    pattern = r'(?<![\w.$])' + re.escape(name) + r'\s*=\s*(["\'])((?:\\.|(?!\1).)*)\1'
+    found = None
+    for m in re.finditer(pattern, html or '', re.S):
+        quote, body = m.groups()
+        if quote == "'":
+            body = re.sub(r'\\.|"', lambda t: {"\\'": "'", '"': '\\"'}.get(t.group(0), t.group(0)), body)
+        try:
+            value = json.loads('"' + body + '"')
+        except ValueError:
+            continue
+        if value:
+            return value
+        found = value
+    return found
 
 
-def _var_context(html: str, name: str, width: int = 120) -> str:
-    """Zamaskowany fragment kodu wokół pierwszego użycia zmiennej (gdy nie jest literałem tekstowym)."""
-    m = re.search(re.escape(name), html or '')
+def _var_context(html: str, name: str, width: int = 100) -> str:
+    """Fragment kodu wokół pierwszego użycia zmiennej (gdy nie jest literałem tekstowym): treść
+    literałów tekstowych zastąpiona „…”, cyfry → 9 — zostaje sama składnia."""
+    m = re.search(r'(?<![\w.$])' + re.escape(name), html or '')
     if not m:
         return '<brak zmiennej>'
     chunk = html[max(0, m.start() - width):m.end() + width]
-    chunk = re.sub(r'[A-Za-z0-9+/=_-]{32,}', '<token>', chunk)
-    return re.sub(r'\s+', ' ', re.sub(r'\d{5,}', '<num>', chunk))
+    chunk = re.sub(r'(["\'])(?:\\.|(?!\1).)*\1', '"…"', chunk, flags=re.S)
+    return re.sub(r'\d', '9', re.sub(r'\s+', ' ', chunk))
 
 
 def _js_contexts(js: str, width: int = 600) -> list:
@@ -479,7 +488,7 @@ def _json_shape(value, depth: int = 0, key: str = ''):
     if isinstance(value, list):
         return {'list': len(value), 'item': _json_shape(value[0], depth + 1) if value and depth < 4 else None}
     if isinstance(value, str):
-        if '<' in value:
+        if re.search(r'<[A-Za-z]', value):
             return {'html': _html_skeleton(value), 'len': len(value),
                     'rows': len(_ITEM_START_RE.findall(value)),
                     'signatures': len(set(_SIGNATURE_RE.findall(value))),
@@ -501,7 +510,8 @@ def _response_shape(text: str) -> dict:
                 'signatures': len(set(_SIGNATURE_RE.findall(text))),
                 'tags': dict(Counter(re.findall(r'<([a-z][a-z0-9]*)', text, re.I)).most_common(8)),
                 'skeleton': _html_skeleton(text)}
-    return {'type': 'json', 'tree': _json_shape(data)}
+    return {'type': 'json', 'tree': _json_shape(data),
+            'signatures': len(set(_SIGNATURE_RE.findall(json.dumps(data, ensure_ascii=False))))}
 
 
 def _api_paths(text: str) -> set:
