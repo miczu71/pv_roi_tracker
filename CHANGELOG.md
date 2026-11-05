@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.55.13] — 2026-11-05
+
+- **Diagnostyka eBOK: ukryte szczegóły punktu poboru.** `diag` opisuje kontenery `row-details-container` i wiersze z `data-charge-id` w odpowiedzi listy faktur (szkielet, liście z maską kształtu, nazwy `data-*`); bez kwot, numerów i identyfikatorów. Tylko odczyt.
+
 ## [0.55.12] — 2026-11-05
 
 - **Diagnostyka eBOK: handler rozwijania punktu poboru.** `diag` zwraca fragmenty kodu JS strony „Faktury” wokół rozwijania szczegółów (selektory, nazwy zdarzeń i ścieżki `/api/sitecore/…` z samymi nazwami parametrów; pozostałe literały i cyfry zamaskowane) oraz nazwy atrybutów `data-*` przycisków rozwijania z maską kształtu wartości. Tylko odczyt.

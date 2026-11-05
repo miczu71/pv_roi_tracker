@@ -1270,3 +1270,10 @@ def test_details_blocks_absent_and_in_json_shape():
     assert _details_blocks('<div><p>a</p></div>') is None
     out = _json_shape({'ResultHtml': _DETAILS, 'TotalCount': 1, 'ReturnedCount': 1})
     assert out['ResultHtml']['details_blocks']['containers'] == 1
+
+
+def test_details_blocks_skeleton_masks_digits_in_data_attr_names():
+    from pv_roi_tracker.ebok_client import _details_blocks
+    html = _DETAILS.replace('data-agreement-id="55"', 'data-agreement-123456="55"')
+    out = _details_blocks(html)
+    assert '123456' not in json.dumps(out) and 'data-agreement-999999' in out['charge_row_skeleton']

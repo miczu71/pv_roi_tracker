@@ -721,7 +721,7 @@ class _TreeParser(HTMLParser):
 
 
 def _node_skeleton(node: '_Node') -> str:
-    head = '<' + node.tag + ''.join('.' + re.sub(r'\d', '9', c) for c in node.classes) + ''.join(f'[{a}]' for a in node.data) + '>'
+    head = '<' + node.tag + ''.join('.' + re.sub(r'\d', '9', c) for c in node.classes) + ''.join('[' + re.sub(r'\d', '9', a) + ']' for a in node.data) + '>'
     own = ' '.join(' '.join(node.texts).split())
     words = _STATUS_WORD_RE.findall(own)
     body = ('"' + ' '.join(words) + '"') if words else ('…' if own else '')
