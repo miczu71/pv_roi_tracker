@@ -202,3 +202,15 @@ def test_g13s_cost_by_zone_oplata_tylko_od_dostepnosci(cat):
     jan = (10.86 + 4.56 + 24.05 + 19.10)
     assert res["fixed_net"] == pytest.approx(jan / 31)
     assert res["zones"]["winter_dayoff_offpeak"]["kwh"] == pytest.approx(1.0)   # 1 stycznia = święto
+
+
+def test_dyn_components_sumuja_sie_do_net(cat):
+    key = '2026-05-13T10'
+    s = hourly_series(date(2026, 5, 13), date(2026, 5, 13), {}, cat, tariffs=('dyn_a', 'dyn_b'),
+                      rdn={key: 400.0}, kompas={key: 'S2'})
+    for n in ('dyn_a', 'dyn_b'):
+        r = s[n]['hours'][10]
+        c = r['components']
+        assert set(c) == {'energy_net', 'dist_net', 'fees_net'}
+        assert c['energy_net'] + c['dist_net'] + c['fees_net'] == pytest.approx(r['net_per_kwh'])
+        assert s[n]['hours'][11]['components'] is None      # brak ceny = brak składników

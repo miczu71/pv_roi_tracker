@@ -161,6 +161,10 @@ _JIT_SLUG = 'jit_schedule'
 _TARIFF_ZONE_SLUG = 'tariff_zone'
 _TARIFF_PRICE_SLUG = 'tariff_price'
 
+# Ceny dynamiczne (tariff_dynamic) — cena brutto bieżącej godziny + atrybuty JSON (harmonogram, składniki).
+_DYN_A_PRICE_SLUG = 'dyn_a_price'
+_DYN_B_PRICE_SLUG = 'dyn_b_price'
+
 
 def _state_topic(slug: str) -> str:
     return f'{_STATE_PREFIX}/{slug}/state'
@@ -356,9 +360,22 @@ class MQTTPublisher:
             'icon':                  'mdi:cash-clock',
         }
         self._client.publish(_disc_topic(_TARIFF_PRICE_SLUG), json.dumps(tariff_price_payload), retain=True)
+        for slug, name in ((_DYN_A_PRICE_SLUG, 'PV Dyn A Price'), (_DYN_B_PRICE_SLUG, 'PV Dyn B Price')):
+            dyn_price_payload = {
+                'name':                  name,
+                'unique_id':             f'{_DEVICE_ID}_{slug}',
+                'state_topic':           _state_topic(slug),
+                'json_attributes_topic': f'{_STATE_PREFIX}/{slug}/attributes',
+                'availability_topic':    _AVAIL_TOPIC,
+                'device':                device,
+                'unit_of_measurement':   'PLN/kWh',
+                'state_class':           'measurement',
+                'icon':                  'mdi:cash-clock',
+            }
+            self._client.publish(_disc_topic(slug), json.dumps(dyn_price_payload), retain=True)
         for slug in _TOMBSTONED_SLUGS:
             self._client.publish(_disc_topic(slug), '', retain=True)
-        logger.info('MQTT discovery published for %d sensors', len(_SENSORS) + 4)
+        logger.info('MQTT discovery published for %d sensors', len(_SENSORS) + 6)
 
     # ── State publishing ──────────────────────────────────────────────────────
 
@@ -411,4 +428,17 @@ class MQTTPublisher:
         self._client.publish(f'{_STATE_PREFIX}/{_TARIFF_ZONE_SLUG}/attributes',
                              json.dumps(payload['attributes'], ensure_ascii=False), retain=True)
         self._client.publish(_state_topic(_TARIFF_PRICE_SLUG), str(payload['price']), retain=True)
+        return True
+
+    def publish_tariff_dynamic(self, payloads: dict) -> bool:
+        """Publikuje encje cen dynamicznych (`tariff_dynamic.dynamic_feed_payload`): stan = cena brutto
+        bieżącej godziny ('None' bez ceny) + atrybuty JSON. Zwraca False, gdy rozłączony."""
+        if not self._connected:
+            return False
+        for name, slug in (('dyn_a', _DYN_A_PRICE_SLUG), ('dyn_b', _DYN_B_PRICE_SLUG)):
+            p = payloads[name]
+            # atrybuty przed stanem: przerwane połączenie nie zostawi nowej ceny ze starym harmonogramem
+            self._client.publish(f'{_STATE_PREFIX}/{slug}/attributes',
+                                 json.dumps(p['attributes'], ensure_ascii=False), retain=True)
+            self._client.publish(_state_topic(slug), str(p['price']), retain=True)
         return True

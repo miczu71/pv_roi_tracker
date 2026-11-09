@@ -264,3 +264,43 @@ def test_publish_tariff_rozlaczony_false():
     pub._connected = False
     assert pub.publish_tariff({'state': 'peak', 'price': 1.0, 'attributes': {}}) is False
     pub._client.publish.assert_not_called()
+
+
+def test_discovery_dyn_price_sensory():
+    import json
+    pub = _pub_connected()
+    pub._publish_discovery()
+    published = {c.args[0]: c.args[1] for c in pub._client.publish.call_args_list}
+    for slug, name in (('dyn_a_price', 'PV Dyn A Price'), ('dyn_b_price', 'PV Dyn B Price')):
+        topic = next(t for t in published if t.endswith(f'/{slug}/config'))
+        d = json.loads(published[topic])
+        assert d['name'] == name and d['unit_of_measurement'] == 'PLN/kWh'
+        assert d['state_class'] == 'measurement' and 'device_class' not in d
+        assert d['icon'] == 'mdi:cash-clock'
+        assert d['state_topic'].endswith(f'/{slug}/state')
+        assert d['json_attributes_topic'].endswith(f'/{slug}/attributes')
+
+
+def test_publish_tariff_dynamic_stan_atrybuty():
+    import json
+    pub = _pub_connected()
+    payloads = {
+        'dyn_a': {'price': 0.5123, 'attributes': {'tariff': 'dyn_a', 'nota': 'zażółć'}},
+        'dyn_b': {'state': None, 'price': None, 'attributes': {'tariff': 'dyn_b'}},
+    }
+    assert pub.publish_tariff_dynamic(payloads) is True
+    calls = {c.args[0]: c for c in pub._client.publish.call_args_list}
+    state_a = calls[next(t for t in calls if t.endswith('/dyn_a_price/state'))]
+    assert state_a.args[1] == '0.5123' and state_a.kwargs['retain'] is True
+    attr_a = calls[next(t for t in calls if t.endswith('/dyn_a_price/attributes'))]
+    assert 'zażółć' in attr_a.args[1] and json.loads(attr_a.args[1])['tariff'] == 'dyn_a'
+    assert attr_a.kwargs['retain'] is True
+    state_b = calls[next(t for t in calls if t.endswith('/dyn_b_price/state'))]
+    assert state_b.args[1] == 'None' and state_b.kwargs['retain'] is True
+
+
+def test_publish_tariff_dynamic_rozlaczony_false():
+    pub = _pub_connected()
+    pub._connected = False
+    assert pub.publish_tariff_dynamic({'dyn_a': {'price': 1.0, 'attributes': {}}}) is False
+    pub._client.publish.assert_not_called()

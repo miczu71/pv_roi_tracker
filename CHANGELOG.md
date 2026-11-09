@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.57.0] — 2026-11-09
+
+### Dodano
+- Encje MQTT `sensor.pv_roi_tracker_pv_dyn_a_price` i `sensor.pv_roi_tracker_pv_dyn_b_price`: cena brutto (PLN/kWh) bieżącej godziny dla taryf dynamicznych dyn_a i dyn_b, liczona tą samą funkcją co symulacja taryf (`hourly_series`), bez osobnego wzoru. Atrybuty: strefa, składniki (energia, dystrybucja, opłaty), `confidence` (`rdn` / `rdn_fallback_7d` / `kompas` / `unavailable`) i harmonogram 48 h. Cena dyn_a to cena godziny, bez miesięcznej podłogi średniej używanej w rozliczeniu miesiąca. Brak danych (RDN, strefa Kompasu, okres przed ofertą) → stan `unknown`, nigdy zero; po błędzie wyceny encje przechodzą w `unknown` zamiast trzymać ostatnią cenę.
+- Wiersze godzinowe taryf dynamicznych w `hourly_series` mają klucz `components`.
+
 ## [0.56.6] — 2026-11-09
 
 ### Dodano

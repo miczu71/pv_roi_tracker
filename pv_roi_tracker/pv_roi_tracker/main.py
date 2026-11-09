@@ -955,7 +955,7 @@ def main() -> None:
 
     _web.set_ebok_payment_dismiss_callback(_ebok_payment_dismiss)
 
-    from . import tariff_module as _tm, tariff_overrides as _to
+    from . import tariff_dynamic as _td, tariff_module as _tm, tariff_overrides as _to
     _to.migrate_legacy(TARIFF_CONFIG_PATH, TARIFF_OVERRIDES_PATH,
                        _tm.build(TARIFF_PERIODS_PATH, CURRENT_TARIFF_OVERRIDE, None, TARIFF_SETTINGS_PATH))
     _web.set_tariff_overrides_path(TARIFF_OVERRIDES_PATH)
@@ -964,6 +964,7 @@ def main() -> None:
     from datetime import date, datetime as _dt_cls
 
     _tariff_feed_last = {'payload': None, 'ok': True}   # ostatnio opublikowane encje taryfy
+    _tariff_dynamic_last = {'payload': None, 'ok': True}   # ostatnio opublikowane ceny dynamiczne
 
     def _dt_now():
         return _dt_cls.now()
@@ -1295,6 +1296,29 @@ def main() -> None:
             logger.exception('Tariff feed failed — continuing')
             _tariff_feed_last['ok'] = False
             _record_job('tariff_feed', False, 'publikacja taryfy nie powiodła się')
+        # osobny blok: awaria cen dynamicznych nie blokuje encji taryfy bieżącej
+        try:
+            from .price_sources import fetch_ahead as _fetch_ahead
+            _now = _dt_now()
+            _cache = PriceCache(TARIFF_PRICE_CACHE_PATH)
+            _rdn, _kompas, _problems = _td.inputs_with_ahead(_cache, _now, _fetch_ahead)
+            if _problems:
+                logger.warning('Tariff dynamic: brak RDN na dziś — %s', '; '.join(_problems))
+            _res, _new_last = _td.tariff_dynamic_step(
+                pub, _tariff_dynamic_last,
+                {'catalog': _tcat.load_catalog(), 'rdn': _rdn, 'kompas': _kompas,
+                 'overrides': None, 'baseline': _baseline_tariff()}, _now)
+            _tariff_dynamic_last.update(_new_last)
+            _record_job('tariff_dynamic', _res is not False,
+                        'MQTT rozłączony — ceny dynamiczne nie opublikowane' if _res is False else '')
+        except Exception:
+            logger.exception('Tariff dynamic feed failed — continuing')
+            _tariff_dynamic_last['ok'] = False
+            try:    # nie zostawiaj ostatniej retained ceny jako aktualnej
+                pub.publish_tariff_dynamic(_td.unavailable_payloads(_dt_now()))
+            except Exception:
+                logger.exception('Tariff dynamic: publikacja „brak ceny” nie powiodła się')
+            _record_job('tariff_dynamic', False, 'publikacja cen dynamicznych nie powiodła się')
 
     def poll_and_publish() -> None:
         try:

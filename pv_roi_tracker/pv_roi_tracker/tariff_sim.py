@@ -263,6 +263,7 @@ def hourly_series(from_date: date, to_date: date, import_by_hour: dict, catalog:
                     continue
                 fallback = False
                 net: Optional[float]
+                components: Optional[dict] = None
                 if n == 'G13s' and g13s_from and iso < g13s_from:
                     zone = None     # przed ofertą: brak strefy i ceny (nie ValueError z katalogu)
                     net = None
@@ -280,22 +281,29 @@ def hourly_series(from_date: date, to_date: date, import_by_hour: dict, catalog:
                             fallback = price is not None
                         if price is not None:
                             g12w = rates_per_kwh(dist_tariff, p, zone)
-                            net = price / 1000.0 + margin + g12w['dist'] + g12w['fees']
+                            components = {'energy_net': price / 1000.0 + margin,
+                                          'dist_net': g12w['dist'], 'fees_net': g12w['fees']}
+                            net = sum(components.values())
                 else:   # dyn_b
                     zone = kompas.get(key)
                     net = None
                     s_rate = (p.get('dynamic_dist_var_net') or {}).get(zone) if zone else None
                     if s_rate is not None and not (b_from and iso < b_from):
                         fees = rates_per_kwh(dist_tariff, p, zone_for(dist_tariff, dt, catalog))['fees']
-                        net = _dyn_b_price(catalog, overrides) + float(s_rate) + fees
+                        components = {'energy_net': _dyn_b_price(catalog, overrides),
+                                      'dist_net': float(s_rate), 'fees_net': fees}
+                        net = sum(components.values())
                 gross = net * vat if net is not None else None
-                out[n]['hours'].append({
+                row = {
                     'key': key, 'zone': zone, 'net_per_kwh': net, 'gross_per_kwh': gross,
                     'kwh': kwh,
                     'cost_net': kwh * net if net is not None else None,
                     'cost_gross': kwh * gross if gross is not None else None,
                     'fallback': fallback,
-                })
+                }
+                if n in ('dyn_a', 'dyn_b'):     # składniki tylko dla taryf dynamicznych (statyczne bez zmian)
+                    row['components'] = components
+                out[n]['hours'].append(row)
         d += timedelta(days=1)
     return out
 
