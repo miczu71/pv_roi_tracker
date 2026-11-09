@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.56.6] — 2026-11-09
+
+### Dodano
+- `GET /api/tariff/schedule` przyjmuje opcjonalny parametr `start=YYYY-MM-DDTHH` (domyślnie bieżąca pełna godzina): harmonogram stref i cen można pobrać także dla przeszłości (np. do wyceny historii przez zewnętrznych odbiorców). Zły format lub data sprzed katalogu taryf → 400 z opisem; `hours` nadal 1–168.
+
 ## [0.56.5] — 2026-11-05
 
 ### Naprawiono

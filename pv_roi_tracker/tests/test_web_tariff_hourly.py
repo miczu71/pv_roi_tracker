@@ -191,6 +191,34 @@ def test_tariff_schedule_hours_i_tariff(client, wired):
     assert len(j['schedule']) == 3 and j['tariff'] == 'G13'
 
 
+def test_tariff_schedule_start_przeszly(client, wired):
+    # zima 2026-01-12 (poniedziałek), G13: szczyt wieczorny 16–21
+    j = client.get('/api/tariff/schedule?start=2026-01-12T14&hours=4&tariff=G13').get_json()
+    assert j['ok'] is True and [p['hour'] for p in j['schedule']] == [
+        '2026-01-12T14', '2026-01-12T15', '2026-01-12T16', '2026-01-12T17']
+    assert [p['zone'] for p in j['schedule']][2:] == ['evening_peak'] * 2
+    assert j['schedule'][2]['is_peak'] is True
+
+
+def test_tariff_schedule_start_swieto_other(client, wired):
+    # 1 stycznia (święto) — G13 bez szczytu: strefa `other`
+    j = client.get('/api/tariff/schedule?start=2026-01-01T17&hours=1&tariff=G13').get_json()
+    assert j['schedule'][0]['zone'] == 'other'
+
+
+def test_tariff_schedule_start_przyszly(client, wired):
+    j = client.get('/api/tariff/schedule?start=2026-10-27T00&hours=2').get_json()
+    assert j['ok'] is True and j['schedule'][0]['hour'] == '2026-10-27T00'
+
+
+@pytest.mark.parametrize('qs', ['start=2026-01-12', 'start=xx', 'start=2026-13-01T10',
+                                'start=2026-01-12T25', 'start=2026-01-12T1',
+                                'start=1990-01-01T00'])
+def test_tariff_schedule_start_400(client, wired, qs):
+    r = client.get('/api/tariff/schedule?' + qs)
+    assert r.status_code == 400 and r.get_json()['ok'] is False and r.get_json()['error']
+
+
 @pytest.mark.parametrize('qs', ['hours=999', 'hours=0', 'hours=abc', 'tariff=G99'])
 def test_tariff_schedule_400(client, wired, qs):
     r = client.get('/api/tariff/schedule?' + qs)

@@ -1350,7 +1350,9 @@ def api_tariff_now():
 
 @app.route('/api/tariff/schedule')
 def api_tariff_schedule():
-    """Harmonogram stref i cen od bieżącej pełnej godziny (`hours` 1–168, domyślnie 48)."""
+    """Harmonogram stref i cen od `start` (`YYYY-MM-DDTHH`, domyślnie bieżąca pełna godzina;
+    może być w przeszłości), `hours` 1–168, domyślnie 48."""
+    import re
     from .tariff_catalog import load_catalog
     try:
         hours = int(request.args.get('hours', 48))
@@ -1363,8 +1365,17 @@ def api_tariff_schedule():
                                or tariff not in load_catalog()['zones']):
         return _tariff_error(f'nieznana taryfa: {tariff}')
     now = _now()
+    start = now
+    raw_start = request.args.get('start')
+    if raw_start is not None:
+        if not re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}', raw_start):
+            return _tariff_error('start musi mieć format YYYY-MM-DDTHH')
+        try:
+            start = datetime.strptime(raw_start, '%Y-%m-%dT%H')
+        except ValueError:
+            return _tariff_error('start: nieprawidłowa data lub godzina')
     try:
-        pts = _tariff_module().schedule(now, hours, tariff)
+        pts = _tariff_module().schedule(start, hours, tariff)
     except (ValueError, LookupError) as exc:
         return _tariff_error(str(exc))
     return jsonify({'ok': True, 'generated_at': now.isoformat(timespec='seconds'),
