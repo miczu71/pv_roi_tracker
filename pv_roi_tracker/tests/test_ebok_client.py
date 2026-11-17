@@ -1582,6 +1582,28 @@ def test_unpaid_two_failures_keep_archive_and_record_error_type(monkeypatch):
     assert client.last_unpaid_error == 'ConnectionError'
 
 
+def test_unpaid_list_empty_flag_set_when_list_succeeds_with_nothing(monkeypatch):
+    client, session = _unpaid_client()
+    _archive_with(session, [_SIG_A])
+    monkeypatch.setattr(client, 'list_unpaid_invoices', lambda: [])
+    client.list_documents(date(2015, 1, 1), date(2026, 10, 27))
+    assert client.unpaid_list_empty is True
+
+
+def test_unpaid_list_empty_flag_false_when_unpaid_present_or_failed(monkeypatch):
+    from pv_roi_tracker import ebok_client
+    monkeypatch.setattr(ebok_client, 'UNPAID_RETRY_DELAY', 0)
+    client, session = _unpaid_client()
+    _archive_with(session, [_SIG_A])
+    monkeypatch.setattr(client, 'list_unpaid_invoices', lambda: [_unpaid_doc()])
+    client.list_documents(date(2015, 1, 1), date(2026, 10, 27))
+    assert client.unpaid_list_empty is False
+    fake, _calls = _raiser(requests.exceptions.ConnectionError('x'), requests.exceptions.ConnectionError('x'))
+    monkeypatch.setattr(client, 'list_unpaid_invoices', fake)
+    client.list_documents(date(2015, 1, 1), date(2026, 10, 27))
+    assert client.unpaid_list_empty is False   # błąd ≠ „brak do zapłaty”
+
+
 def test_unpaid_login_blocked_propagates_without_retry(monkeypatch):
     from pv_roi_tracker import ebok_client
     monkeypatch.setattr(ebok_client, 'UNPAID_RETRY_DELAY', 0)

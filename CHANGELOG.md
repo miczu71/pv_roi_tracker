@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.58.2] — 2026-11-17
+
+### Naprawiono
+- **Pusta lista „do zapłaty” z eBOK = wszystko opłacone.** Gdy eBOK poprawnie zwraca brak faktur do zapłaty, tracker uznaje za opłacone wszystkie wpisy stanu płatności, także stare snapshoty niewidoczne już w pobraniu (np. `K1NBN567872/037`, 1,31 zł). Wcześniej taki wpis wisiał na pasku jako alarm „po terminie” bez przypomnienia. Błąd pobrania listy „do zapłaty” nie uruchamia tej reguły (nowy znacznik `EbokClient.unpaid_list_empty`, `refresh_payment_state(settle_all=…)`). Dotyczy dziennego sprawdzenia 07:00 i synchronizacji eBOK.
+
 ## [0.58.1] — 2026-11-17
 
 ### Naprawiono

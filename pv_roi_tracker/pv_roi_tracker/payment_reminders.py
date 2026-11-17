@@ -54,25 +54,34 @@ def build_reminder_notifications(docs, state: dict, today: date) -> tuple:
     return notifications, new_state
 
 
-def refresh_payment_state(docs, state: dict, today: date) -> tuple:
+def refresh_payment_state(docs, state: dict, today: date, settle_all: bool = False) -> tuple:
     """One daily check: reminders to send plus the new state — reminder flags from
     build_reminder_notifications() merged with the snapshot_documents() display fields.
+    `settle_all`: eBOK zwrócił pustą listę „do zapłaty” (źródło prawdy) — wszystko uznajemy za
+    opłacone: dokumenty z pobrania i stare wpisy stanu, bez przypomnień.
     Pure; the caller persists new_state via save_payment_state."""
-    notifications, new_state = build_reminder_notifications(docs, state, today)
+    if settle_all:
+        notifications, new_state = [], {sig: dict(entry) for sig, entry in state.items()}
+    else:
+        notifications, new_state = build_reminder_notifications(docs, state, today)
     for signature, snap in snapshot_documents(docs).items():
         new_state.setdefault(signature, _new_entry()).update(snap)
+    if settle_all:
+        for entry in new_state.values():
+            if 'paid' in entry:
+                entry['paid'] = True
     return notifications, new_state
 
 
 _refresh_lock = threading.Lock()
 
 
-def apply_refresh(docs, state_path: Path, today: date) -> list:
+def apply_refresh(docs, state_path: Path, today: date, settle_all: bool = False) -> list:
     """Load the persisted state, run refresh_payment_state() and save it back; returns the
     reminder notifications to send. Shared by the daily payment check and by ebok_sync, so
     the status bar reflects a fresh import without waiting for the next 07:00 run."""
     with _refresh_lock:            # zadanie 07:00 i synchronizacja nie mogą się nakładać
-        notifications, new_state = refresh_payment_state(docs, load_payment_state(state_path), today)
+        notifications, new_state = refresh_payment_state(docs, load_payment_state(state_path), today, settle_all)
         save_payment_state(state_path, new_state)
     return notifications
 

@@ -125,6 +125,8 @@ class EbokClient:
         self._payer_id: Optional[str] = None
         self._checksum: Optional[str] = None
         self.last_unpaid_error: Optional[str] = None
+        # True tylko gdy lista „do zapłaty” została pobrana bez błędu i jest pusta (eBOK = źródło prawdy: wszystko opłacone)
+        self.unpaid_list_empty: bool = False
 
     def _get_retrying(self, *args, **kwargs):
         """session.get z ponowieniami po timeoucie / błędzie połączenia (kolejne
@@ -220,6 +222,7 @@ class EbokClient:
         if not self._checksum or not self._payer_id:
             raise EbokError('Nie wybrano płatnika (select_payer)')
         self.last_unpaid_error = None
+        self.unpaid_list_empty = False
         docs: list[EbokDocument] = []
         for page in range(MAX_PAGES):
             range_from = page * PAGE_SIZE + 1
@@ -259,6 +262,7 @@ class EbokClient:
             logger.warning('eBOK: lista faktur do zapłaty niedostępna (%s: %s) — zwracam samo archiwum',
                            type(exc).__name__, exc)
             return docs
+        self.unpaid_list_empty = not unpaid
         seen = {normalize_signature(d.signature) for d in docs}
         for doc in unpaid:
             key = normalize_signature(doc.signature)

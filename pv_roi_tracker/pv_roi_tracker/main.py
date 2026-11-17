@@ -721,12 +721,12 @@ def main() -> None:
         Returns a JSON-able summary; never raises (errors are captured in the result)."""
         from datetime import datetime as _dt
 
-        def refresh_payment_bar(docs) -> None:
+        def refresh_payment_bar(docs, settle_all: bool = False) -> None:
             """Stan płatności/pasek ze świeżej listy dokumentów — bez dodatkowego logowania do eBOK."""
             from . import payment_reminders as _pr
             from datetime import date as _date
             try:
-                _send_payment_notes(_pr.apply_refresh(docs, EBOK_PAYMENT_STATE_PATH, _date.today()))
+                _send_payment_notes(_pr.apply_refresh(docs, EBOK_PAYMENT_STATE_PATH, _date.today(), settle_all))
             except Exception:
                 logger.exception('eBOK: odświeżenie stanu płatności po synchronizacji nie powiodło się')
                 _record_job('ebok_payment', False, 'odświeżenie po synchronizacji nie powiodło się')
@@ -748,7 +748,7 @@ def main() -> None:
                 logger.warning('eBOK: lista faktur do zapłaty niedostępna (%s) — wynik może być niepełny',
                                client.last_unpaid_error)
 
-            refresh_payment_bar(docs)
+            refresh_payment_bar(docs, bool(getattr(client, 'unpaid_list_empty', False)))
             from datetime import date as _date
             _refresh_payments(client, docs, _date.today())
             if over_limit:
@@ -829,7 +829,8 @@ def main() -> None:
         def body(client, docs, state, date_from, date_to) -> dict:
             from datetime import datetime as _dt
             from . import ebok_client as _ec
-            notifications = _pr.apply_refresh(docs, EBOK_PAYMENT_STATE_PATH, _date.today())
+            notifications = _pr.apply_refresh(docs, EBOK_PAYMENT_STATE_PATH, _date.today(),
+                                              bool(getattr(client, 'unpaid_list_empty', False)))
             _send_payment_notes(notifications)
             payments_ok = _refresh_payments(client, docs, _date.today())
 

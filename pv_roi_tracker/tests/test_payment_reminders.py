@@ -9,6 +9,7 @@ from datetime import date
 
 from pv_roi_tracker.ebok_client import EbokPayment
 from pv_roi_tracker.payment_reminders import (
+    apply_refresh,
     apply_reconciliation,
     build_reminder_notifications,
     decide_reminders,
@@ -196,6 +197,41 @@ def test_refresh_payment_state_merges_flags_and_snapshot_and_keeps_old_entries()
         'SIG/2': {'reminded_before': False, 'reminded_due': False,
                   'due_date': '2026-11-01', 'paid': True, 'amount_gross_pln': 80.0},
     }
+
+
+def test_refresh_payment_state_settle_all_marks_everything_paid_without_reminders():
+    # eBOK jest źródłem prawdy: pusta lista „do zapłaty” = wszystko opłacone, także wpisy
+    # ze starego snapshotu, których nie ma w świeżym pobraniu (K1NBN567872/037).
+    state = {'GONE/1': {'reminded_before': False, 'reminded_due': False,
+                        'due_date': '2026-11-16', 'paid': False, 'amount_gross_pln': 1.31}}
+    docs = [_Doc('SIG/1', date(2026, 11, 1), paid=False, amount_gross_pln=63.3)]
+    notifications, new_state = refresh_payment_state(docs, state, date(2026, 11, 17), settle_all=True)
+    assert notifications == []
+    assert new_state['GONE/1']['paid'] is True
+    assert new_state['SIG/1']['paid'] is True
+    assert select_active_payment(new_state, date(2026, 11, 17)) is None
+
+
+def test_refresh_payment_state_settle_all_keeps_entries_without_paid_key():
+    state = {'_payments': {'last_payment': {'amount': 1.0}}}
+    _, new_state = refresh_payment_state([], state, date(2026, 11, 17), settle_all=True)
+    assert new_state['_payments'] == {'last_payment': {'amount': 1.0}}
+
+
+def test_refresh_payment_state_default_leaves_stale_unpaid_entry():
+    state = {'GONE/1': {'reminded_before': False, 'reminded_due': False,
+                        'due_date': '2026-11-16', 'paid': False, 'amount_gross_pln': 1.31}}
+    _, new_state = refresh_payment_state([], state, date(2026, 11, 17))
+    assert new_state['GONE/1']['paid'] is False
+
+
+def test_apply_refresh_settle_all_persists_paid_state(tmp_path):
+    path = tmp_path / 'state.json'
+    save_payment_state(path, {'GONE/1': {'reminded_before': False, 'reminded_due': False,
+                                         'due_date': '2026-11-16', 'paid': False, 'amount_gross_pln': 1.31}})
+    assert apply_refresh([], path, date(2026, 11, 17), settle_all=True) == []
+    assert load_payment_state(path)['GONE/1']['paid'] is True
+    assert select_active_payment(load_payment_state(path), date(2026, 11, 17)) is None
 
 
 # ── select_active_payment() ─────────────────────────────────────────────────
