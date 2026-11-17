@@ -1340,3 +1340,62 @@ class TestPartialMonthFixedFees:
         text = _make_partial_month_text('0,067', '0,0667', '0,067') + \
             'Opłata handlowa 0,067 mc 28,86000 1,93 23 0,44 2,37\n'
         assert _parse_text(text).oplata_handlowa_net == pytest.approx(1.93, abs=0.001)
+
+
+# ── E5a: provider taryfy trzystrefowej (wg okresu faktury) ────────────────────
+
+class TestZoneTariffProvider:
+    @pytest.fixture(autouse=True)
+    def _reset(self):
+        from pv_roi_tracker import invoice_parser as ip
+        yield
+        ip.set_zone_tariff_provider(lambda d: None)
+
+    @staticmethod
+    def _g13_from_nov3():
+        from datetime import date
+        from pv_roi_tracker import invoice_parser as ip
+        ip.set_zone_tariff_provider(lambda d: 'G13' if d >= date(2026, 11, 3) else 'G12w')
+
+    def test_provider_g13_neutralizes_two_zone_fields(self):
+        from pv_roi_tracker import invoice_parser as ip
+        self._g13_from_nov3()
+        data = _parse_text(_make_old_format_text().replace('01/10/2025', '03/11/2026')
+                           .replace('31/10/2025', '30/11/2026'))
+        assert data.billing_period_raw and '03/11/2026' in data.billing_period_raw
+        assert data.tariff == 'G13'
+        for f in ip._THREE_ZONE_NONE_FIELDS:
+            assert getattr(data, f) is None
+        assert any('G13' in w for w in data.warnings)
+        assert data.imported_kwh is not None
+
+    def test_period_ending_before_g13_untouched(self):
+        self._g13_from_nov3()
+        text = _make_old_format_text()
+        base = _parse_text(text)
+        data = _parse_text(text.replace('01/10/2025', '01/11/2026').replace('31/10/2025', '02/11/2026'))
+        assert data.tariff in ('G11', 'G12W')
+        assert '02/11/2026' in data.billing_period_raw
+        assert data.imported_kwh_peak == base.imported_kwh_peak
+        assert not any('parser trzech stref' in w for w in data.warnings)
+
+    def test_without_provider_unchanged(self):
+        data = _parse_text(_make_old_format_text())
+        assert data.tariff in ('G11', 'G12W')
+        assert not any('parser trzech stref' in w for w in data.warnings)
+
+    def test_provider_exception_is_ignored(self):
+        from pv_roi_tracker import invoice_parser as ip
+        def boom(d):
+            raise RuntimeError('x')
+        ip.set_zone_tariff_provider(boom)
+        assert _parse_text(_make_old_format_text()).tariff in ('G11', 'G12W')
+
+    def test_missing_period_falls_back_to_month_end(self):
+        from pv_roi_tracker import invoice_parser as ip
+        ip.set_zone_tariff_provider(lambda d: 'G13')
+        data = _parse_text(_make_old_format_text())
+        data.billing_period_raw = None
+        data.tariff = 'G12W'
+        ip.apply_zone_tariff(data)
+        assert data.tariff == 'G13' and data.peak_gross is None

@@ -30,6 +30,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import asdict, dataclass, field
+from datetime import date
 from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,57 @@ def set_layouts_provider(fn: Callable[[str], list]) -> None:
     """
     global _layouts_provider
     _layouts_provider = fn
+
+
+# ── Zone-tariff provider (injectable: (rok, miesiąc) -> taryfa trzystrefowa | None) ──
+
+_zone_tariff_provider: Callable[[date], Optional[str]] = lambda day: None
+
+
+def set_zone_tariff_provider(fn: Callable[[date], Optional[str]]) -> None:
+    """Inject a function returning the tariff in force on a given date (None = unknown)."""
+    global _zone_tariff_provider
+    _zone_tariff_provider = fn
+
+
+_THREE_ZONE_WARNING = 'faktura G13: stawki stref z cennika (parser trzech stref — E5b)'
+_THREE_ZONE_NONE_FIELDS = (
+    'imported_kwh_peak', 'imported_kwh_offpeak', 'exported_kwh_peak', 'exported_kwh_offpeak',
+    'energy_peak_net', 'energy_offpeak_net', 'dist_var_peak_net', 'dist_var_offpeak_net',
+    'peak_gross', 'offpeak_gross', 'blended_gross')
+
+
+def neutralize_three_zone(data: 'InvoiceData', tariff: Optional[str]) -> 'InvoiceData':
+    """Faktura z miesiąca trzystrefowego: tariff z cennika, pola dwustrefowe wyzerowane."""
+    from .tariff_zones import THREE_ZONE_TARIFFS
+    if tariff not in THREE_ZONE_TARIFFS:
+        return data
+    data.tariff = tariff
+    for f in _THREE_ZONE_NONE_FIELDS:
+        setattr(data, f, None)
+    if _THREE_ZONE_WARNING not in data.warnings:
+        data.warnings.append(_THREE_ZONE_WARNING)
+    return data
+
+
+def apply_zone_tariff(data: 'InvoiceData') -> 'InvoiceData':
+    """Neutralizuje fakturę, gdy taryfa na początek I koniec jej okresu jest trzystrefowa
+    (tariff = taryfa końca). Brak/zły okres → ostatni dzień miesiąca. Wyjątek providera → log."""
+    import calendar
+    from .invoice_store import _period_range   # lokalnie: invoice_store importuje invoice_parser
+    from .tariff_zones import THREE_ZONE_TARIFFS
+    try:
+        rng = _period_range(data.billing_period_raw)
+        if rng is not None:
+            start, end = date(*rng[0]), date(*rng[1])
+        else:
+            start = end = date(data.year, data.month, calendar.monthrange(data.year, data.month)[1])
+        t_end = _zone_tariff_provider(end)
+        if t_end in THREE_ZONE_TARIFFS and _zone_tariff_provider(start) in THREE_ZONE_TARIFFS:
+            neutralize_three_zone(data, t_end)
+    except Exception:
+        logger.exception('zone tariff provider failed for %s-%s', data.year, data.month)
+    return data
 
 
 # ── Built-in candidate patterns (ordered: most specific / current first) ─────
@@ -1220,4 +1272,6 @@ def _parse_text(text: str) -> InvoiceData:
     )
 
     data.warnings.extend(_validate(data))
+    if doc_type == 'rozliczeniowa':
+        apply_zone_tariff(data)
     return data

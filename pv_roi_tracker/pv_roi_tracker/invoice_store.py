@@ -7,6 +7,7 @@ Mirrors the atomic-write / .bak safety pattern from historic_store.py.
 """
 from __future__ import annotations
 
+import calendar
 import json
 import logging
 import re
@@ -205,6 +206,26 @@ def _period_start(raw: Optional[str]) -> Optional[tuple]:
     """(rok, miesiąc, dzień) początku okresu z `billing_period_raw` ('03.11.2026 - 30.11.2026')."""
     m = re.search(r'(\d{2})[./](\d{2})[./](\d{4})', raw or '')
     return (int(m.group(3)), int(m.group(2)), int(m.group(1))) if m else None
+
+
+def _period_range(raw: Optional[str]) -> Optional[tuple]:
+    """((r, m, d) początku, (r, m, d) końca) z 'DD.MM.YYYY - DD.MM.YYYY'; None gdy nieparsowalne."""
+    found = re.findall(r'(\d{2})[./](\d{2})[./](\d{4})', raw or '')
+    if len(found) < 2:
+        return None
+    a, b = found[0], found[1]
+    return (int(a[2]), int(a[1]), int(a[0])), (int(b[2]), int(b[1]), int(b[0]))
+
+
+def period_covers_month(billing_period_raw: Optional[str], year: int, month: int) -> bool:
+    """Czy okres faktury sięga końca miesiąca (faktura częściowa = kończy się przed nim, jak 01–02.11).
+    Początek nie ma znaczenia: wcześniejsze części łączy `month_data`, a okresy niekalendarzowe (2023) przechodzą.
+    Brak/zły format → True (dotychczasowe zachowanie)."""
+    rng = _period_range(billing_period_raw)
+    if rng is None:
+        return True
+    last = calendar.monthrange(year, month)[1]
+    return rng[1] >= (year, month, last)
 
 
 def _resolve_billing_key(invoices: dict, data: InvoiceData, filename: str):
@@ -464,6 +485,12 @@ def month_data(stored: dict, month_key: str) -> InvoiceData:
     rec = stored[month_key]
     fields = {k: rec.get(k) for k in InvoiceData.__dataclass_fields__}
     fields.update(combined_kwh(stored, month_key))
+    ranges = [r for r in (_period_range(x.get('billing_period_raw')) for x in
+                          [rec] + [stored[k] for k in part_keys(stored, month_key)]) if r]
+    if len(ranges) > 1 or (ranges and not rec.get('billing_period_raw')):
+        fmt = lambda t: f'{t[2]:02d}.{t[1]:02d}.{t[0]}'  # noqa: E731
+        fields['billing_period_raw'] = (f'{fmt(min(r[0] for r in ranges))} - '
+                                        f'{fmt(max(r[1] for r in ranges))}')
     return InvoiceData(**fields)  # type: ignore[arg-type]
 
 

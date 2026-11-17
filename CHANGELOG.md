@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.58.1] — 2026-11-17
+
+### Naprawiono
+- **Faktura częściowa nie nadpisuje już miesiąca.** Faktura obejmująca tylko początek miesiąca (np. 01–02.11 przy zmianie taryfy na G13) nie rekonsyliuje rekordu historycznego, dopóki nie przyjdzie reszta: wcześniej zamknięcie miesiąca podmieniłoby kWh i cenę rekordu danymi z 2 dni i zawyżyło oszczędności. Przy dwóch fakturach miesiąca kWh są sumowane, cena zostaje z wyceny cennikowej, a `purchased_kwh_peak + purchased_kwh_offpeak` zawsze równa się `purchased_kwh`.
+- **Faktura z okresu G13 bez stawek dwustrefowych.** Parser nie wpisuje już do faktury G13 szczytu/doliny G12w (pola stref i stawki `peak_gross`/`offpeak_gross`/`blended_gross` zostają puste, `tariff` = taryfa okresu, ostrzeżenie „stawki stref z cennika”). Decyduje taryfa na początek i koniec okresu faktury, więc faktura 01–02.11 (G12w) zostaje dwustrefowa.
+- Pompa ciepła: miesiące G13/G13s nie biorą stawek z faktury ani z rekordu, tylko cenę godzinową z modułu taryf.
+- Okresy niekalendarzowe faktur (np. 02.07–31.07) rekonsyliują się jak dotąd.
+
+### Do zrobienia (E5b)
+- Parser trzech stref z prawdziwej faktury G13 (spodziewana ok. 5–8.12.2026).
+
 ## [0.58.0] — 2026-11-17
 
 ### Naprawiono

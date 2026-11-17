@@ -512,6 +512,14 @@ def main() -> None:
         lambda fk: invoice_layouts.learned_for(fk, INVOICE_LAYOUTS_PATH)
     )
 
+    def _zone_tariff_for(day: date):
+        try:
+            return _tariff_module_now().tariff_on(day)
+        except (LookupError, ValueError):
+            return None
+
+    invoice_parser.set_zone_tariff_provider(_zone_tariff_for)
+
     def _invoice_reconcile(parsed_list: list, raw_texts: dict = None,
                            pdf_bytes_map: dict = None) -> None:
         for data in parsed_list:
@@ -586,6 +594,7 @@ def main() -> None:
         except Exception as exc:
             logger.exception('Train: failed to construct InvoiceData')
             return {'ok': False, 'error': str(exc)}
+        invoice_parser.apply_zone_tariff(data)
 
         snap = historic_store.snapshot_month(year, month, HISTORIC_PATH)
         reconciled = historic_store.reconcile_invoice(data, HISTORIC_PATH)
@@ -1258,16 +1267,21 @@ def main() -> None:
             stored_invoices = invoice_store.filter_billing(
                 invoice_store.filter_real(invoice_store.load(INVOICE_PATH)))
             rates_by_month: dict = {}
+            _tmod_3z = _tariff_module_now()
+            _three_zone = {ym for ym in ({f'{r.year}-{r.month:02d}' for r in records} | set(stored_invoices)
+                                         | {k[:7] for k in hours})
+                           if _tmod_3z.has_three_zone_days(int(ym[:4]), int(ym[5:7]))}
             for ym, inv in stored_invoices.items():
                 pk = inv.get('peak_gross')
-                if pk is not None:
+                if pk is not None and ym not in _three_zone:
                     rates_by_month[ym] = (pk, inv.get('offpeak_gross'))
             _invoice_rates_months = set(rates_by_month)     # miesiące z fakturą — bez wyceny godzinowej z katalogu
             for r in records:
                 ym = f'{r.year}-{r.month:02d}'
-                if ym not in rates_by_month and r.buy_price_pln_kwh is not None:
+                if (ym not in rates_by_month and ym not in _three_zone
+                        and r.buy_price_pln_kwh is not None):
                     rates_by_month[ym] = (r.buy_price_pln_kwh, None)
-            _tmod_hp = _tariff_module_now()
+            _tmod_hp = _tmod_3z
             for ym in sorted({k[:7] for k in hours}):
                 if ym in rates_by_month:
                     continue

@@ -293,12 +293,26 @@ def reconcile_invoice(
     path: Path = DEFAULT_PATH,
 ) -> bool:
     """Update a closed month with billed invoice figures and recompute derived fields."""
+    from . import invoice_store
     year, month = data.year, data.month
+    if not invoice_store.period_covers_month(getattr(data, 'billing_period_raw', None), year, month):
+        logger.info('reconcile_invoice: %d-%02d — faktura częściowa (%s), czekam na resztę miesiąca',
+                    year, month, data.billing_period_raw)
+        return False
 
     def _apply(m: dict) -> None:
+        peak, offpeak = data.imported_kwh_peak, data.imported_kwh_offpeak
+        # Strefy faktury nie sumują się do importu (brak stref albo tylko jedna część miesiąca
+        # dwustrefowa, np. G12w + G13) → podział z proporcji rekordu, żeby peak+offpeak == purchased_kwh.
+        if data.imported_kwh is not None and (
+                peak is None or offpeak is None or abs(peak + offpeak - data.imported_kwh) > 0.5):
+            rp, ro = m.get('purchased_kwh_peak'), m.get('purchased_kwh_offpeak')
+            if rp is not None and ro is not None and (rp + ro) > 0:
+                peak = round(data.imported_kwh * rp / (rp + ro), 3)
+                offpeak = round(data.imported_kwh - peak, 3)
         m['purchased_kwh']         = data.imported_kwh
-        m['purchased_kwh_peak']    = data.imported_kwh_peak
-        m['purchased_kwh_offpeak'] = data.imported_kwh_offpeak
+        m['purchased_kwh_peak']    = peak
+        m['purchased_kwh_offpeak'] = offpeak
         m['tariff']                = data.tariff
         m['exported_kwh']          = data.exported_kwh
         if data.blended_gross is not None:

@@ -179,3 +179,10 @@ def test_feed_payload_bez_oplat_stalych_nie_blokuje_strefy_i_ceny(g13):
     assert out['state'] and out['price'] > 0
     assert out['attributes']['fixed_monthly_net'] is None
     assert out['attributes']['fixed_monthly_gross'] is None
+
+
+def test_pompa_ciepla_bez_stawek_z_faktury_wycena_z_cennika(g13):
+    """Miesiąc trzystrefowy bez pary z faktury/rekordu (rates None): cenę daje hour_price_fn."""
+    fn = lambda dt: g13.price_at(dt).gross
+    assert heatpump.grid_price_for_hour(date(2026, 11, 10), 8, None, hour_price_fn=fn) \
+        == pytest.approx(0.9048, abs=1e-4)

@@ -494,3 +494,72 @@ def test_month_with_two_invoices_reconciles_sum_and_is_stable(store, invoices):
     assert m.purchased_kwh == pytest.approx(328.0)
     assert m.exported_kwh == pytest.approx(41.0)
     assert historic_store.reconcile_pending_invoices(invoices, store) == 0
+
+
+# ── E5a: faktury częściowe i miesiące trzystrefowe ───────────────────────────
+
+def _g13_inv(period, imported, exported=0.0, number='A'):
+    inv = _invoice(month=11, imported=imported, exported=exported)
+    inv.billing_period_raw = period
+    inv.invoice_number = number
+    return inv
+
+
+def test_partial_invoice_does_not_touch_record(store, invoices):
+    from pv_roi_tracker import invoice_store
+    r = _rec(2026, 11, produced=100.0, exported=50.0)
+    r.purchased_kwh = 200.0
+    r.buy_price_pln_kwh = 0.9
+    historic_store.save([r], store)
+    inv = _g13_inv('01.11.2026 - 02.11.2026', 28.0)
+    inv.billing_period_raw = '01.11.2026 - 02.11.2026'
+    invoice_store.upsert(inv, reconciled=False, path=invoices)
+
+    assert historic_store.reconcile_pending_invoices(invoices, store) == 0
+    rec = historic_store.load(store)[0]
+    assert rec.purchased_kwh == 200.0 and rec.exported_kwh == 50.0 and rec.buy_price_pln_kwh == 0.9
+    assert invoice_store.load(invoices)['2026-11']['reconciled'] is False
+
+
+def test_both_parts_reconcile_sum_and_keep_price(store, invoices):
+    from pv_roi_tracker import invoice_store
+    from pv_roi_tracker.invoice_parser import neutralize_three_zone
+    r = _rec(2026, 11, produced=100.0, exported=50.0)
+    r.purchased_kwh = 200.0
+    r.purchased_kwh_peak, r.purchased_kwh_offpeak = 50.0, 150.0
+    r.buy_price_pln_kwh = 0.9
+    historic_store.save([r], store)
+    first = _g13_inv('01.11.2026 - 02.11.2026', 28.0, number='A')
+    second = neutralize_three_zone(_g13_inv('03.11.2026 - 30.11.2026', 300.0, number='B'), 'G13')
+    invoice_store.upsert(first, reconciled=False, path=invoices)
+    invoice_store.upsert(second, reconciled=False, path=invoices)
+
+    assert historic_store.reconcile_pending_invoices(invoices, store) == 1
+    rec = historic_store.load(store)[0]
+    assert rec.purchased_kwh == pytest.approx(328.0)
+    assert rec.buy_price_pln_kwh == 0.9
+    assert rec.tariff == 'G13'
+    assert rec.purchased_kwh_peak + rec.purchased_kwh_offpeak == pytest.approx(328.0)
+    assert rec.purchased_kwh_peak == pytest.approx(328.0 * 0.25, abs=0.01)
+
+
+def test_mixed_month_zones_sum_to_import(store, invoices):
+    """Część G12w ma strefy (8+20), część G13 jest wyzerowana: peak+offpeak musi dać import z obu części."""
+    from pv_roi_tracker import invoice_store
+    from pv_roi_tracker.invoice_parser import neutralize_three_zone
+    r = _rec(2026, 11, produced=100.0, exported=50.0)
+    r.purchased_kwh = 200.0
+    r.purchased_kwh_peak, r.purchased_kwh_offpeak = 50.0, 150.0
+    r.buy_price_pln_kwh = 0.9
+    historic_store.save([r], store)
+    first = _g13_inv('01.11.2026 - 02.11.2026', 28.0, number='A')
+    first.imported_kwh_peak, first.imported_kwh_offpeak = 8.0, 20.0
+    second = neutralize_three_zone(_g13_inv('03.11.2026 - 30.11.2026', 300.0, number='B'), 'G13')
+    invoice_store.upsert(first, reconciled=False, path=invoices)
+    invoice_store.upsert(second, reconciled=False, path=invoices)
+
+    assert historic_store.reconcile_pending_invoices(invoices, store) == 1
+    rec = historic_store.load(store)[0]
+    assert rec.purchased_kwh == pytest.approx(328.0)
+    assert rec.purchased_kwh_peak + rec.purchased_kwh_offpeak == pytest.approx(328.0)
+    assert rec.purchased_kwh_peak == pytest.approx(328.0 * 0.25, abs=0.01)

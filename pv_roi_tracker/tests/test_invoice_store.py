@@ -773,3 +773,31 @@ def test_demote_removes_stale_base_pdf_when_new_invoice_has_no_pdf(store_path):
     assert invoice_store.load_pdf('2026-11', store_path) is None
     pk = invoice_store.part_keys(invoice_store.load(store_path), '2026-11')[0]
     assert invoice_store.load_pdf(pk, store_path) == b'%PDF-1'
+
+
+# ── period_covers_month / billing_period_raw części (E5a) ─────────────────────
+
+def test_period_covers_month():
+    from pv_roi_tracker.invoice_store import period_covers_month as c
+    assert c('01.11.2026 - 30.11.2026', 2026, 11) is True
+    assert c('01.11.2026 - 02.11.2026', 2026, 11) is False
+    assert c('03.11.2026 - 30.11.2026', 2026, 11) is True      # część końcowa; wcześniejsze łączy month_data
+    assert c('02/07/2023 do 31/07/2023', 2023, 7) is True      # okres niekalendarzowy z prawdziwych danych
+    assert c('27/06/2023 do 01/07/2023', 2023, 6) is True
+    assert c(None, 2026, 11) is True
+    assert c('brak dat', 2026, 11) is True
+
+
+def test_month_data_period_spans_parts(tmp_path):
+    from pv_roi_tracker import invoice_store
+    from pv_roi_tracker.invoice_store import month_data
+    stored = {
+        '2026-11': {'year': 2026, 'month': 11, 'invoice_number': 'B', 'imported_kwh': 10.0,
+                    'billing_period_raw': '03.11.2026 - 30.11.2026'},
+        '2026-11~cz~A': {'year': 2026, 'month': 11, 'invoice_number': 'A', 'imported_kwh': 28.0,
+                         'billing_period_raw': '01.11.2026 - 02.11.2026'},
+    }
+    d = month_data(stored, '2026-11')
+    assert d.billing_period_raw == '01.11.2026 - 30.11.2026'
+    assert d.imported_kwh == pytest.approx(38.0)
+    assert invoice_store.period_covers_month(d.billing_period_raw, 2026, 11)

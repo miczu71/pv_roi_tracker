@@ -173,3 +173,19 @@ def test_legacy_rates_g12w_has_the_thirteen_fields(g12w):
                       'dist_jakosciowa_net', 'dist_oze_net', 'dist_kogeneracja_net',
                       'fixed_mocowa_net', 'fixed_abonament_net', 'fixed_stalysieciowy_net',
                       'peak_gross', 'offpeak_gross', 'fixed_total_net'}
+
+
+# ── has_three_zone_days ──────────────────────────────────────────────────────
+
+def test_has_three_zone_days(catalog):
+    tm = TariffModule(catalog, periods=[{'tariff': 'G12w', 'from': None},
+                                        {'tariff': 'G13', 'from': '2026-11-03'}])
+    assert tm.has_three_zone_days(2026, 10) is False
+    assert tm.has_three_zone_days(2026, 11) is True
+    assert tm.has_three_zone_days(2026, 12) is True
+
+
+def test_has_three_zone_days_error_is_false(catalog, monkeypatch):
+    tm = TariffModule(catalog)
+    monkeypatch.setattr(tm, 'tariff_on', lambda d: (_ for _ in ()).throw(LookupError('x')))
+    assert tm.has_three_zone_days(1990, 1) is False

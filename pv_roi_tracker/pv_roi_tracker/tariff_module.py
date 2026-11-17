@@ -13,6 +13,7 @@ Reguły:
 """
 from __future__ import annotations
 
+import calendar
 import logging
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta
@@ -20,7 +21,7 @@ from typing import Optional
 
 from . import tariff_catalog as tc
 from . import tariff_history
-from .tariff_zones import is_peak_zone
+from .tariff_zones import THREE_ZONE_TARIFFS, is_peak_zone
 
 logger = logging.getLogger(__name__)
 _legacy_warned: set = set()
@@ -77,6 +78,15 @@ class TariffModule:
     def tariff_on(self, day: date) -> str:
         return (tariff_history.tariff_on(self.periods, day) if self.periods else None) \
             or self.default_tariff
+
+    def has_three_zone_days(self, year: int, month: int) -> bool:
+        """Czy miesiąc ma dni w taryfie trzystrefowej (pierwszy lub ostatni dzień w G13/G13s)."""
+        try:
+            last = calendar.monthrange(year, month)[1]
+            return (self.tariff_on(date(year, month, 1)) in THREE_ZONE_TARIFFS
+                    or self.tariff_on(date(year, month, last)) in THREE_ZONE_TARIFFS)
+        except (LookupError, ValueError):
+            return False
 
     def _period_info(self, day: date) -> tuple:
         """(okres po korektach, początek okresu, przyjęty?, źródło korekty|None) — cache per dzień."""

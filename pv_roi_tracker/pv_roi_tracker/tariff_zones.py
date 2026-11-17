@@ -19,6 +19,7 @@ PEAK_ZONES = frozenset({'peak', 'morning_peak', 'evening_peak',
 _G12_PEAK = 'day'
 
 _ZONE_TARIFFS = ('G12', 'G13', 'G13s')
+THREE_ZONE_TARIFFS = ('G13', 'G13s')
 
 
 def is_peak_zone(tariff: str, zone: str) -> bool:
