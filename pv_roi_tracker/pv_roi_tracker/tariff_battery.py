@@ -3,7 +3,7 @@ Wariant B symulacji taryf: ten sam wirtualny moduł magazynu (BatteryConfig z za
 Magazyn), ale uniknięty zakup wyceniany ceną danej taryfy w danej godzinie.
 
 Czysta logika — bez I/O. Ceny godziny z tych samych funkcji katalogu co wariant A
-(`period_for`, `zone_for`, `rates_per_kwh`). Arbitraż jest wyłączony: taryfy porównujemy
+(`period_for_assumed`, `zone_for`, `rates_per_kwh`). Arbitraż jest wyłączony: taryfy porównujemy
 jednym, prostym scenariuszem. Godzina bez ceny (brak RDN / strefy Kompas / stawki w katalogu)
 jest pomijana — moduł jej nie obsługuje, więc daje zero oszczędności.
 """
@@ -14,7 +14,7 @@ from datetime import date, datetime, timedelta
 from typing import Callable, Optional
 
 from . import battery_sim
-from .tariff_catalog import period_for, rates_per_kwh, zone_for
+from .tariff_catalog import period_for_assumed, rates_per_kwh, zone_for
 from .tariff_zones import is_peak_zone
 from .tariff_sim import ALL_TARIFFS as TARIFFS, STATIC_TARIFFS, _dyn_b_price, _g13s_from, _required
 
@@ -40,7 +40,7 @@ def make_price_fn(tariff: str, catalog: dict, rdn: Optional[dict], kompas: Optio
     def period_of(d: date) -> dict:
         p = periods.get(d)
         if p is None:
-            p = periods[d] = period_for(catalog, d, overrides)
+            p = periods[d] = period_for_assumed(catalog, d, overrides)[0]
         return p
 
     def price_fn(key: str) -> Optional[tuple]:

@@ -160,6 +160,7 @@ def simulate_s1(
     keys: Optional[list[str]] = None,
     price_fn=None,
     is_peak_fn=None,
+    hour_price_fn=None,
 ) -> list[dict]:
     """
     Scenariusz S1 (G12w + net-billing): wirtualny moduł ładowany nadwyżką PV
@@ -172,6 +173,8 @@ def simulate_s1(
     price_fn:    opcjonalnie key -> (cena_brutto_kwh, is_peak) | None; zastępuje
                  zone_prices i strefy G12w, None = godzina pominięta
     is_peak_fn:  opcjonalnie datetime -> bool (strefa szczytu bez price_fn); None = G12w
+    hour_price_fn: opcjonalnie datetime -> cena brutto | None (np. `TariffModule.price_at`, G13 ma
+                 3 stawki); gdy zwraca cenę, zastępuje parę (peak, offpeak) z zone_prices dla tej godziny
 
     Zwraca listę miesięcznych wierszy (posortowaną po ym).
     """
@@ -208,6 +211,10 @@ def simulate_s1(
                 ym, (_DEFAULT_PEAK_GROSS, _DEFAULT_OFFPEAK_GROSS))
             peak = (_is_peak_hour(day, hour) if is_peak_fn is None
                     else is_peak_fn(datetime(day.year, day.month, day.day, hour)))
+            if hour_price_fn is not None:
+                hp = hour_price_fn(datetime(day.year, day.month, day.day, hour))
+                if hp is not None:
+                    peak_px = offpeak_px = hp
         rcem = rcem_by_ym.get(ym, rcem_fallback)
         row['hours'] += 1
         budget = cap_h  # wspólny limit mocy godziny (ładowanie + rozładowanie)
@@ -463,11 +470,13 @@ def simulate_all(
     rce_hourly: Optional[dict[str, float]] = None,
     today: Optional[date] = None,
     is_peak_fn=None,
+    hour_price_fn=None,
 ) -> dict:
     """Pełny payload zakładki: S1 (+podsumowanie), S2, S3, echo konfiguracji."""
     hours = {k: v for k, v in hours.items() if k[:7] >= cfg.start_month}
     keys = sorted(hours)
-    s1 = simulate_s1(hours, cfg, zone_prices, rcem_by_ym, keys=keys, is_peak_fn=is_peak_fn)
+    s1 = simulate_s1(hours, cfg, zone_prices, rcem_by_ym, keys=keys, is_peak_fn=is_peak_fn,
+                     hour_price_fn=hour_price_fn)
     s2 = simulate_s2(hours, cfg, rce_hourly or {}, keys=keys)
     s3 = sell_threshold_analysis(rce_hourly or {}, cfg, rcem_by_ym)
     summary = summarize(s1, cfg, today=today)

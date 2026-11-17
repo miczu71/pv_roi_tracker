@@ -69,6 +69,14 @@ _ZONE_OFFPEAK_METER = 'sensor.daily_energy_offpeak'
 # (historia w statystykach). Rola peak/offpeak = suma starego i nowych liczników; brak encji jest pomijany.
 _ZONE_PEAK_METERS    = [_ZONE_PEAK_METER, 'sensor.g13_energia_morning_peak', 'sensor.g13_energia_evening_peak']
 _ZONE_OFFPEAK_METERS = [_ZONE_OFFPEAK_METER, 'sensor.g13_energia_other']
+# Licznik → strefa taryfy (wycena trzystrefowa: poranny szczyt G13 ma własną stawkę, inną niż wieczorny).
+_ZONE_METER_ZONES = {
+    _ZONE_PEAK_METER: 'peak',
+    _ZONE_OFFPEAK_METER: 'offpeak',
+    'sensor.g13_energia_morning_peak': 'morning_peak',
+    'sensor.g13_energia_evening_peak': 'evening_peak',
+    'sensor.g13_energia_other': 'other',
+}
 
 # Minimalna produkcja miesięczna uznawana za „licznik po resecie".
 # Nawet pochmurny czerwiec w Polsce produkuje >5 kWh — poniżej tej wartości
@@ -550,14 +558,15 @@ def get_energy_window(start_date: date, end_date_exclusive: date) -> dict:
     what wall-clock time this function happens to run at.
 
     Returns {'produced','exported','imported','peak','offpeak',
-    'battery_charge','battery_discharge','arb_kwh'} → Optional[float], None
+    'battery_charge','battery_discharge','arb_kwh'} → Optional[float] plus
+    'zone_kwh' ({strefa: kWh}, wycena trzystrefowa; None przy błędzie odczytu), None
     only when every entity for that role had zero hourly buckets in the
     window (same convention as _sum_role_month). A negative per-hour 'change'
     (meter reset, same failure mode _fetch_lifetime_month_stats guards
     against) is skipped rather than accepted at face value.
     """
     roles = ('produced', 'exported', 'imported', 'peak', 'offpeak',
-             'battery_charge', 'battery_discharge', 'arb_kwh')
+             'battery_charge', 'battery_discharge', 'arb_kwh', 'zone_kwh')
     empty = {k: None for k in roles}
     if end_date_exclusive <= start_date:
         return empty
@@ -606,7 +615,38 @@ def get_energy_window(start_date: date, end_date_exclusive: date) -> dict:
         'battery_charge':    _role_sum(sources['battery_charge']),
         'battery_discharge': _role_sum(sources['battery_discharge']),
         'arb_kwh':           _entity_sum(arb_entity),
+        'zone_kwh':          _zone_kwh_from({e: _entity_sum(e) for e in _ZONE_METER_ZONES}),
     }
+
+
+def _zone_kwh_from(values: dict) -> dict:
+    """`{strefa: kWh}` z odczytów liczników (entity_id → kWh|None); brak odczytu = strefa pominięta."""
+    out: dict = {}
+    for eid, zone in _ZONE_METER_ZONES.items():
+        v = values.get(eid)
+        if v is not None:
+            out[zone] = out.get(zone, 0.0) + v
+    return out
+
+
+def _weighted_zone_price(zone_kwh: Optional[dict], zone_prices: Optional[dict]) -> Optional[float]:
+    """Średnia ważona cena brutto Σ(kWh strefy × cena strefy)/Σ kWh; None, gdy brak danych albo
+    `zone_prices` nie pokrywa którejś niezerowej strefy (wtedy wołający liczy po staremu: peak/offpeak)."""
+    if not zone_kwh or not zone_prices:
+        return None
+    used = {z: k for z, k in zone_kwh.items() if k and k > 0}
+    total = sum(used.values())
+    if total <= 0 or any(z not in zone_prices for z in used):
+        return None
+    return round(sum(k * float(zone_prices[z]) for z, k in used.items()) / total, 4)
+
+
+def weighted_buy_price(zone_kwh, zone_prices, peak, offpeak, peak_px, offpeak_px) -> Optional[float]:
+    """Cena zakupu: średnia ważona po strefach, a bez pełnych cen stref — po szczyt/dolina."""
+    price = _weighted_zone_price(zone_kwh, zone_prices)
+    if price is None and peak is not None and offpeak is not None and (peak + offpeak) > 0:
+        price = round((peak * peak_px + offpeak * offpeak_px) / (peak + offpeak), 4)
+    return price
 
 
 def _solcast_month_projection(today: date, produced_so_far: float) -> Optional[float]:
@@ -673,6 +713,8 @@ def _build_record(
     battery_discharge_kwh: Optional[float] = None,
     source: Optional[str] = None,
     cross_family_produced_kwh: Optional[float] = None,
+    zone_kwh: Optional[dict] = None,
+    zone_prices: Optional[dict] = None,
 ) -> MonthlyRecord:
     """
     Build a MonthlyRecord from raw kWh readings.
@@ -687,6 +729,10 @@ def _build_record(
     TARIFF_PEAK_PRICE/TARIFF_OFFPEAK_PRICE poniżej (opcje usunięte
     z config.yaml w 0.22.0 — to tylko siatka bezpieczeństwa, np. dla cli.py
     czy dla dat sprzed katalogu taryf).
+
+    zone_kwh/zone_prices: kWh i ceny brutto per strefa (np. G13: morning_peak/evening_peak/other).
+    Gdy ceny pokrywają każdą niezerową strefę, `buy_price` = średnia ważona po strefach; inaczej
+    dotychczasowa ścieżka peak/offpeak (G12w, historia). purchased_kwh_peak/offpeak bez zmian.
 
     v0.35.0 kWh-rebase notes:
       consumed_kwh is NOT a parameter here anymore — this installation has no
@@ -719,11 +765,8 @@ def _build_record(
     # niezależnie od tego, czy purchased_kwh_peak/offpeak poniżej są
     # przeskalowane do sumy `imported`, ta sama ważona średnia wychodzi,
     # bo skalowanie zachowuje proporcję peak:offpeak).
-    if peak is not None and offpeak is not None and (peak + offpeak) > 0:
-        buy_price: Optional[float] = round(
-            (peak * peak_px + offpeak * offpeak_px)
-            / (peak + offpeak), 4)
-    else:
+    buy_price: Optional[float] = weighted_buy_price(zone_kwh, zone_prices, peak, offpeak, peak_px, offpeak_px)
+    if buy_price is None:
         buy_price = _get_state('sensor.srednia_cena_energii_w_miesiacu')
 
     # purchased_kwh: authoritative import total when available (imported=
@@ -812,6 +855,7 @@ def read_month_from_statistics(
     rcem_price: Optional[float] = None,
     peak_gross: Optional[float] = None,
     offpeak_gross: Optional[float] = None,
+    zone_prices: Optional[dict] = None,
 ) -> Optional[MonthlyRecord]:
     """
     Zbuduj MonthlyRecord na podstawie długoterminowych statystyk HA (WebSocket
@@ -847,6 +891,7 @@ def read_month_from_statistics(
         _sum_role_month(vals, _ZONE_PEAK_METERS), _sum_role_month(vals, _ZONE_OFFPEAK_METERS),
         vals.get('sensor.battery_grid_charge_off_peak_monthly'), rcem_price,
         peak_gross=peak_gross, offpeak_gross=offpeak_gross,
+        zone_kwh=_zone_kwh_from(vals), zone_prices=zone_prices,
         imported=imported,
         battery_charge_kwh=_sum_role_month(vals, sources['battery_charge']),
         battery_discharge_kwh=_sum_role_month(vals, sources['battery_discharge']),
@@ -873,6 +918,7 @@ def read_current_month(
     historic_records: Optional[list] = None,
     peak_gross: Optional[float] = None,
     offpeak_gross: Optional[float] = None,
+    zone_prices: Optional[dict] = None,
 ) -> Optional[MonthlyRecord]:
     """
     Build a MonthlyRecord for the current (in-progress) calendar month.
@@ -953,6 +999,7 @@ def read_current_month(
     return _build_record(year, month, produced, exported, peak, offpeak,
                          arb_kwh, rcem_price, projected_month_kwh, projected_month_savings_pln,
                          peak_gross=peak_gross, offpeak_gross=offpeak_gross,
+                         zone_kwh=_zone_kwh_from(vals), zone_prices=zone_prices,
                          imported=imported,
                          battery_charge_kwh=battery_charge_kwh,
                          battery_discharge_kwh=battery_discharge_kwh,

@@ -83,9 +83,7 @@ class TariffModule:
         hit = self._info_cache.get(day)
         if hit is not None:
             return hit
-        last = max(self._entries, key=lambda p: p['valid_to'])
-        assumed = day.isoformat() > last['valid_to']
-        period = tc.period_for(self.catalog, date.fromisoformat(last['valid_to']) if assumed else day)
+        period, assumed = tc.period_for_assumed(self.catalog, day)
         manual = None
         for ov in self.overrides:
             start, end = ov.get('from'), ov.get('to')
@@ -178,6 +176,32 @@ class TariffModule:
         period = self._period_info(day)[0]
         return tc.fixed_monthly(period, self.settings, tariff or self.tariff_on(day))
 
+    def zone_rates(self, day: date, tariff: Optional[str] = None) -> dict:
+        """`{strefa: brutto zł/kWh}` dla taryfy dnia — ta sama ścieżka co `price_at` (okres po korektach,
+        `assumed` po końcu katalogu). Strefa bez stawki (null w katalogu) jest pomijana."""
+        t = tariff or self.tariff_on(day)
+        period = self._period_info(day)[0]
+        out: dict = {}
+        for zone in period['energy_net'].get(t, {}):
+            try:
+                r = tc.rates_per_kwh(t, period, zone)
+            except ValueError:
+                continue
+            out[zone] = (r['energy'] + r['dist'] + r['fees']) * self.vat
+        return out
+
+    def zone_prices_for_month(self, d: date) -> dict:
+        """Ceny brutto per strefa do wyceny poboru do dnia `d`: taryfa 1. dnia miesiąca, nadpisana taryfą dnia `d`
+        (miesiąc przejściowy G12w→G13: stare liczniki peak/offpeak wyceniane stawkami G12w).
+        Dzień sprzed katalogu jest pomijany; {} gdy żaden — wtedy zostaje wycena peak/offpeak."""
+        prices: dict = {}
+        for day in (d.replace(day=1), d):
+            try:
+                prices.update(self.zone_rates(day))
+            except (LookupError, ValueError):
+                continue
+        return prices
+
     # ── widok dla odbiorców dwustrefowych (ROI, bateria, pompa ciepła) ───────
 
     def legacy_rates_or_empty(self, day: date) -> dict:
@@ -238,6 +262,12 @@ def feed_payload(module: TariffModule, now: datetime) -> dict:
     hour = now.replace(minute=0, second=0, microsecond=0)
     points = module.schedule(hour, 48)
     cur = points[0]
+    try:
+        fixed = module.fixed(hour.date())
+        fixed_net = round(fixed['network'] + fixed['subscription_dist'] + fixed['capacity'], 2)   # jak legacy `fixed_total_net`
+    except (LookupError, ValueError, KeyError) as exc:      # opłaty stałe nie mogą blokować strefy i ceny
+        logger.warning('feed_payload: brak opłat stałych dla %s (%s)', hour.date(), exc)
+        fixed_net = None
     return {
         'state': cur.zone,
         'price': round(cur.gross, 4),
@@ -247,6 +277,8 @@ def feed_payload(module: TariffModule, now: datetime) -> dict:
             'level': cur.level,
             'gross_per_kwh': round(cur.gross, 4),
             'confidence': cur.confidence,
+            'fixed_monthly_net': fixed_net,     # opłaty stałe zł/mies. z katalogu (abonament + sieciowa + mocowa)
+            'fixed_monthly_gross': None if fixed_net is None else round(fixed_net * module.vat, 2),
             'next_change': module.next_change(hour),
             'period_from': cur.period_from,
             'generated_at': now.isoformat(timespec='seconds'),

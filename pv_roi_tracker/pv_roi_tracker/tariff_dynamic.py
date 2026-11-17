@@ -6,26 +6,30 @@ Cena brutto bieżącej godziny i harmonogram 48 h liczone TĄ SAMĄ funkcją co 
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Optional
 
-from . import tariff_sim
+from . import tariff_catalog, tariff_sim
 from .tariff_module import feed_changed
 
 DYN_TARIFFS = ('dyn_a', 'dyn_b')
 SCHEDULE_HOURS = 48
 
 
-def _confidence(tariff: str, row: Optional[dict]) -> str:
-    """Pewność ceny godziny: brak ceny = 'unavailable'; dyn_a z RDN sprzed tygodnia = 'rdn_fallback_7d'."""
+def _confidence(tariff: str, row: Optional[dict], assumed_from: Optional[str] = None) -> str:
+    """Pewność ceny godziny: brak ceny = 'unavailable'; godzina po końcu katalogu = 'assumed';
+    dyn_a z RDN sprzed tygodnia = 'rdn_fallback_7d'."""
     if row is None or row['gross_per_kwh'] is None:
         return 'unavailable'
+    if assumed_from and row['key'][:10] >= assumed_from:
+        return 'assumed'
     if tariff == 'dyn_b':
         return 'kompas'
     return 'rdn_fallback_7d' if row['fallback'] else 'rdn'
 
 
-def _payload(tariff: str, entry: dict, keys: list, now: datetime) -> dict:
+def _payload(tariff: str, entry: dict, keys: list, now: datetime,
+             assumed_from: Optional[str] = None) -> dict:
     """Payload jednej encji: `{price, attributes}`; `keys` = 48 kolejnych godzin od bieżącej."""
     rows = {r['key']: r for r in entry['hours']} if entry['available'] else {}
     cur = rows.get(keys[0])
@@ -42,7 +46,7 @@ def _payload(tariff: str, entry: dict, keys: list, now: datetime) -> dict:
             'zone': r['zone'] if r else None,
             'gross': round(g, 5) if g is not None else None,
             'net': round(n, 5) if n is not None else None,
-            'confidence': _confidence(tariff, r),
+            'confidence': _confidence(tariff, r, assumed_from),
         })
     return {
         'price': price,
@@ -53,7 +57,7 @@ def _payload(tariff: str, entry: dict, keys: list, now: datetime) -> dict:
             'net_per_kwh': round(net, 5) if net is not None else None,
             'components': cur['components'] if cur else None,
             'components_basis': 'net',   # składniki netto; `gross_per_kwh` = netto × VAT
-            'confidence': _confidence(tariff, cur),
+            'confidence': _confidence(tariff, cur, assumed_from),
             'generated_at': now.isoformat(timespec='seconds'),
             'schedule': schedule,
         },
@@ -77,16 +81,31 @@ def inputs_with_ahead(cache, now: datetime, fetch_ahead) -> tuple:
     return rdn, kompas, problems
 
 
+def _extend_catalog(catalog: dict, first: date, last: date) -> tuple:
+    """`(katalog, assumed_from)`: gdy zakres wykracza poza koniec katalogu, kopia katalogu z dodatkowym
+    okresem (ostatni okres cennika, `period_for_assumed`) do `last`; `assumed_from` = pierwszy dzień
+    przyjęty (ISO) albo None. `tariff_sim` zostaje bez zmian (symulacja kosztów kończy się na katalogu)."""
+    end = date.fromisoformat(tariff_catalog.catalog_end(catalog))
+    if last <= end:
+        return catalog, None
+    start = max(first, end + timedelta(days=1))
+    period, _ = tariff_catalog.period_for_assumed(catalog, start)
+    period = {**period, 'valid_from': start.isoformat(), 'valid_to': last.isoformat()}
+    return {**catalog, 'periods': [*catalog['periods'], period]}, start.isoformat()
+
+
 def dynamic_feed_payload(catalog: dict, rdn: Optional[dict], kompas: Optional[dict],
                          overrides: Optional[dict], baseline: str, now: datetime) -> dict:
     """`{'dyn_a': payload, 'dyn_b': payload}` — cena godziny `now` (obciętej do pełnej) i 48 h harmonogramu."""
     hour = now.replace(minute=0, second=0, microsecond=0)
     keys = [(hour + timedelta(hours=i)).strftime('%Y-%m-%dT%H') for i in range(SCHEDULE_HOURS)]
     day0 = hour.date()
-    series = tariff_sim.hourly_series(day0, (hour + timedelta(hours=SCHEDULE_HOURS - 1)).date(), {}, catalog,
+    day_n = (hour + timedelta(hours=SCHEDULE_HOURS - 1)).date()
+    catalog, assumed_from = _extend_catalog(catalog, day0, day_n)
+    series = tariff_sim.hourly_series(day0, day_n, {}, catalog,
                                       tariffs=DYN_TARIFFS, settings=None, rdn=rdn, kompas=kompas,
                                       overrides=overrides, dist_tariff=baseline)
-    return {n: _payload(n, series[n], keys, now) for n in DYN_TARIFFS}
+    return {n: _payload(n, series[n], keys, now, assumed_from) for n in DYN_TARIFFS}
 
 
 def unavailable_payloads(now: datetime) -> dict:

@@ -72,17 +72,50 @@ def _expand(catalog: dict, entry: dict) -> dict:
     return full
 
 
-def period_for(catalog: dict, d: date, overrides: Optional[dict] = None) -> dict:
-    """Okres cennika obowiązujący w dniu `d` (kopia, z polem `confirmed`)."""
+def _overrides_patch(overrides, d: date) -> dict:
+    """Patch korekt na dzień `d`: słownik = jeden patch na cały zakres; lista wpisów
+    `{from, to, patch}` (format `tariff_overrides.json`) = patche wpisów obejmujących dzień."""
+    if isinstance(overrides, dict):
+        return overrides
+    iso = d.isoformat()
+    patch: dict = {}
+    for ov in overrides or []:
+        start, end = ov.get('from'), ov.get('to')
+        if (start is None or start <= iso) and (end is None or iso <= end):
+            patch = _deep_merge(patch, ov.get('patch') or {})
+    return patch
+
+
+def period_for(catalog: dict, d: date, overrides=None) -> dict:
+    """Okres cennika obowiązujący w dniu `d` (kopia, z polem `confirmed`).
+    `overrides`: patch (dict) albo lista korekt z datami (patrz `_overrides_patch`)."""
     iso = d.isoformat()
     for entry in catalog['periods']:
         if entry['valid_from'] <= iso <= entry['valid_to']:
             period = _expand(catalog, entry)
             period['confirmed'] = bool(period.get('confirmed', False))
             if overrides:
-                period = _deep_merge(period, overrides)
+                period = _deep_merge(period, _overrides_patch(overrides, d))
             return period
     raise LookupError(f'brak okresu cennika dla {iso}')
+
+
+def period_for_assumed(catalog: dict, d: date, overrides=None) -> tuple:
+    """`(okres, assumed)`: po końcu ostatniego okresu katalogu zwraca OSTATNI okres z `assumed=True`.
+
+    Przed początkiem katalogu nadal `LookupError` (cena nie jest zgadywana wstecz)."""
+    last_end = catalog_end(catalog)
+    if d.isoformat() > last_end:
+        period = period_for(catalog, date.fromisoformat(last_end))
+        if overrides:
+            period = _deep_merge(period, _overrides_patch(overrides, d))
+        return period, True
+    return period_for(catalog, d, overrides), False
+
+
+def catalog_end(catalog: dict) -> str:
+    """Ostatni dzień objęty katalogiem (ISO)."""
+    return max(p['valid_to'] for p in catalog['periods'])
 
 
 # ── strefy ───────────────────────────────────────────────────────────────────

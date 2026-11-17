@@ -261,3 +261,37 @@ def test_zdegradowane_power_kw_rowne_usable_daje_min(cat):
     b1 = res['bridges'][0]
     _, cheap1 = _avg('G13', cat, dt(2026, 12, 1, 21), dt(2026, 12, 2, 7))
     assert b1['cheap_pln_kwh'] == pytest.approx(cheap1)
+
+
+def test_mosty_po_koncu_katalogu_maja_ceny_assumed(cat):
+    res = js.bridges('G13', date(2027, 1, 4), cat, CFG)   # poniedziałek
+    assert res['confidence'] == 'assumed'
+    assert res['peaks'] and res['bridges']
+    assert 'confidence' not in js.bridges('G13', date(2026, 11, 4), cat, CFG)
+
+
+def test_mosty_przed_katalogiem_puste(cat):
+    assert js.bridges('G13', date(2024, 11, 4), cat, CFG) == {'peaks': [], 'bridges': []}
+
+
+def test_korekta_stawki_other_zmienia_cheap_pln_kwh_mostu(cat):
+    day = date(2026, 11, 4)
+    base = js.bridges('G13', day, cat, CFG)['bridges']
+    ovs = [{'from': '2026-11-01', 'to': None, 'patch': {'energy_net': {'G13': {'other': 0.5}}}}]
+    cor = js.bridges('G13', day, cat, CFG, ovs)['bridges']
+    assert base and len(base) == len(cor)
+    assert all(c['cheap_pln_kwh'] > b['cheap_pln_kwh'] for b, c in zip(base, cor))
+    # price_at modułu zgadza się z make_price_fn z tą samą korektą
+    from pv_roi_tracker.tariff_module import TariffModule
+    tm = TariffModule(cat, periods=[{'tariff': 'G13', 'from': None}], overrides=ovs)
+    key = '2026-11-04T03'
+    assert make_price_fn('G13', cat, None, None, ovs)(key)[0] == pytest.approx(
+        tm.price_at(datetime(2026, 11, 4, 3)).gross)
+
+
+def test_build_schedule_przekazuje_korekty_do_mostow(cat):
+    ovs = [{'from': '2026-11-01', 'to': None, 'patch': {'energy_net': {'G13': {'other': 0.5}}}}]
+    base = js.build_schedule(date(2026, 11, 4), cat, CFG)['schedules']['G13']['2026-11-04']['bridges']
+    cor = js.build_schedule(date(2026, 11, 4), cat, CFG, ovs)['schedules']['G13']['2026-11-04']['bridges']
+    assert base and len(base) == len(cor)
+    assert all(c['cheap_pln_kwh'] > b['cheap_pln_kwh'] for b, c in zip(base, cor))

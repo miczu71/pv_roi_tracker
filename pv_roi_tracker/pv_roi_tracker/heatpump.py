@@ -168,10 +168,16 @@ def attribute_heatpump(flows: dict, hp_kwh: float) -> dict:
 
 
 def grid_price_for_hour(d: date, hour: int, rates: Optional[tuple],
-                        is_peak_fn=None) -> Optional[float]:
+                        is_peak_fn=None, hour_price_fn=None) -> Optional[float]:
     """Cena sieci (PLN/kWh brutto) danej godziny z (peak_gross, offpeak_gross).
 
-    offpeak_gross None → taryfa jednostrefowa (G11, flat = peak_gross)."""
+    offpeak_gross None → taryfa jednostrefowa (G11, flat = peak_gross).
+    hour_price_fn: opcjonalnie datetime -> cena brutto | None (np. `TariffModule.price_at`, taryfy
+    trójstrefowe G13); gdy zwraca cenę, ma pierwszeństwo przed parą `rates` + `is_peak_fn`."""
+    if hour_price_fn is not None:
+        p = hour_price_fn(datetime(d.year, d.month, d.day, hour))
+        if p is not None:
+            return p
     if rates is None:
         return None
     peak_gross, offpeak_gross = rates
@@ -209,6 +215,7 @@ def run_hours(
     rcem_by_month: dict[str, float],
     battery_efficiency: float = 0.92,
     is_peak_fn=None,
+    hour_price_fn=None,
 ) -> list[dict]:
     """Przelicz WSZYSTKIE godziny chronologicznie (pula baterii ma pamięć).
 
@@ -224,7 +231,7 @@ def run_hours(
         hp_kwh = h.get('hp_kwh') or 0.0
 
         flows = hourly_flows(h)
-        grid_price = grid_price_for_hour(d, hour, rates_by_month.get(ym), is_peak_fn)
+        grid_price = grid_price_for_hour(d, hour, rates_by_month.get(ym), is_peak_fn, hour_price_fn)
         pv_price = rcem_by_month.get(ym)
 
         pool.charge(flows['charge_from_pv'], flows['charge_from_grid'],
@@ -377,6 +384,7 @@ def compute(
     today: Optional[date] = None,
     hdd_base: float = 15.0,
     is_peak_fn=None,
+    hour_price_fn=None,
 ) -> Optional[dict]:
     """Pełny payload zakładki „Pompa ciepła" dla `/api/data`. None gdy brak
     godzin (funkcja wyłączona lub jeszcze nic nie pobrano)."""
@@ -384,7 +392,8 @@ def compute(
         return None
     if today is None:
         today = date.today()
-    rows = run_hours(hours, rates_by_month, rcem_by_month, battery_efficiency, is_peak_fn)
+    rows = run_hours(hours, rates_by_month, rcem_by_month, battery_efficiency, is_peak_fn,
+                    hour_price_fn)
     months = aggregate_months(rows, hdd_base)
     seasons = aggregate_seasons(rows, today, hdd_base)
     current = next((s for s in seasons if s['is_current']), None)

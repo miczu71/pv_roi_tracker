@@ -20,6 +20,7 @@ def close_month(
     rcem_history_path: Optional[Path] = None,
     peak_gross: Optional[float] = None,
     offpeak_gross: Optional[float] = None,
+    zone_prices: Optional[dict] = None,
 ) -> bool:
     """
     Snapshot the current month (date.today()) into historic.json.
@@ -28,6 +29,7 @@ def close_month(
     peak_gross/offpeak_gross: bieżące stawki taryfy (zwykle z modułu taryf,
     patrz live_reader._build_record) — bez nich snapshot użyłby zaszytego
     fallbacku 1,23/0,63 aż do nadejścia faktury.
+    zone_prices: ceny brutto per strefa (wycena trzystrefowa G13), patrz live_reader._build_record.
     """
     from . import historic_store, live_reader, rcem_scraper
 
@@ -44,7 +46,8 @@ def close_month(
     rcem_price = rcem_scraper.get_current_month_rcem(rcem_history_path)
 
     record = live_reader.read_current_month(rcem_price=rcem_price,
-                                             peak_gross=peak_gross, offpeak_gross=offpeak_gross)
+                                             peak_gross=peak_gross, offpeak_gross=offpeak_gross,
+                                             zone_prices=zone_prices)
     if record is None:
         logger.warning('Month-close: live_reader returned None — snapshot skipped for %d-%02d',
                        today.year, today.month)

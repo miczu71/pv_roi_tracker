@@ -51,7 +51,7 @@ def _g13s_from(catalog: dict) -> Optional[str]:
 
 def _dyn_b_price(catalog: dict, overrides: Optional[dict]) -> float:
     """Stała cena oferty dyn_b (netto zł/kWh, jednakowa w S1–S4); `overrides` ma pierwszeństwo."""
-    ov = ((overrides or {}).get('dynamic_sales_b') or {}).get('fixed_price_net_per_kwh')
+    ov = ((overrides if isinstance(overrides, dict) else {}).get('dynamic_sales_b') or {}).get('fixed_price_net_per_kwh')
     if ov is not None:
         return float(ov)
     v = (catalog.get('dynamic_sales_b') or {}).get('fixed_price_net_per_kwh')

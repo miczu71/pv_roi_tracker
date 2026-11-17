@@ -3,6 +3,8 @@ from datetime import date, datetime
 
 import pytest
 
+from pv_roi_tracker import tariff_catalog as tc
+
 from pv_roi_tracker.tariff_catalog import (
     TariffSettings,
     fixed_monthly,
@@ -336,3 +338,37 @@ def test_g13s_przed_2026_brak_oplaty_valueerror(cat):
     p = period_for(cat, date(2025, 3, 10), None)
     with pytest.raises(ValueError):
         fixed_monthly(p, TariffSettings(), "G13s")
+
+
+# ── period_for_assumed (ciągłość po końcu katalogu) ──────────────────────────
+
+def test_period_for_assumed_w_katalogu_nie_jest_przyjety():
+    cat = tc.load_catalog()
+    period, assumed = tc.period_for_assumed(cat, date(2026, 11, 3))
+    assert assumed is False
+    assert period == tc.period_for(cat, date(2026, 11, 3))
+
+
+def test_period_for_assumed_po_koncu_katalogu_daje_ostatni_okres():
+    cat = tc.load_catalog()
+    last_end = date.fromisoformat(tc.catalog_end(cat))
+    period, assumed = tc.period_for_assumed(cat, date(2027, 1, 4))
+    assert assumed is True
+    assert period == tc.period_for(cat, last_end)
+
+
+def test_period_for_assumed_przed_katalogiem_to_lookup_error():
+    with pytest.raises(LookupError):
+        tc.period_for_assumed(tc.load_catalog(), date(2024, 11, 1))
+
+
+def test_period_for_lista_korekt_z_datami():
+    cat = tc.load_catalog()
+    base = tc.period_for(cat, date(2026, 11, 10))['energy_net']['G13']['other']
+    ovs = [{'from': '2026-11-05', 'to': '2026-11-20', 'patch': {'energy_net': {'G13': {'other': 0.5}}}}]
+    assert tc.period_for(cat, date(2026, 11, 10), ovs)['energy_net']['G13']['other'] == 0.5
+    assert tc.period_for(cat, date(2026, 11, 21), ovs)['energy_net']['G13']['other'] == base
+    # po końcu katalogu korekta nadal obowiązuje wg daty dnia
+    ovs2 = [{'from': '2027-01-01', 'to': None, 'patch': {'energy_net': {'G13': {'other': 0.7}}}}]
+    assert tc.period_for_assumed(cat, date(2027, 1, 4), ovs2)[0]['energy_net']['G13']['other'] == 0.7
+    assert tc.period_for_assumed(cat, date(2026, 12, 4), ovs2)[0]['energy_net']['G13']['other'] == base

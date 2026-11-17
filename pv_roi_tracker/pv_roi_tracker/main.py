@@ -415,7 +415,8 @@ def main() -> None:
         peak_gross, offpeak_gross = _tariff_rates_for(date(year, month, 28))
         record = live_reader.read_month_from_statistics(
             year, month, rcem_price=rcem_price,
-            peak_gross=peak_gross, offpeak_gross=offpeak_gross)
+            peak_gross=peak_gross, offpeak_gross=offpeak_gross,
+            zone_prices=_zone_prices_for(date(year, month, 28)))
         if record is None:
             return None
         historic_store.replace_month(record, HISTORIC_PATH)
@@ -987,6 +988,29 @@ def main() -> None:
             float(rates.get('offpeak_gross', live_reader._TARIFF_OFFPEAK_PRICE)),
         )
 
+    def _hour_price_fn_for(skip_months=()):
+        """`datetime -> cena brutto | None` z modułu taryf dla godzin taryf trójstrefowych (G13, G13s);
+        None dla G11/G12/G12w, miesięcy z `skip_months` (faktura/rekord) i dat poza katalogiem —
+        wtedy zostaje para (peak, offpeak) + `is_peak_fn`."""
+        tmod = _tariff_module_now()
+
+        def fn(dt):
+            if dt.strftime('%Y-%m') in skip_months:
+                return None
+            try:
+                if tmod.tariff_on(dt.date()) in ('G11', 'G12', 'G12w'):
+                    return None
+                return tmod.price_at(dt).gross
+            except (LookupError, ValueError):
+                return None
+        return fn
+
+    def _zone_prices_for(d: date) -> dict:
+        """Ceny brutto per strefa (PLN/kWh) do wyceny poboru: taryfa dnia `d` oraz taryfa 1. dnia miesiąca
+        (miesiąc przejściowy G12w→G13: stare liczniki peak/offpeak wyceniane stawkami G12w).
+        {} gdy dzień sprzed katalogu — wtedy zostaje wycena peak/offpeak."""
+        return _tariff_module_now().zone_prices_for_month(d)
+
     # ── Symulacja rozbudowy magazynu (zakładka „Magazyn +5 kWh") ─────────────
     import threading as _threading
     from . import battery_sim, battery_store, rce_hourly as _rceh
@@ -1034,7 +1058,7 @@ def main() -> None:
 
             payload = battery_sim.simulate_all(
                 hours, cfg, zone_prices, rcem, rce_hourly=rce_prices,
-                is_peak_fn=_periods_peak_fn())
+                is_peak_fn=_periods_peak_fn(), hour_price_fn=_hour_price_fn_for())
             _web.update_battery_sim(payload)
             _battery_state['summary'] = payload.get('summary')
             _record_job('battery_sim', True)
@@ -1152,7 +1176,7 @@ def main() -> None:
             'catalog': _tcat.load_catalog(),
             'settings': tariff_settings_store.to_catalog_settings(
                 tariff_settings_store.load(TARIFF_SETTINGS_PATH)),
-            'rdn': cache.rdn, 'kompas': cache.kompas, 'overrides': None,
+            'rdn': cache.rdn, 'kompas': cache.kompas, 'overrides': _to.load(TARIFF_OVERRIDES_PATH),
             'price_cache': cache,
         }
 
@@ -1238,6 +1262,7 @@ def main() -> None:
                 pk = inv.get('peak_gross')
                 if pk is not None:
                     rates_by_month[ym] = (pk, inv.get('offpeak_gross'))
+            _invoice_rates_months = set(rates_by_month)     # miesiące z fakturą — bez wyceny godzinowej z katalogu
             for r in records:
                 ym = f'{r.year}-{r.month:02d}'
                 if ym not in rates_by_month and r.buy_price_pln_kwh is not None:
@@ -1256,7 +1281,8 @@ def main() -> None:
                 hours, rates_by_month, rcem_by_month,
                 battery_efficiency=live_reader._BATTERY_RT_EFF,
                 today=today, hdd_base=HEATPUMP_HDD_BASE_TEMP,
-                is_peak_fn=_periods_peak_fn())
+                is_peak_fn=_periods_peak_fn(),
+                hour_price_fn=_hour_price_fn_for(skip_months=_invoice_rates_months))
             _web.update_heatpump(payload)
             _record_job('heatpump', True)
             if payload:
@@ -1307,7 +1333,7 @@ def main() -> None:
             _res, _new_last = _td.tariff_dynamic_step(
                 pub, _tariff_dynamic_last,
                 {'catalog': _tcat.load_catalog(), 'rdn': _rdn, 'kompas': _kompas,
-                 'overrides': None, 'baseline': _baseline_tariff()}, _now)
+                 'overrides': _to.load(TARIFF_OVERRIDES_PATH), 'baseline': _baseline_tariff()}, _now)
             _tariff_dynamic_last.update(_new_last)
             _record_job('tariff_dynamic', _res is not False,
                         'MQTT rozłączony — ceny dynamiczne nie opublikowane' if _res is False else '')
@@ -1329,7 +1355,8 @@ def main() -> None:
             _peak_gross, _offpeak_gross = _tariff_rates_for(_today)
             current = live_reader.read_current_month(
                 rcem_price=rcem_price, historic_records=historic,
-                peak_gross=_peak_gross, offpeak_gross=_offpeak_gross)
+                peak_gross=_peak_gross, offpeak_gross=_offpeak_gross,
+                zone_prices=_zone_prices_for(_today))
             if current is not None:
                 _last_current['record'] = current
                 _last_current['key'] = _current_key
@@ -1432,7 +1459,8 @@ def main() -> None:
             try:
                 from . import jit_schedule
                 _jit = jit_schedule.build_schedule(
-                    date.today(), _tcat.load_catalog(), battery_store.load_config(BATTERY_CONFIG_PATH))
+                    date.today(), _tcat.load_catalog(), battery_store.load_config(BATTERY_CONFIG_PATH),
+                    overrides=_to.load(TARIFF_OVERRIDES_PATH))
                 ok = pub.publish_jit_schedule(_current_tariff or 'unknown', _jit)
                 _record_job('jit_schedule', bool(ok), '' if ok else 'MQTT rozłączony — harmonogram nie opublikowany')
             except Exception:
@@ -1498,12 +1526,10 @@ def main() -> None:
                     _win_prev = live_reader.get_energy_window(_mtd_start_prev, _mtd_end_prev)
 
                     _peak_gross_yoy, _offpeak_gross_yoy = _tariff_rates_for(_today_yoy)
-                    _buy_price_cur = None
-                    if (_win_cur.get('peak') is not None and _win_cur.get('offpeak') is not None
-                            and (_win_cur['peak'] + _win_cur['offpeak']) > 0):
-                        _buy_price_cur = round(
-                            (_win_cur['peak'] * _peak_gross_yoy + _win_cur['offpeak'] * _offpeak_gross_yoy)
-                            / (_win_cur['peak'] + _win_cur['offpeak']), 4)
+                    _buy_price_cur = live_reader.weighted_buy_price(
+                        _win_cur.get('zone_kwh'), _zone_prices_for(_today_yoy),
+                        _win_cur.get('peak'), _win_cur.get('offpeak'),
+                        _peak_gross_yoy, _offpeak_gross_yoy)
                     _arb_rate_yoy = _peak_gross_yoy * live_reader._BATTERY_RT_EFF - _offpeak_gross_yoy
                     _arb_cur = (_win_cur.get('arb_kwh') or 0.0) * _arb_rate_yoy
 
@@ -1691,7 +1717,8 @@ def main() -> None:
         try:
             _peak_gross, _offpeak_gross = _tariff_rates_for(date.today())
             appended = close_month(historic_path=HISTORIC_PATH, rcem_history_path=RCEM_HISTORY_PATH,
-                                   peak_gross=_peak_gross, offpeak_gross=_offpeak_gross)
+                                   peak_gross=_peak_gross, offpeak_gross=_offpeak_gross,
+                                   zone_prices=_zone_prices_for(date.today()))
             historic_store.reconcile_pending_invoices(INVOICE_PATH, HISTORIC_PATH)
             poll_and_publish()
             if MONTHLY_NOTIFY:

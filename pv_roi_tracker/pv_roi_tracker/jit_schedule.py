@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 from . import battery_sim
 from .battery_sim import BatteryConfig
 from .tariff_battery import make_price_fn
+from .tariff_catalog import period_for_assumed
 
 TARIFFS = ('G12w', 'G13', 'G13s')
 MIN_MARGIN_PLN_KWH = 0.0
@@ -98,7 +99,13 @@ def bridges(tariff: str, day: date, catalog: dict, cfg: BatteryConfig,
         out.append({'charge_start': charge_start, 'charge_end': start, 'gap_end': end,
                     'cheap_pln_kwh': cheap, 'peak_pln_kwh': peak_avg,
                     'margin_pln_kwh': margin, 'profitable': margin > MIN_MARGIN_PLN_KWH})
-    return {'peaks': peaks, 'bridges': out}
+    res = {'peaks': peaks, 'bridges': out}
+    try:
+        if period_for_assumed(catalog, day)[1]:
+            res['confidence'] = 'assumed'     # dzień po końcu katalogu: ostatni okres cennika
+    except LookupError:
+        pass
+    return res
 
 
 def _iso(dt: datetime) -> str:
@@ -108,6 +115,7 @@ def _iso(dt: datetime) -> str:
 def _iso_day(res: dict) -> dict:
     return {
         'peaks': [{**p, 'start': _iso(p['start']), 'end': _iso(p['end'])} for p in res['peaks']],
+        **({'confidence': res['confidence']} if 'confidence' in res else {}),
         'bridges': [{**b, 'charge_start': _iso(b['charge_start']), 'charge_end': _iso(b['charge_end']),
                      'gap_end': _iso(b['gap_end'])} for b in res['bridges']],
     }

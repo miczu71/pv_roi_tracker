@@ -220,3 +220,43 @@ def test_granica_valid_from_dyn_a_bez_ceny_i_bez_wyjatku(catalog):
 
 def test_components_podstawa_netto(catalog):
     assert _payloads(catalog)['dyn_a']['attributes']['components_basis'] == 'net'
+
+
+# ── ciągłość po końcu katalogu i korekty ręczne (F3/F4) ──────────────────────
+
+def test_feed_dyn_po_koncu_katalogu_ma_ceny_assumed(catalog):
+    now = datetime(2026, 12, 30, 1, 30)
+    keys = [(now.replace(minute=0) + timedelta(hours=i)).strftime('%Y-%m-%dT%H') for i in range(48)]
+    rdn = {k: 400.0 for k in keys}
+    kompas = {k: 'S2' for k in keys}
+    p = dynamic_feed_payload(catalog, rdn, kompas, None, BASELINE, now)
+    sched = p['dyn_a']['attributes']['schedule']
+    assert p['dyn_a']['price'] is not None and p['dyn_b']['price'] is not None
+    assert all(r['gross'] is not None for r in sched)
+    assert [r['confidence'] for r in sched if r['hour'][:10] <= '2026-12-31'] == \
+        ['rdn'] * sum(1 for r in sched if r['hour'][:10] <= '2026-12-31')
+    assert all(r['confidence'] == 'assumed' for r in sched if r['hour'][:10] >= '2027-01-01')
+    assert p['dyn_a']['attributes']['confidence'] == 'rdn'
+
+
+def test_feed_dyn_w_calosci_po_koncu_katalogu_confidence_assumed(catalog):
+    now = datetime(2027, 1, 4, 10, 15)
+    key = '2027-01-04T10'
+    p = dynamic_feed_payload(catalog, {key: 400.0}, {key: 'S2'}, None, BASELINE, now)
+    assert p['dyn_a']['attributes']['confidence'] == 'assumed'
+    assert p['dyn_a']['price'] is not None
+
+
+def test_feed_dyn_przed_katalogiem_nadal_lookup_error(catalog):
+    with pytest.raises(LookupError):
+        dynamic_feed_payload(catalog, {}, {}, None, BASELINE, datetime(2024, 11, 3, 10))
+
+
+def test_korekta_dystrybucji_zmienia_cene_dyn_b(catalog):
+    key = '2026-11-10T12'
+    now = datetime(2026, 11, 10, 12, 5)
+    base = dynamic_feed_payload(catalog, {key: 400.0}, {key: 'S2'}, [], BASELINE, now)
+    ovs = [{'from': '2026-11-01', 'to': None, 'note': 't',
+            'patch': {'dist_var_net': {'G12w': {'offpeak': 0.30, 'peak': 0.30}}}}]
+    cor = dynamic_feed_payload(catalog, {key: 400.0}, {key: 'S2'}, ovs, BASELINE, now)
+    assert cor['dyn_a']['price'] != base['dyn_a']['price']

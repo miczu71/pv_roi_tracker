@@ -106,7 +106,8 @@ def test_variant_b_dyn_bez_cen_brak_wpisu(cat):
 def test_blad_katalogu_nie_jest_cicho_pomijany(cat):
     fn = tb.make_price_fn("G12w", cat, {}, {})
     with pytest.raises(LookupError):
-        fn("2031-06-01T10")      # poza zakresem cennika
+        fn("2024-06-01T10")      # przed początkiem cennika — bez zgadywania wstecz
+    assert fn("2031-06-01T10") is not None   # po końcu katalogu: ostatni okres (assumed)
 
 
 def test_brak_marzy_dyn_a_to_blad(cat):

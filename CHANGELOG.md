@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.58.0] — 2026-11-17
+
+### Naprawiono
+- **Poranny szczyt G13 wyceniany stawką popołudniową.** `buy_price_pln_kwh`, koszt zakupu i oszczędności z autokonsumpcji liczą teraz średnią ważoną po strefach (poranny 0,9048, wieczorny 1,4960, pozostałe 0,6257 zł/kWh brutto) zamiast pary szczyt/dolina; w listopadzie 2026 cena zakupu spada o ok. 0,04 zł/kWh. Dotyczy rekordu bieżącego miesiąca, zamknięcia miesiąca i porównania rok do roku. Miesiąc przejściowy G12w→G13 wycenia stare liczniki stawkami G12w. Taryfy dwustrefowe (G11/G12/G12w) liczą jak dotąd.
+- Pompa ciepła i symulacja magazynu wyceniają godzinę ceną z modułu taryf dla G13/G13s (bez miesięcy z fakturą w pompie ciepła).
+- **Koniec katalogu cenników (2026-12-31).** Dni po końcu ostatniego okresu dostają ostatni okres z `confidence: "assumed"`: encje `pv_dyn_a_price` / `pv_dyn_b_price`, harmonogram JIT (`schedules`, mosty) i ceny baterii nie przestają działać. Dni sprzed początku katalogu nadal dają błąd. Symulacja kosztów taryf nadal kończy się na katalogu.
+- Ręczne korekty cennika (`tariff_overrides`) trafiają teraz też do cen dynamicznych, harmonogramu JIT i wejść symulacji — wcześniej wpływały tylko na `pv_tariff_price`.
+
+### Dodano
+- Atrybuty `fixed_monthly_net` i `fixed_monthly_gross` (zł/mies., abonament + sieciowa + mocowa z katalogu) na encji `sensor.pv_roi_tracker_pv_tariff_zone`. Brak opłat w katalogu → `null`, strefa i cena nadal się publikują.
+- `TariffModule.zone_rates` i `zone_prices_for_month`, `live_reader.weighted_buy_price`, `tariff_catalog.period_for_assumed` / `catalog_end`.
+
 ## [0.57.0] — 2026-11-09
 
 ### Dodano
