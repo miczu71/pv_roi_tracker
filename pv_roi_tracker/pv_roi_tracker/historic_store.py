@@ -319,10 +319,15 @@ def reconcile_invoice(
             m['buy_price_pln_kwh'] = data.blended_gross
         produced = m.get('produced_kwh')
         if produced is not None:
+            old_sc, old_pln = m.get('self_consumed_kwh'), m.get('self_consumed_savings_pln')
             sc = max(0.0, produced - data.exported_kwh)
             m['self_consumed_kwh'] = round(sc, 3)
             buy = m.get('buy_price_pln_kwh')
-            if buy is not None:
+            if (m.get('sc_pricing') == 'hourly_zone'
+                    and isinstance(old_sc, (int, float)) and isinstance(old_pln, (int, float))
+                    and old_sc > 0):
+                m['self_consumed_savings_pln'] = round(old_pln * sc / old_sc, 2)
+            elif buy is not None:
                 m['self_consumed_savings_pln'] = round(sc * buy, 2)
         rcem = m.get('feedin_price_pln_kwh')
         if rcem is not None:

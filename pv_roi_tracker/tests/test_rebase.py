@@ -231,3 +231,12 @@ def test_apply_repairs_corrupted_consumed_kwh_on_reconciled_month(store):
     assert may.self_consumed_kwh == pytest.approx(513.8)   # billed, untouched
     assert may.purchased_kwh == pytest.approx(129.0)       # billed, untouched
     assert may.consumed_kwh == pytest.approx(642.8)        # repaired: 513.8 + 129.0
+
+
+def test_apply_carries_sc_pricing_from_fetch_month(store):
+    historic_store.save([_JULY_OLD], store)
+    new = _july_new()
+    new.sc_pricing = 'hourly_zone'
+    rebase.apply(path=store, fetch_month=_fetch_stub({(2026, 7): new}))
+    july = next(r for r in historic_store.load(store) if r.month == 7)
+    assert july.sc_pricing == 'hourly_zone'

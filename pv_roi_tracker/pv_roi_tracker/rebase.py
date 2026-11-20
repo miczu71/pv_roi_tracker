@@ -64,7 +64,7 @@ _MERGE_FIELDS = (
     'self_consumed_savings_pln', 'purchase_cost_pln', 'feedin_revenue_pln',
     'buy_price_pln_kwh', 'specific_yield', 'battery_charge_kwh',
     'battery_discharge_kwh', 'self_consumed_source', 'balance_residual_kwh',
-    'source', 'cross_family_produced_kwh',
+    'source', 'cross_family_produced_kwh', 'sc_pricing',
 )
 
 

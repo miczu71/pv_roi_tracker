@@ -34,6 +34,8 @@ _invoice_remove_callback = None
 _invoice_train_callback = None
 _simulate_rebase_callback = None
 _apply_rebase_callback = None
+_simulate_sc_reprice_callback = None
+_apply_sc_reprice_callback = None
 _invoice_path = None
 _layouts_path = None
 _tariff_overrides_path = None
@@ -68,6 +70,16 @@ def set_simulate_rebase_callback(fn) -> None:
 def set_apply_rebase_callback(fn) -> None:
     global _apply_rebase_callback
     _apply_rebase_callback = fn
+
+
+def set_simulate_sc_reprice_callback(fn) -> None:
+    global _simulate_sc_reprice_callback
+    _simulate_sc_reprice_callback = fn
+
+
+def set_apply_sc_reprice_callback(fn) -> None:
+    global _apply_sc_reprice_callback
+    _apply_sc_reprice_callback = fn
 
 
 def set_invoice_reconcile_callback(fn) -> None:
@@ -1857,6 +1869,32 @@ def historic_apply_rebase():
         return jsonify({'ok': True, **report})
     except Exception as exc:
         log.exception('Apply-rebase failed')
+        return jsonify({'ok': False, 'error': str(exc)}), 500
+
+
+@app.route('/api/historic/simulate-sc-reprice', methods=['POST'])
+def historic_simulate_sc_reprice():
+    """Dry run: wycena autokonsumpcji ceną strefy godziny dla całej historii (bez zapisu)."""
+    if _simulate_sc_reprice_callback is None:
+        return jsonify({'ok': False, 'error': 'not initialized'}), 503
+    try:
+        report = _simulate_sc_reprice_callback()
+        return jsonify({'ok': True, **report})
+    except Exception as exc:
+        log.exception('Simulate-sc-reprice failed')
+        return jsonify({'ok': False, 'error': str(exc)}), 500
+
+
+@app.route('/api/historic/apply-sc-reprice', methods=['POST'])
+def historic_apply_sc_reprice():
+    """Zapisuje przeliczoną wycenę autokonsumpcji; przed zapisem kopia historic.json.bak-<UTC>."""
+    if _apply_sc_reprice_callback is None:
+        return jsonify({'ok': False, 'error': 'not initialized'}), 503
+    try:
+        report = _apply_sc_reprice_callback()
+        return jsonify({'ok': True, **report})
+    except Exception as exc:
+        log.exception('Apply-sc-reprice failed')
         return jsonify({'ok': False, 'error': str(exc)}), 500
 
 

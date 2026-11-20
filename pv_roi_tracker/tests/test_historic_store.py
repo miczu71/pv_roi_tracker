@@ -563,3 +563,30 @@ def test_mixed_month_zones_sum_to_import(store, invoices):
     assert rec.purchased_kwh == pytest.approx(328.0)
     assert rec.purchased_kwh_peak + rec.purchased_kwh_offpeak == pytest.approx(328.0)
     assert rec.purchased_kwh_peak == pytest.approx(328.0 * 0.25, abs=0.01)
+
+
+# ── reconcile_invoice: wycena sc_pricing ─────────────────────────────────────────────────────────
+
+def _sc_rec(sc_pricing):
+    r = _rec(2026, 3, produced=400.0, exported=100.0, savings=240.0)
+    r.self_consumed_kwh = 300.0
+    r.buy_price_pln_kwh = 0.9
+    r.sc_pricing = sc_pricing
+    return r
+
+
+def test_reconcile_invoice_hourly_zone_scales_pln(store):
+    historic_store.save([_sc_rec('hourly_zone')], store)
+    # eksport 200 -> sc = 200 (z 300): PLN skalowane 240 * 200/300 = 160
+    assert historic_store.reconcile_invoice(_invoice(exported=200.0), store)
+    m = historic_store.load(store)[0]
+    assert m.self_consumed_kwh == pytest.approx(200.0)
+    assert m.self_consumed_savings_pln == pytest.approx(160.0)
+
+
+@pytest.mark.parametrize('tag', [None, 'monthly_avg'])
+def test_reconcile_invoice_non_hourly_keeps_old_formula(store, tag):
+    historic_store.save([_sc_rec(tag)], store)
+    assert historic_store.reconcile_invoice(_invoice(exported=200.0), store)
+    m = historic_store.load(store)[0]
+    assert m.self_consumed_savings_pln == pytest.approx(200.0 * 0.9)

@@ -494,19 +494,42 @@ def main() -> None:
     def _simulate_rebase() -> dict:
         from . import rebase as _rebase
         records = historic_store.load(HISTORIC_PATH)
-        return _rebase.simulate(records, reconciled_months=_reconciled_months(),
-                                roi_kwargs=_roi_kwargs())
+        return _rebase.simulate(
+            records, reconciled_months=_reconciled_months(),
+            fetch_month=lambda y, m: live_reader.read_month_from_statistics(
+                y, m, price_at=_sc_price_at()),
+            roi_kwargs=_roi_kwargs())
 
     _web.set_simulate_rebase_callback(_simulate_rebase)
 
     def _apply_rebase() -> dict:
         from . import rebase as _rebase
-        report = _rebase.apply(path=HISTORIC_PATH, reconciled_months=_reconciled_months(),
-                               roi_kwargs=_roi_kwargs())
+        report = _rebase.apply(
+            path=HISTORIC_PATH, reconciled_months=_reconciled_months(),
+            fetch_month=lambda y, m: live_reader.read_month_from_statistics(
+                y, m, price_at=_sc_price_at()),
+            roi_kwargs=_roi_kwargs())
         poll_and_publish()
         return report
 
     _web.set_apply_rebase_callback(_apply_rebase)
+
+    def _simulate_sc_reprice() -> dict:
+        from . import sc_reprice as _scr
+        records = historic_store.load(HISTORIC_PATH)
+        return _scr.simulate(records, reconciled_months=_reconciled_months(),
+                             price_at=_sc_price_at(), roi_kwargs=_roi_kwargs())
+
+    _web.set_simulate_sc_reprice_callback(_simulate_sc_reprice)
+
+    def _apply_sc_reprice() -> dict:
+        from . import sc_reprice as _scr
+        report = _scr.apply(path=HISTORIC_PATH, reconciled_months=_reconciled_months(),
+                            price_at=_sc_price_at(), roi_kwargs=_roi_kwargs())
+        poll_and_publish()
+        return report
+
+    _web.set_apply_sc_reprice_callback(_apply_sc_reprice)
 
     # Inject learned layouts into the parser at startup
     invoice_parser.set_layouts_provider(
