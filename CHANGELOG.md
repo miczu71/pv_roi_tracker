@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.59.0] — 2026-11-20
+
+### Naprawiono
+- **Licznik oszczędności z autokonsumpcji nie maleje już w nocy.** `sensor.pv_roi_tracker_pv_self_consumption_savings` mnożył miesięczne kWh przez średnią ważoną cenę *importu*, więc tani nocny pobór obniżał całą sumę. Teraz bieżący miesiąc jest liczony godzina po godzinie: Σ max(0, produkcja − eksport) × cena strefy danej godziny (moduł taryf). Brak danych godzinowych lub ceny → dotychczasowa metoda; rekord ma nowe pole `sc_pricing` (`hourly_zone` / `monthly_avg`).
+- **Arbitraż baterii bez chwilowych spadków.** Gdy `sensor.battery_grid_charge_off_peak_monthly` jest przez chwilę niedostępny, kWh arbitrażu pochodzą ze statystyk długoterminowych (zamiast zerowania składnika, jak 17.11 o 16:18: −34,30 PLN). Zapasowy sensor o innej semantyce tylko gdy oba źródła są puste.
+
+### Dodano
+- **Przeliczenie historii wyceny autokonsumpcji po strefach** (`sc_reprice`): `POST /api/historic/simulate-sc-reprice` (tylko odczyt, diff per miesiąc) i `POST /api/historic/apply-sc-reprice` (kopia `historic.json.bak-<UTC>` przed zapisem, zmienia wyłącznie `self_consumed_savings_pln` i `sc_pricing`, idempotentne). Miesiące z fakturą zachowują kWh z faktury, kształt godzinowy z LTS; miesiące bez danych godzinowych zostają bez zmian. Apply nakłada zmiany na świeży dokument, a chwilowy brak danych nie degraduje wcześniejszej wyceny `hourly_zone` (dotyczy też `rebase`).
+- `rebase` przenosi `sc_pricing`; rozliczenie faktury skaluje PLN dla miesięcy `hourly_zone`.
+
+### Uwaga
+- Przeliczenie historii nie uruchamia się samo — wymaga ręcznego `simulate` → przeglądu → `apply`.
+
 ## [0.58.2] — 2026-11-17
 
 ### Naprawiono
