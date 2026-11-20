@@ -69,6 +69,7 @@ _ZONE_OFFPEAK_METER = 'sensor.daily_energy_offpeak'
 # Od 05.11.2026 (G13): bieżący pobór liczy 3-strefowy licznik `g13_energia`; stare liczniki G12w są zamrożone
 # (historia w statystykach). Rola peak/offpeak = suma starego i nowych liczników; brak encji jest pomijany.
 _ZONE_PEAK_METERS    = [_ZONE_PEAK_METER, 'sensor.g13_energia_morning_peak', 'sensor.g13_energia_evening_peak']
+_ARB_ENTITY = 'sensor.battery_grid_charge_off_peak_monthly'
 _ZONE_OFFPEAK_METERS = [_ZONE_OFFPEAK_METER, 'sensor.g13_energia_other']
 # Licznik → strefa taryfy (wycena trzystrefowa: poranny szczyt G13 ma własną stawkę, inną niż wieczorny).
 _ZONE_METER_ZONES = {
@@ -620,7 +621,7 @@ def get_energy_window(start_date: date, end_date_exclusive: date) -> dict:
         return empty
 
     sources = get_energy_dashboard_sources()
-    arb_entity = 'sensor.battery_grid_charge_off_peak_monthly'
+    arb_entity = _ARB_ENTITY
     entity_ids = (_all_role_entities(sources)
                  + _ZONE_PEAK_METERS + _ZONE_OFFPEAK_METERS + [arb_entity])
     start_iso = _dt(start_date.year, start_date.month, start_date.day,
@@ -1012,7 +1013,7 @@ def read_current_month(
 
     produced_live = _get_state('sensor.inverter_yield_monthly')
     exported_live = _get_state('sensor.power_meter_exported_energy_monthly')
-    arb_kwh       = _get_state('sensor.battery_grid_charge_off_peak_monthly')
+    arb_kwh       = _get_state(_ARB_ENTITY)
 
     if produced_live is None:
         logger.warning('sensor.inverter_yield_monthly unavailable — skipping current-month record')
@@ -1031,8 +1032,17 @@ def read_current_month(
 
     sources = get_energy_dashboard_sources()
     entity_ids = (_all_role_entities(sources)
-                 + [_TEMPLATE_PRODUCED_METER, *_ZONE_PEAK_METERS, *_ZONE_OFFPEAK_METERS])
+                 + [_TEMPLATE_PRODUCED_METER, *_ZONE_PEAK_METERS, *_ZONE_OFFPEAK_METERS,
+                    _ARB_ENTITY])
     vals = _fetch_lifetime_month_stats(year, month, entity_ids)
+
+    # Sensor arbitrażu potrafi chwilowo migać na `unavailable` (17.11 16:18) — wtedy
+    # REST daje None, a wkład miesiąca spadałby do 0. LTS jest odporny na takie okno.
+    if arb_kwh is None:
+        arb_kwh = vals.get(_ARB_ENTITY)
+        if arb_kwh is not None:
+            logger.warning('read_current_month: REST %s niedostępny — arbitraż z LTS (%.2f kWh)',
+                           _ARB_ENTITY, arb_kwh)
 
     produced = _sum_role_month(vals, sources['solar'], warn_missing=True)
     if produced is None:

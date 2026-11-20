@@ -67,7 +67,10 @@ w worktree `wt new`; E2 oznaczony „ryzyko” → sonnet-worker; po każdej pac
   trasy `POST /api/historic/simulate-sc-reprice` i `apply-sc-reprice`; `rebase._MERGE_FIELDS` + `sc_pricing`; `main` daje `rebase` `fetch_month` z `price_at`;
   `reconcile_invoice` skaluje PLN dla `hourly_zone`. Weryfikacja: pytest 1582 passed / 23 skipped (baseline 1560), claimcheck 0/7,
   verifier REJECT (kolizja nazwy kopii w tej samej sekundzie) → poprawka sonnet-worker, sprawdzona przeze mnie (pytest zielony). Apply na produkcji NIE uruchomiony (E4, za zgodą).
-- E3, E4: do zrobienia.
+- **E3 ZROBIONE 2026-11-20** — diagnoza: 17.11 16:18 REST `sensor.battery_grid_charge_off_peak_monthly` = unavailable (sensor migał 15:52–16:26), zapasowy
+  `sensor.battery_arbitrage_savings_monthly` unavailable cały czas → arbitraż None = 0 w sumie; spadek 34,30 PLN = 45,83 kWh × 0,7485 (wkład bieżącego miesiąca).
+  Poprawka: `read_current_month` bierze arb_kwh z LTS, gdy REST = None (zapas o innej semantyce zostaje tylko gdy oba None). +2 testy, pytest 1584 passed / 23 skipped.
+- E4: do zrobienia.
 
 ### Znaleziska E2 (do E4)
 - Zapis przez `MonthlyRecord.from_dict→to_dict` gubi pola spoza dataclass i dopisuje brakujące jako null (dotyczy też istniejącego `rebase.apply`) — przed apply na produkcji porównać klucze `historic.json`.

@@ -602,3 +602,50 @@ def test_get_hourly_role_kwh_empty_entities_returns_empty_without_call():
     with patch.object(lr, '_ws_statistics') as ws:
         assert lr.get_hourly_role_kwh([], 2026, 7) == {}
     ws.assert_not_called()
+
+
+# ── Arbitraż baterii: chwilowe `unavailable` sensora nie zeruje wkładu miesiąca ──
+
+_ARB_ENTITY = 'sensor.battery_grid_charge_off_peak_monthly'
+
+
+def _read_current_month_with_arb(rest_arb, lts_arb, fallback_state=None):
+    """read_current_month z podanym odczytem REST i LTS sensora arbitrażu (None = brak)."""
+    states = {
+        'sensor.inverter_yield_monthly': 200.0,
+        'sensor.power_meter_exported_energy_monthly': 80.0,
+        _ARB_ENTITY: rest_arb,
+        'sensor.battery_arbitrage_savings_monthly': fallback_state,
+    }
+    lts_values = {
+        'sensor.energy_pv': 210.0,
+        'sensor.power_meter_exported': 82.0,
+        'sensor.daily_energy_peak': 20.0,
+        'sensor.daily_energy_offpeak': 15.0,
+        lr._TEMPLATE_PRODUCED_METER: 225.0,
+        _ARB_ENTITY: lts_arb,
+    }
+    with (
+        patch.object(lr, '_get_state', side_effect=lambda eid: states.get(eid)),
+        patch.object(lr, '_solcast_month_projection', return_value=None),
+        patch.object(lr, 'get_energy_dashboard_sources', return_value=_fixed_sources()),
+        patch.object(lr, '_fetch_lifetime_month_stats', return_value=lts_values),
+        patch('pv_roi_tracker.live_reader.date') as mock_date,
+    ):
+        mock_date.today.return_value = date(2026, 11, 17)
+        return lr.read_current_month(rcem_price=None, peak_gross=1.0, offpeak_gross=0.5)
+
+
+def test_read_current_month_arbitrage_survives_transient_unavailable_rest():
+    """Regresja 17.11 16:18: REST arb=None (sensor migał unavailable), a zapasowy
+    sensor też unavailable → arbitraż spadał do None (=0 w sumie ROI, −34 PLN)."""
+    live = _read_current_month_with_arb(rest_arb=45.83, lts_arb=45.83)
+    glitch = _read_current_month_with_arb(rest_arb=None, lts_arb=45.83)
+    assert live.battery_arbitrage_savings_pln is not None
+    assert glitch.battery_arbitrage_savings_pln == pytest.approx(live.battery_arbitrage_savings_pln)
+
+
+def test_read_current_month_arbitrage_prefers_lts_over_wrong_semantics_sensor():
+    """Gdy REST=None, a LTS ma wartość, zapasowy sensor (inna semantyka) nie jest użyty."""
+    result = _read_current_month_with_arb(rest_arb=None, lts_arb=10.0, fallback_state=999.0)
+    assert result.battery_arbitrage_savings_pln == pytest.approx(10.0 * (1.0 * lr._BATTERY_RT_EFF - 0.5), abs=0.01)
