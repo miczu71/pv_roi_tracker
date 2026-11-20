@@ -8,15 +8,16 @@ import calendar
 import json as _json
 import logging
 import os
-from datetime import date, datetime as _dt
+from datetime import date, datetime as _dt, timezone
 from statistics import mean
-from typing import Optional
+from typing import Callable, Optional
 from zoneinfo import ZoneInfo
 
 import requests
 import websocket as _ws
 
 from .models import MonthlyRecord
+from .sc_pricing import zone_priced_self_consumption
 
 logger = logging.getLogger(__name__)
 
@@ -369,6 +370,53 @@ def get_hourly_energy(start_iso: str, end_iso: Optional[str] = None) -> dict:
         return {}
 
 
+def get_hourly_role_kwh(entity_ids: list, year: int, month: int) -> dict:
+    """Godzinowe 'change' (LTS, period=hour) sumowane po encjach jednej roli Energy Dashboard
+    za miesiąc lokalny [1. dzień, 1. dzień następnego). Zwraca {'YYYY-MM-DDTHH': kWh}
+    w czasie lokalnym; pusty dict przy błędzie lub pustej liście encji."""
+    if not entity_ids:
+        return {}
+    try:
+        start = _dt(year, month, 1).astimezone().astimezone(timezone.utc)
+        ny, nm = (year + 1, 1) if month == 12 else (year, month + 1)
+        end = _dt(ny, nm, 1).astimezone().astimezone(timezone.utc)
+        data = _ws_statistics(entity_ids, start.strftime('%Y-%m-%dT%H:%M:%S+00:00'), 'hour',
+                              end_iso=end.strftime('%Y-%m-%dT%H:%M:%S+00:00'), timeout=60)
+        hours: dict = {}
+        for eid in entity_ids:
+            for entry in data.get(eid, []):
+                start_ms = entry.get('start')
+                change = entry.get('change')
+                if start_ms is None or change is None:
+                    continue
+                change_f = float(change)
+                if change_f < 0:
+                    logger.warning(
+                        'get_hourly_role_kwh: change ujemny dla %s @ %s: %.3f — pomijam',
+                        eid, start_ms, change_f)
+                    continue
+                # Kolizja godziny lokalnej przy cofnięciu DST: akumuluj, nie nadpisuj.
+                key = _dt.fromtimestamp(start_ms / 1000).strftime('%Y-%m-%dT%H')
+                hours[key] = hours.get(key, 0.0) + change_f
+        return hours
+    except Exception as exc:
+        logger.warning('get_hourly_role_kwh failed: %s', exc)
+        return {}
+
+
+def _zone_priced_sc(year: int, month: int, sources: dict, price_at) -> tuple:
+    """(PLN, tag) autokonsumpcji wycenionej godzina po godzinie; (None, None) bez price_at,
+    (None, 'monthly_avg') gdy brak danych godzinowych lub ceny, inaczej (PLN, 'hourly_zone')."""
+    if price_at is None:
+        return None, None
+    produced_h = get_hourly_role_kwh(sources['solar'], year, month)
+    exported_h = get_hourly_role_kwh(sources['grid_export'], year, month)
+    res = zone_priced_self_consumption(produced_h, exported_h, price_at)
+    if res is None:
+        return None, 'monthly_avg'
+    return res[1], 'hourly_zone'
+
+
 def _daily_counter_hourly_deltas(rows: list) -> dict:
     """Zamień godzinowe 'max' dziennie-resetującego się licznika (history_stats
     sensor, np. `sensor.pompa_heating`) na deltę PRZYROSTU w danej godzinie.
@@ -715,6 +763,8 @@ def _build_record(
     cross_family_produced_kwh: Optional[float] = None,
     zone_kwh: Optional[dict] = None,
     zone_prices: Optional[dict] = None,
+    sc_savings_pln: Optional[float] = None,
+    sc_pricing: Optional[str] = None,
 ) -> MonthlyRecord:
     """
     Build a MonthlyRecord from raw kWh readings.
@@ -750,6 +800,9 @@ def _build_record(
       cross_family_produced_kwh: the OTHER production-tracking family's own
                   figure for this month (see balance.py) — purely diagnostic,
                   never used to compute produced_kwh itself.
+      sc_savings_pln: autokonsumpcja wyceniona godzinowo ceną strefy (sc_pricing.py);
+                  None → dotychczasowa wycena self_consumed_kwh × średnia cena zakupu.
+      sc_pricing:   sposób wyceny autokonsumpcji ('hourly_zone' | 'monthly_avg' | None).
     """
     peak_px    = peak_gross    if peak_gross    is not None else _TARIFF_PEAK_PRICE
     offpeak_px = offpeak_gross if offpeak_gross is not None else _TARIFF_OFFPEAK_PRICE
@@ -804,6 +857,8 @@ def _build_record(
                if (self_consumed_kwh is not None and imported is not None) else None)
 
     self_consumed_savings_pln = round(self_consumed_kwh * buy_price, 2) if (self_consumed_kwh is not None and buy_price is not None) else None
+    if sc_savings_pln is not None:
+        self_consumed_savings_pln = round(sc_savings_pln, 2)
     purchase_cost_pln         = round(purchased * buy_price, 2)         if (purchased is not None and buy_price is not None) else None
     feedin_revenue_pln        = round((exported or 0.0) * rcem_price, 2) if (exported is not None and rcem_price is not None) else None
     specific_yield            = round(produced / _SYSTEM_KWP, 1)         if _SYSTEM_KWP else None
@@ -832,6 +887,7 @@ def _build_record(
         battery_discharge_kwh=battery_discharge_kwh,
         source=source,
         cross_family_produced_kwh=cross_family_produced_kwh,
+        sc_pricing=sc_pricing,
     )
     from . import balance as _balance
     record.balance_residual_kwh = _balance.residual_kwh(record)
@@ -856,6 +912,7 @@ def read_month_from_statistics(
     peak_gross: Optional[float] = None,
     offpeak_gross: Optional[float] = None,
     zone_prices: Optional[dict] = None,
+    price_at: Optional[Callable[[str], Optional[float]]] = None,
 ) -> Optional[MonthlyRecord]:
     """
     Zbuduj MonthlyRecord na podstawie długoterminowych statystyk HA (WebSocket
@@ -886,6 +943,7 @@ def read_month_from_statistics(
         'read_month_from_statistics %s: produced=%.1f exported=%s importowano=%s',
         month_key, produced, exported, imported,
     )
+    sc_pln, sc_tag = _zone_priced_sc(year, month, sources, price_at)
     return _build_record(
         year, month, produced, exported,
         _sum_role_month(vals, _ZONE_PEAK_METERS), _sum_role_month(vals, _ZONE_OFFPEAK_METERS),
@@ -897,6 +955,7 @@ def read_month_from_statistics(
         battery_discharge_kwh=_sum_role_month(vals, sources['battery_discharge']),
         source='lts',
         cross_family_produced_kwh=vals.get(_TEMPLATE_PRODUCED_METER),
+        sc_savings_pln=sc_pln, sc_pricing=sc_tag,
     )
 
 
@@ -919,6 +978,7 @@ def read_current_month(
     peak_gross: Optional[float] = None,
     offpeak_gross: Optional[float] = None,
     zone_prices: Optional[dict] = None,
+    price_at: Optional[Callable[[str], Optional[float]]] = None,
 ) -> Optional[MonthlyRecord]:
     """
     Build a MonthlyRecord for the current (in-progress) calendar month.
@@ -996,6 +1056,7 @@ def read_current_month(
         if spk is not None:
             projected_month_savings_pln = round(projected_month_kwh * spk, 2)
 
+    sc_pln, sc_tag = _zone_priced_sc(year, month, sources, price_at)
     return _build_record(year, month, produced, exported, peak, offpeak,
                          arb_kwh, rcem_price, projected_month_kwh, projected_month_savings_pln,
                          peak_gross=peak_gross, offpeak_gross=offpeak_gross,
@@ -1004,4 +1065,5 @@ def read_current_month(
                          battery_charge_kwh=battery_charge_kwh,
                          battery_discharge_kwh=battery_discharge_kwh,
                          source='live',
-                         cross_family_produced_kwh=vals.get(_TEMPLATE_PRODUCED_METER))
+                         cross_family_produced_kwh=vals.get(_TEMPLATE_PRODUCED_METER),
+                         sc_savings_pln=sc_pln, sc_pricing=sc_tag)

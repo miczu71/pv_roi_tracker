@@ -35,3 +35,17 @@ def test_close_month_appends_complete_record(tmp_path):
     result, append = _run(_record(10.0, 5.0), tmp_path)
     assert result is True
     append.assert_called_once()
+
+
+def test_close_month_passes_price_at_to_read_current_month(tmp_path):
+    def price_at(hour_key):
+        return 0.8
+
+    with (
+        patch.object(rcem_scraper, 'get_current_month_rcem', return_value=None),
+        patch.object(live_reader, 'read_current_month', return_value=_record(10.0, 5.0)) as read,
+        patch.object(historic_store, 'append_month', return_value=True),
+    ):
+        month_close.close_month(historic_path=tmp_path / 'h.json', rcem_history_path=tmp_path / 'r.json',
+                                price_at=price_at)
+    assert read.call_args.kwargs['price_at'] is price_at

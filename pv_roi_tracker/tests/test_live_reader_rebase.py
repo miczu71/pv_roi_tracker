@@ -529,3 +529,76 @@ def test_get_energy_window_skips_negative_change():
     ):
         win = lr.get_energy_window(date(2026, 11, 1), date(2026, 11, 3))
     assert win['offpeak'] == pytest.approx(9.0)  # -7 pominięte
+
+
+def test_build_record_uses_zone_priced_sc_when_given():
+    with patch.object(lr, '_get_state', side_effect=lambda eid: None):
+        rec = lr._build_record(
+            year=2026, month=7, produced=867.11, exported=431.56,
+            peak=4.53, offpeak=79.79, arb_kwh=None, rcem_price=0.35,
+            imported=84.65, sc_savings_pln=123.45, sc_pricing='hourly_zone',
+        )
+    assert rec.self_consumed_savings_pln == 123.45
+    assert rec.sc_pricing == 'hourly_zone'
+
+
+def test_build_record_without_zone_priced_sc_keeps_monthly_avg_formula():
+    with patch.object(lr, '_get_state', side_effect=lambda eid: None):
+        rec = lr._build_record(
+            year=2026, month=7, produced=867.11, exported=431.56,
+            peak=4.53, offpeak=79.79, arb_kwh=None, rcem_price=0.35,
+            imported=84.65,
+        )
+    assert rec.sc_pricing is None
+    assert rec.self_consumed_savings_pln == round(rec.self_consumed_kwh * rec.buy_price_pln_kwh, 2)
+
+
+def test_zone_priced_sc_success_returns_pln_and_hourly_tag():
+    sources = {'solar': ['sensor.solar'], 'grid_export': ['sensor.export']}
+
+    def fake_role(entity_ids, year, month):
+        if entity_ids == ['sensor.solar']:
+            return {'2026-07-01T10': 2.0}
+        return {'2026-07-01T10': 0.5}
+
+    with patch.object(lr, 'get_hourly_role_kwh', side_effect=fake_role):
+        assert lr._zone_priced_sc(2026, 7, sources, lambda h: 0.8) == (1.2, 'hourly_zone')
+
+
+def test_zone_priced_sc_empty_production_falls_back_to_monthly_avg():
+    sources = {'solar': ['sensor.solar'], 'grid_export': ['sensor.export']}
+    with patch.object(lr, 'get_hourly_role_kwh', return_value={}):
+        assert lr._zone_priced_sc(2026, 7, sources, lambda h: 0.8) == (None, 'monthly_avg')
+
+
+def test_zone_priced_sc_without_price_at_returns_none_none():
+    sources = {'solar': ['sensor.solar'], 'grid_export': ['sensor.export']}
+    assert lr._zone_priced_sc(2026, 7, sources, None) == (None, None)
+
+
+def test_get_hourly_role_kwh_sums_entities_and_skips_negative():
+    from datetime import datetime as _dtt
+    h10 = _dtt(2026, 7, 1, 10).timestamp() * 1000
+    h11 = _dtt(2026, 7, 1, 11).timestamp() * 1000
+    h12 = _dtt(2026, 7, 1, 12).timestamp() * 1000
+    data = {
+        'sensor.a': [{'start': h10, 'change': 1.0}, {'start': h11, 'change': 0.5}],
+        'sensor.b': [{'start': h10, 'change': 2.0}, {'start': h12, 'change': -1.0}],
+    }
+    with patch.object(lr, '_ws_statistics', return_value=data) as ws:
+        out = lr.get_hourly_role_kwh(['sensor.a', 'sensor.b'], 2026, 7)
+    assert out == {'2026-07-01T10': pytest.approx(3.0), '2026-07-01T11': pytest.approx(0.5)}
+    from datetime import timezone as _tz
+    expected_start = _dtt(2026, 7, 1).astimezone().astimezone(_tz.utc).strftime('%Y-%m-%dT%H:%M:%S+00:00')
+    assert ws.call_args.args[1] == expected_start
+
+
+def test_get_hourly_role_kwh_empty_on_ws_error():
+    with patch.object(lr, '_ws_statistics', side_effect=RuntimeError('ws down')):
+        assert lr.get_hourly_role_kwh(['sensor.a'], 2026, 7) == {}
+
+
+def test_get_hourly_role_kwh_empty_entities_returns_empty_without_call():
+    with patch.object(lr, '_ws_statistics') as ws:
+        assert lr.get_hourly_role_kwh([], 2026, 7) == {}
+    ws.assert_not_called()

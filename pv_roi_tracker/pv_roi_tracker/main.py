@@ -416,7 +416,8 @@ def main() -> None:
         record = live_reader.read_month_from_statistics(
             year, month, rcem_price=rcem_price,
             peak_gross=peak_gross, offpeak_gross=offpeak_gross,
-            zone_prices=_zone_prices_for(date(year, month, 28)))
+            zone_prices=_zone_prices_for(date(year, month, 28)),
+            price_at=_sc_price_at())
         if record is None:
             return None
         historic_store.replace_month(record, HISTORIC_PATH)
@@ -1021,6 +1022,19 @@ def main() -> None:
         {} gdy dzień sprzed katalogu — wtedy zostaje wycena peak/offpeak."""
         return _tariff_module_now().zone_prices_for_month(d)
 
+    def _sc_price_at():
+        """Cena brutto godziny (klucz 'YYYY-MM-DDTHH', czas lokalny) do wyceny autokonsumpcji;
+        None przy niepoprawnym kluczu albo godzinie spoza katalogu taryf."""
+        tmod = _tariff_module_now()
+
+        def fn(hour_key: str):
+            try:
+                return tmod.price_at(_dt_cls.strptime(hour_key, '%Y-%m-%dT%H')).gross
+            except (LookupError, ValueError):
+                return None
+
+        return fn
+
     # ── Symulacja rozbudowy magazynu (zakładka „Magazyn +5 kWh") ─────────────
     import threading as _threading
     from . import battery_sim, battery_store, rce_hourly as _rceh
@@ -1371,7 +1385,8 @@ def main() -> None:
             current = live_reader.read_current_month(
                 rcem_price=rcem_price, historic_records=historic,
                 peak_gross=_peak_gross, offpeak_gross=_offpeak_gross,
-                zone_prices=_zone_prices_for(_today))
+                zone_prices=_zone_prices_for(_today),
+                price_at=_sc_price_at())
             if current is not None:
                 _last_current['record'] = current
                 _last_current['key'] = _current_key
@@ -1733,7 +1748,8 @@ def main() -> None:
             _peak_gross, _offpeak_gross = _tariff_rates_for(date.today())
             appended = close_month(historic_path=HISTORIC_PATH, rcem_history_path=RCEM_HISTORY_PATH,
                                    peak_gross=_peak_gross, offpeak_gross=_offpeak_gross,
-                                   zone_prices=_zone_prices_for(date.today()))
+                                   zone_prices=_zone_prices_for(date.today()),
+                                   price_at=_sc_price_at())
             historic_store.reconcile_pending_invoices(INVOICE_PATH, HISTORIC_PATH)
             poll_and_publish()
             if MONTHLY_NOTIFY:

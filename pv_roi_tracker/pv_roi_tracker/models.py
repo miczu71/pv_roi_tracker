@@ -49,6 +49,8 @@ class MonthlyRecord:
     # produced_kwh itself. None if not computed (e.g. pre-0.35.0 records, or
     # the extra LTS fetch failed).
     cross_family_produced_kwh: Optional[float] = None
+    # Sposób wyceny autokonsumpcji: 'hourly_zone' | 'monthly_avg' | None (brak wyceny).
+    sc_pricing: Optional[str] = None
 
     def key(self) -> tuple[int, int]:
         return (self.year, self.month)
