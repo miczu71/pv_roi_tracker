@@ -168,3 +168,17 @@ def test_apply_twice_same_instant_keeps_both_backups(tmp_path, monkeypatch):
     from pathlib import Path
     assert Path(r1['backup_path']).read_text() == original
     assert Path(r2['backup_path']).read_text() == after_first
+
+
+def test_apply_keeps_hourly_zone_tag_when_hourly_data_missing(tmp_path):
+    from pv_roi_tracker import sc_reprice, historic_store
+    from pv_roi_tracker.models import MonthlyRecord
+    path = tmp_path / 'historic.json'
+    rec = MonthlyRecord(year=2026, month=5, produced_kwh=100.0, exported_kwh=40.0,
+                        self_consumed_kwh=60.0, self_consumed_savings_pln=77.0,
+                        sc_pricing='hourly_zone')
+    historic_store._save_document({'months': [rec.to_dict()]}, path)
+    sc_reprice.apply(path=path, fetch_hourly=lambda y, m: ({}, {}), price_at=lambda h: 1.0)
+    saved = historic_store._load_document(path)['months'][0]
+    assert saved['sc_pricing'] == 'hourly_zone'
+    assert saved['self_consumed_savings_pln'] == 77.0

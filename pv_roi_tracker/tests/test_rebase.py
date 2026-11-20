@@ -240,3 +240,13 @@ def test_apply_carries_sc_pricing_from_fetch_month(store):
     rebase.apply(path=store, fetch_month=_fetch_stub({(2026, 7): new}))
     july = next(r for r in historic_store.load(store) if r.month == 7)
     assert july.sc_pricing == 'hourly_zone'
+
+
+def test_merge_month_keeps_hourly_zone_when_fetch_degrades():
+    old = _JULY_OLD.to_dict()
+    old['sc_pricing'] = 'hourly_zone'
+    new = _july_new()
+    new.sc_pricing = 'monthly_avg'
+    merged = rebase._merge_month(old, new)
+    assert merged['sc_pricing'] == 'hourly_zone'
+    assert merged['self_consumed_savings_pln'] == 350.0

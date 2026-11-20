@@ -86,7 +86,8 @@ def _build(records: list, reconciled_months: set, fetch_hourly: FetchHourly,
         old_pln = d.get('self_consumed_savings_pln')
         if new_pln is not None:
             d['self_consumed_savings_pln'] = new_pln
-        d['sc_pricing'] = tag
+        if new_pln is not None or d.get('sc_pricing') != 'hourly_zone':
+            d['sc_pricing'] = tag  # chwilowy brak danych nie degraduje wyceny godzinowej
         shown_new = new_pln if new_pln is not None else old_pln
         delta = (round(shown_new - old_pln, 2)
                  if isinstance(shown_new, (int, float)) and isinstance(old_pln, (int, float))
@@ -145,7 +146,15 @@ def apply(path: Path = historic_store.DEFAULT_PATH, reconciled_months: Optional[
     if path.exists():
         backup_path = _write_backup(path)
 
-    doc['months'] = new_dicts
+    # Pobieranie godzinowe jest wolne — przed zapisem czytamy dokument ponownie i nakładamy
+    # tylko dwa pola, żeby nie nadpisać zmian zapisanych w międzyczasie (faktura, zamknięcie miesiąca).
+    repriced = {(d['year'], d['month']): d for d in new_dicts}
+    doc = historic_store._load_document(path)
+    for m in doc.get('months', []):
+        new = repriced.get((m.get('year'), m.get('month')))
+        if new is not None:
+            m['self_consumed_savings_pln'] = new.get('self_consumed_savings_pln')
+            m['sc_pricing'] = new.get('sc_pricing')
     historic_store._save_document(doc, path)
     logger.info('sc_reprice applied: %d month(s), backup %s', len(report['months']), backup_path)
     report['backup_path'] = str(backup_path) if backup_path else None

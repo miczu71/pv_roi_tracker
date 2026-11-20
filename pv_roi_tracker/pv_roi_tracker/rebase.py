@@ -87,6 +87,10 @@ def _merge_month(old: dict, new: MonthlyRecord) -> dict:
     new_dict = new.to_dict()
     for f in _MERGE_FIELDS:
         merged[f] = new_dict.get(f)
+    if old.get('sc_pricing') == 'hourly_zone' and new_dict.get('sc_pricing') != 'hourly_zone':
+        # chwilowy brak danych godzinowych nie degraduje wcześniejszej wyceny strefowej
+        merged['self_consumed_savings_pln'] = old.get('self_consumed_savings_pln')
+        merged['sc_pricing'] = 'hourly_zone'
     return merged
 
 
