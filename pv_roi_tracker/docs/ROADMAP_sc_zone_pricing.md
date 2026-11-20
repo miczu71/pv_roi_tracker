@@ -58,3 +58,16 @@ w worktree `wt new`; E2 oznaczony „ryzyko” → sonnet-worker; po każdej pac
 
 ## Weryfikacja (ogólnie)
 `uv run pytest` w `~/dev/pv_roi_tracker/pv_roi_tracker` po każdym etapie; po wydaniu historia sensorów z HA (24 h).
+
+## Status
+- **E1 ZROBIONE 2026-11-20** — commit `bcf4823` (kod + 16 nowych testów), `67c68e1` (docs). Weryfikacja: pełny pytest 1560 passed / 23 skipped
+  (baseline 1544), claimcheck 0/7 flag, verifier (Haiku) APPROVE bez blokujących. Wydanie NIE zrobione (jedno wydanie na koniec, E4); kopia
+  `/config/addons/pv_roi_tracker` niezsynchronizowana (dual-push przy wydaniu).
+- E2, E3, E4: do zrobienia.
+
+### Znaleziska E1 (do E2/E4)
+- `rebase._default_fetch` (`rebase.py:71`) woła `read_month_from_statistics` bez `price_at` → `rebase apply` cofnąłby wycenę do starej metody. Nie uruchamiać rebase przed E2.
+- `historic_store.reconcile_invoice` (`historic_store.py:326`) po fakturze nadpisuje `self_consumed_savings_pln` = sc × blended → E2.
+- Każdy poll (30 min) robi 2 dodatkowe zapytania LTS godzinowe (timeout 60 s) — sprawdzić czas na żywo przy E4.
+- Σ_h max(0, p−e) kWh może przekraczać miesięczne `self_consumed_kwh` (godziny z eksportem > produkcją, np. rozładowanie baterii) — PLN nie jest powiązany z tym kWh; zgodne z założeniem.
+- ruff bez konfiguracji projektu daje 748 uwag w całym repo (stan sprzed E1) — nie bramka.
