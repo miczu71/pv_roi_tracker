@@ -18,7 +18,7 @@ from typing import Callable, Optional
 from . import historic_store, roi
 from .models import MonthlyRecord
 from .rebase import _roi_headline
-from .sc_pricing import zone_priced_self_consumption
+from .sc_pricing import hourly_sc, zone_priced_self_consumption
 
 logger = logging.getLogger(__name__)
 
@@ -29,13 +29,7 @@ PriceAt = Callable[[str], Optional[float]]
 def _default_fetch_hourly(year: int, month: int) -> tuple:
     from . import live_reader
     sources = live_reader.get_energy_dashboard_sources()
-    return (live_reader.get_hourly_role_kwh(sources['solar'], year, month),
-            live_reader.get_hourly_role_kwh(sources['grid_export'], year, month))
-
-
-def _hourly_sc(produced_h: dict, exported_h: dict) -> dict:
-    """Autokonsumpcja per godzina: max(0, produkcja − eksport)."""
-    return {h: max(0.0, v - exported_h.get(h, 0.0)) for h, v in produced_h.items()}
+    return live_reader.get_hourly_solar_export(sources, year, month)
 
 
 def _reprice_record(rec: dict, frozen: bool, fetch_hourly: FetchHourly,
@@ -56,7 +50,7 @@ def _reprice_record(rec: dict, frozen: bool, fetch_hourly: FetchHourly,
 
     if not isinstance(old_kwh, (int, float)):
         return fallback
-    sc_h = _hourly_sc(produced_h, exported_h)
+    sc_h = hourly_sc(produced_h, exported_h)
     total = sum(sc_h.values())
     if total <= 0:
         return fallback
@@ -79,7 +73,6 @@ def _build(records: list, reconciled_months: set, fetch_hourly: FetchHourly,
         raise ValueError('price_at is required')
     months_out, unchanged = [], []
     new_dicts: list[dict] = []
-    new_records: list[MonthlyRecord] = []
 
     for r in sorted(records, key=lambda rec: (rec.year, rec.month)):
         d = r.to_dict()
@@ -87,7 +80,6 @@ def _build(records: list, reconciled_months: set, fetch_hourly: FetchHourly,
         if not historic_store.has_energy_data(r.produced_kwh):
             unchanged.append(ym)
             new_dicts.append(d)
-            new_records.append(r)
             continue
         frozen = (r.year, r.month) in reconciled_months
         new_pln, tag, method, kwh = _reprice_record(d, frozen, fetch_hourly, price_at)
@@ -103,13 +95,12 @@ def _build(records: list, reconciled_months: set, fetch_hourly: FetchHourly,
                            'new_pln': shown_new, 'delta_pln': delta,
                            'kwh': kwh, 'frozen': frozen})
         new_dicts.append(d)
-        new_records.append(MonthlyRecord.from_dict(d))
 
     report = {
         'months': months_out,
         'unchanged': unchanged,
         'roi_before': _roi_headline(roi.calculate(records, **roi_kwargs)),
-        'roi_after': _roi_headline(roi.calculate(new_records, **roi_kwargs)),
+        'roi_after': _roi_headline(roi.calculate([MonthlyRecord.from_dict(d) for d in new_dicts], **roi_kwargs)),
         'total_delta_pln': round(sum(m['delta_pln'] or 0.0 for m in months_out), 2),
     }
     return report, new_dicts

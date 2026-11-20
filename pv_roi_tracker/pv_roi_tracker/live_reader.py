@@ -405,14 +405,18 @@ def get_hourly_role_kwh(entity_ids: list, year: int, month: int) -> dict:
         return {}
 
 
+def get_hourly_solar_export(sources: dict, year: int, month: int) -> tuple:
+    """(produkcja, eksport) godzinowo dla miesiąca."""
+    return (get_hourly_role_kwh(sources['solar'], year, month),
+            get_hourly_role_kwh(sources['grid_export'], year, month))
+
+
 def _zone_priced_sc(year: int, month: int, sources: dict, price_at) -> tuple:
     """(PLN, tag) autokonsumpcji wycenionej godzina po godzinie; (None, None) bez price_at,
     (None, 'monthly_avg') gdy brak danych godzinowych lub ceny, inaczej (PLN, 'hourly_zone')."""
     if price_at is None:
         return None, None
-    produced_h = get_hourly_role_kwh(sources['solar'], year, month)
-    exported_h = get_hourly_role_kwh(sources['grid_export'], year, month)
-    res = zone_priced_self_consumption(produced_h, exported_h, price_at)
+    res = zone_priced_self_consumption(*get_hourly_solar_export(sources, year, month), price_at)
     if res is None:
         return None, 'monthly_avg'
     return res[1], 'hourly_zone'
@@ -621,9 +625,8 @@ def get_energy_window(start_date: date, end_date_exclusive: date) -> dict:
         return empty
 
     sources = get_energy_dashboard_sources()
-    arb_entity = _ARB_ENTITY
     entity_ids = (_all_role_entities(sources)
-                 + _ZONE_PEAK_METERS + _ZONE_OFFPEAK_METERS + [arb_entity])
+                 + _ZONE_PEAK_METERS + _ZONE_OFFPEAK_METERS + [_ARB_ENTITY])
     start_iso = _dt(start_date.year, start_date.month, start_date.day,
                     tzinfo=ZoneInfo(_TZ_NAME)).isoformat()
     end_iso = _dt(end_date_exclusive.year, end_date_exclusive.month, end_date_exclusive.day,
@@ -663,7 +666,7 @@ def get_energy_window(start_date: date, end_date_exclusive: date) -> dict:
         'offpeak':           _role_sum(_ZONE_OFFPEAK_METERS),
         'battery_charge':    _role_sum(sources['battery_charge']),
         'battery_discharge': _role_sum(sources['battery_discharge']),
-        'arb_kwh':           _entity_sum(arb_entity),
+        'arb_kwh':           _entity_sum(_ARB_ENTITY),
         'zone_kwh':          _zone_kwh_from({e: _entity_sum(e) for e in _ZONE_METER_ZONES}),
     }
 
@@ -857,9 +860,12 @@ def _build_record(
     consumed = (self_consumed_kwh + imported
                if (self_consumed_kwh is not None and imported is not None) else None)
 
-    self_consumed_savings_pln = round(self_consumed_kwh * buy_price, 2) if (self_consumed_kwh is not None and buy_price is not None) else None
     if sc_savings_pln is not None:
         self_consumed_savings_pln = round(sc_savings_pln, 2)
+    elif self_consumed_kwh is not None and buy_price is not None:
+        self_consumed_savings_pln = round(self_consumed_kwh * buy_price, 2)
+    else:
+        self_consumed_savings_pln = None
     purchase_cost_pln         = round(purchased * buy_price, 2)         if (purchased is not None and buy_price is not None) else None
     feedin_revenue_pln        = round((exported or 0.0) * rcem_price, 2) if (exported is not None and rcem_price is not None) else None
     specific_yield            = round(produced / _SYSTEM_KWP, 1)         if _SYSTEM_KWP else None

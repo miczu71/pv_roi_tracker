@@ -491,13 +491,15 @@ def main() -> None:
                    co2_factor=CO2_FACTOR, asset_lifetime_years=ASSET_LIFETIME_YEARS,
                    panel_degradation_pct_year=PANEL_DEGRADATION_PCT_YEAR)
 
+    def _rebase_fetch_month(y: int, m: int):
+        return live_reader.read_month_from_statistics(y, m, price_at=_sc_price_at())
+
     def _simulate_rebase() -> dict:
         from . import rebase as _rebase
         records = historic_store.load(HISTORIC_PATH)
         return _rebase.simulate(
             records, reconciled_months=_reconciled_months(),
-            fetch_month=lambda y, m: live_reader.read_month_from_statistics(
-                y, m, price_at=_sc_price_at()),
+            fetch_month=_rebase_fetch_month,
             roi_kwargs=_roi_kwargs())
 
     _web.set_simulate_rebase_callback(_simulate_rebase)
@@ -506,8 +508,7 @@ def main() -> None:
         from . import rebase as _rebase
         report = _rebase.apply(
             path=HISTORIC_PATH, reconciled_months=_reconciled_months(),
-            fetch_month=lambda y, m: live_reader.read_month_from_statistics(
-                y, m, price_at=_sc_price_at()),
+            fetch_month=_rebase_fetch_month,
             roi_kwargs=_roi_kwargs())
         poll_and_publish()
         return report

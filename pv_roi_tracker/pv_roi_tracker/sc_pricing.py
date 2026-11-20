@@ -11,6 +11,11 @@ from typing import Callable, Optional
 logger = logging.getLogger(__name__)
 
 
+def hourly_sc(produced_h: dict, exported_h: dict) -> dict:
+    """Autokonsumpcja per godzina: max(0, produkcja − eksport)."""
+    return {h: max(0.0, v - exported_h.get(h, 0.0)) for h, v in produced_h.items()}
+
+
 def zone_priced_self_consumption(
     produced_h: dict,
     exported_h: dict,
@@ -24,8 +29,9 @@ def zone_priced_self_consumption(
         return None
     kwh = 0.0
     pln = 0.0
-    for hour in sorted(produced_h):
-        sc = max(0.0, produced_h[hour] - exported_h.get(hour, 0.0))
+    sc_h = hourly_sc(produced_h, exported_h)
+    for hour in sorted(sc_h):
+        sc = sc_h[hour]
         if sc <= 0.0:
             continue
         price = price_at(hour)
