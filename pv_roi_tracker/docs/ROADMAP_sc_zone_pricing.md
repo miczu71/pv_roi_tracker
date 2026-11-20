@@ -63,7 +63,16 @@ w worktree `wt new`; E2 oznaczony „ryzyko” → sonnet-worker; po każdej pac
 - **E1 ZROBIONE 2026-11-20** — commit `bcf4823` (kod + 16 nowych testów), `67c68e1` (docs). Weryfikacja: pełny pytest 1560 passed / 23 skipped
   (baseline 1544), claimcheck 0/7 flag, verifier (Haiku) APPROVE bez blokujących. Wydanie NIE zrobione (jedno wydanie na koniec, E4); kopia
   `/config/addons/pv_roi_tracker` niezsynchronizowana (dual-push przy wydaniu).
-- E2, E3, E4: do zrobienia.
+- **E2 ZROBIONE 2026-11-20** — commit `921e88e` (kod + 21 testów), plan `5af6e45`. Nowe: `sc_reprice.py` (simulate/apply, kopia `historic.json.bak-<UTC µs>` w trybie 'x'),
+  trasy `POST /api/historic/simulate-sc-reprice` i `apply-sc-reprice`; `rebase._MERGE_FIELDS` + `sc_pricing`; `main` daje `rebase` `fetch_month` z `price_at`;
+  `reconcile_invoice` skaluje PLN dla `hourly_zone`. Weryfikacja: pytest 1582 passed / 23 skipped (baseline 1560), claimcheck 0/7,
+  verifier REJECT (kolizja nazwy kopii w tej samej sekundzie) → poprawka sonnet-worker, sprawdzona przeze mnie (pytest zielony). Apply na produkcji NIE uruchomiony (E4, za zgodą).
+- E3, E4: do zrobienia.
+
+### Znaleziska E2 (do E4)
+- Zapis przez `MonthlyRecord.from_dict→to_dict` gubi pola spoza dataclass i dopisuje brakujące jako null (dotyczy też istniejącego `rebase.apply`) — przed apply na produkcji porównać klucze `historic.json`.
+- `simulate` dla miesiąca z fallbackiem `monthly_avg` zwraca `kwh` = `self_consumed_kwh` rekordu (może być None).
+- `main._sc_price_at` i `read_month_from_statistics(price_at=)` niewywołane na żywo — pierwszy test na żywo w E4 (`simulate`).
 
 ### Znaleziska E1 (do E2/E4)
 - `rebase._default_fetch` (`rebase.py:71`) woła `read_month_from_statistics` bez `price_at` → `rebase apply` cofnąłby wycenę do starej metody. Nie uruchamiać rebase przed E2.
