@@ -547,6 +547,14 @@ def main() -> None:
 
     invoice_parser.set_zone_tariff_provider(_zone_tariff_for)
 
+    def _reconcile_month(month_key: str) -> bool:
+        """Rekonsyliuje historic z danych miesiąca (części faktur); przy sukcesie oznacza miesiąc."""
+        reconciled = historic_store.reconcile_invoice(
+            invoice_store.month_data(invoice_store.load(INVOICE_PATH), month_key), HISTORIC_PATH)
+        if reconciled:
+            invoice_store.mark_reconciled(month_key, INVOICE_PATH, clear_training=False)
+        return reconciled
+
     def _invoice_reconcile(parsed_list: list, raw_texts: dict = None,
                            pdf_bytes_map: dict = None) -> None:
         for data in parsed_list:
@@ -569,10 +577,7 @@ def main() -> None:
                                      path=INVOICE_PATH)
                 # Miesiąc rozliczony dwiema fakturami (zmiana taryfy) rekonsyliuje sumą kWh.
                 month_key = f'{data.year}-{data.month:02d}'
-                reconciled = historic_store.reconcile_invoice(
-                    invoice_store.month_data(invoice_store.load(INVOICE_PATH), month_key), HISTORIC_PATH)
-                if reconciled:
-                    invoice_store.mark_reconciled(month_key, INVOICE_PATH, clear_training=False)
+                reconciled = _reconcile_month(month_key)
                 logger.info('Invoice %d-%02d ingested (reconciled=%s)',
                             data.year, data.month, reconciled)
         poll_and_publish()
@@ -589,8 +594,7 @@ def main() -> None:
             invoice_store.promote_part(month_key, INVOICE_PATH)
             stored = invoice_store.load(INVOICE_PATH)
             if month_key in stored:
-                if historic_store.reconcile_invoice(invoice_store.month_data(stored, month_key), HISTORIC_PATH):
-                    invoice_store.mark_reconciled(month_key, INVOICE_PATH, clear_training=False)
+                if _reconcile_month(month_key):
                     record = {**record, 'pre_reconcile': None}
                 else:
                     # Pozostała część niepełna (guard) — sumy z usuniętej faktury wracają do stanu sprzed niej.
@@ -632,10 +636,7 @@ def main() -> None:
                               pre_reconcile=snap, path=INVOICE_PATH)
         # Rekonsyliacja z danych miesiąca (jak _invoice_reconcile): miesiąc z częściami nie bierze sum jednej faktury.
         month_key = f'{year}-{month:02d}'
-        reconciled = historic_store.reconcile_invoice(
-            invoice_store.month_data(invoice_store.load(INVOICE_PATH), month_key), HISTORIC_PATH)
-        if reconciled:
-            invoice_store.mark_reconciled(month_key, INVOICE_PATH, clear_training=False)
+        _reconcile_month(month_key)
         # Remove the stub if it was one
         if key.startswith('unparsed-'):
             invoice_store.remove(key, INVOICE_PATH)

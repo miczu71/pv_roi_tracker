@@ -123,21 +123,7 @@ def check_invoices(module, invoices: dict, tolerance_pct: float = TOLERANCE_PCT)
             iv = inv.get(f)
             if iv is None or f not in mod:
                 continue
-            try:
-                iv = float(iv)
-            except (TypeError, ValueError):
-                logger.warning('Faktura %s: pole %s ma złą wartość %r — pominięte', ym, f, iv)
-                continue
-            mv = float(mod[f])
-            if mv == 0:
-                diff = 0.0 if iv == 0 else None
-                ok = iv == 0
-            else:
-                diff = 100.0 * (iv - mv) / mv
-                ok = abs(diff) <= tolerance_pct
-            fields[f] = {'invoice': iv, 'module': mv, 'diff_pct': diff, 'ok': ok}
-            if not ok:
-                diverged.append(f)
+            _compare(fields, diverged, f, iv, float(mod[f]), tolerance_pct)
         if not fields:
             continue
         out[ym] = {'tariff': tariff, 'period_from': module._period_info(mid)[1],
