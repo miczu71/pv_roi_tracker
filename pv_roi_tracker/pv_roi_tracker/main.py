@@ -244,7 +244,7 @@ def _hour_price(tmod, dt, skip_months=(), g13_invoice=None):
     """Cena brutto godziny dla taryf trójstrefowych (G13, G13s); None dla G11/G12/G12w, miesięcy z
     `skip_months` i dat poza katalogiem. `g13_invoice`: `{YYYY-MM: {morning|evening|other: brutto}}` —
     stawki stref z faktury G13 mają pierwszeństwo przed katalogiem w godzinach trójstrefowych."""
-    from .tariff_invoice_check import G13_ZONES
+    from .tariff_invoice_check import G13_ZONES        # lokalnie, jak reszta importów taryf w main.py
     from .tariff_zones import THREE_ZONE_TARIFFS
     ym = dt.strftime('%Y-%m')
     if ym in skip_months:

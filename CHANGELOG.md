@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.61.0] — 2026-11-25
+
+### Dodano
+- **Stawki stref G13 z faktury jako bieżące stawki (jak G12W dla szczytu/poza szczytem).** Stawki brutto stref z najnowszej faktury G13 obowiązują od jej okresu dalej, aż przyjdzie nowsza faktura lub ręczna korekta; bez faktury stawki pochodzą z katalogu. Nowe czujniki `pv_rate_morning_gross`, `pv_rate_evening_gross`, `pv_rate_other_gross` (przedpołudniowa / popołudniowa / pozostałe); dotychczasowe `pv_rate_peak_gross` i `pv_rate_offpeak_gross` bez zmian.
+- **Ostrzeżenie o zmianie stawek (dryf) dla G13.** Zakładka Taryfa porównuje stawki trzech stref z najnowszej faktury z katalogiem (próg 0,02 zł/kWh) i pokazuje różnice w banerze i w statusie taryfy.
+- **Pompa ciepła: miesiące G13 z fakturą wyceniane stawkami stref z faktury** (dotąd z katalogu). Godziny taryfy dwustrefowej w tym samym miesiącu i miesiące bez faktury bez zmian.
+
+### Bez zmian
+- Wycena ROI, autokonsumpcji, symulacje i bateria dalej liczą z katalogu taryf (tak jak dla G12W); kontrola zgodności faktury z katalogiem (tolerancja 2%) działa jak dotąd.
+
 ## [0.60.3] — 2026-11-25
 
 ### Naprawiono

@@ -2699,7 +2699,8 @@ function _renderInvKpiCards(invoices, tariffDrift, records, rateTrend) {
     const totalHistoric = (records || []).filter(r => !r.is_current).length;
     const covered = invoices.filter(i => i.reconciled).length;
     const coveragePct = totalHistoric > 0 ? Math.round(covered / totalHistoric * 100) : 0;
-    const hasDrift = tariffDrift && (tariffDrift.peak || tariffDrift.offpeak || tariffDrift.fixed_net);
+    const hasDrift = tariffDrift && (tariffDrift.peak || tariffDrift.offpeak || tariffDrift.fixed_net ||
+      _G13_ZONES.some(z => tariffDrift[z[0]]));
     const driftTxt = hasDrift ? '⚠ zmiana stawek' : '✓ stawki OK';
     const driftCol = hasDrift ? '#e67e22' : '#27ae60';
     cov.innerHTML = '<div style="' + kpiStyle + '">' + lbl('Pokrycie faktury') +
@@ -2713,8 +2714,11 @@ function _renderInvKpiCards(invoices, tariffDrift, records, rateTrend) {
 function _renderDriftBanner(tariffDrift) {
   const banner = document.getElementById('tariffDriftBanner');
   if (!banner) return;
-  if (tariffDrift && (tariffDrift.peak || tariffDrift.offpeak || tariffDrift.fixed_net)) {
+  if (tariffDrift && (tariffDrift.peak || tariffDrift.offpeak || tariffDrift.fixed_net ||
+      _G13_ZONES.some(z => tariffDrift[z[0]]))) {
     let msgs = [];
+    _G13_ZONES.forEach(z => { const d = tariffDrift[z[0]];
+      if (d) msgs.push(z[2] + ': skonfig. ' + d.configured + ' → faktura ' + d.invoice + ' zł/kWh'); });
     if (tariffDrift.peak)      msgs.push('szczyt: skonfig. ' + tariffDrift.peak.configured + ' → faktura ' + tariffDrift.peak.invoice + ' zł/kWh');
     if (tariffDrift.offpeak)   msgs.push('poza szczytem: skonfig. ' + tariffDrift.offpeak.configured + ' → faktura ' + tariffDrift.offpeak.invoice + ' zł/kWh');
     if (tariffDrift.fixed_net) msgs.push('opłaty stałe (net): oczekiwano ' + tariffDrift.fixed_net.expected + ' → faktura ' + tariffDrift.fixed_net.invoice + ' zł/mc');
