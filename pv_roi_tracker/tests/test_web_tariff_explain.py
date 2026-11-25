@@ -33,7 +33,7 @@ def wired(monkeypatch, tmp_path):
 
 def test_rates_ok_i_filtry(client, wired):
     j = client.get('/api/tariff/rates?tariff=G12w&zone=peak&component=energy&from=2026-03-01').get_json()
-    assert j['ok'] and j['count'] == 1 and j['rows'][0]['net'] == 0.622
+    assert j['ok'] and j['count'] == 2 and {r['net'] for r in j['rows']} == {0.622}   # okresy od 2026-02 i od 2026-10
     assert client.get('/api/tariff/rates?q=akcyza&tariff=G11').get_json()['count'] >= 1
 
 

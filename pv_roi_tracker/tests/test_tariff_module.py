@@ -104,7 +104,7 @@ def test_switch_changes_price_on_same_clock(g13_from_nov):
 
 def test_confidence_document_for_confirmed_period(g12w):
     p = g12w.price_at(_at(2026, 10, 29, 12))
-    assert (p.confidence, p.period_from) == ('document', '2026-02-01')
+    assert (p.confidence, p.period_from) == ('document', '2026-10-01')
 
 
 def test_confidence_unconfirmed_for_2025(g12w):
@@ -113,7 +113,7 @@ def test_confidence_unconfirmed_for_2025(g12w):
 
 def test_period_after_catalog_end_is_assumed_not_error(g12w):
     p = g12w.price_at(_at(2027, 3, 10, 12))
-    assert p.confidence == 'assumed' and p.period_from == '2026-02-01'
+    assert p.confidence == 'assumed' and p.period_from == '2026-10-01'
     assert round(p.gross, 4) == 1.2304
 
 
@@ -167,7 +167,7 @@ def test_next_change(g12w):
 def test_legacy_rates_g12w_has_the_thirteen_fields(g12w):
     r = g12w.legacy_rates(date(2026, 10, 29))
     assert round(r['peak_gross'], 4) == 1.2304 and round(r['offpeak_gross'], 4) == 0.6306
-    assert r['fixed_total_net'] == pytest.approx(4.56 + 10.86 + 24.05)
+    assert r['fixed_total_net'] == pytest.approx(0.0 + 10.86 + 24.05)
     assert r['dist_jakosciowa_net'] == pytest.approx(0.0332)
     assert set(r) == {'energy_peak_net', 'energy_offpeak_net', 'dist_var_peak_net', 'dist_var_offpeak_net',
                       'dist_jakosciowa_net', 'dist_oze_net', 'dist_kogeneracja_net',

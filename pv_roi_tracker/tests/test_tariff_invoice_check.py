@@ -46,7 +46,7 @@ def test_invoice_equal_to_module_is_ok(module):
     assert m['ok'] is True
     assert m['diverged'] == []
     assert m['tariff'] == 'G12w'
-    assert m['period_from'] == '2026-02-01'
+    assert m['period_from'] == '2026-10-01'
 
 
 def test_peak_gross_three_percent_diverges(module):
@@ -126,7 +126,7 @@ def test_message_lists_at_most_four_fields():
 # ── invoice_confirmed_periods ────────────────────────────────────────────────
 
 def test_confirmed_periods_only_when_all_months_ok(module):
-    assert tic.invoice_confirmed_periods(tic.check_invoices(module, _invoice(module))) == ['2026-02-01']
+    assert tic.invoice_confirmed_periods(tic.check_invoices(module, _invoice(module))) == ['2026-10-01']
     assert tic.invoice_confirmed_periods(_diverged_check(module)) == []
 
 
@@ -154,7 +154,7 @@ def test_compute_payload_carries_invoice_keys(cat, module):
     inv = {'2026-10-01': {f: module.legacy_rates(date(2026, 10, 15))[f] for f in tic.CHECK_FIELDS}}
     p = tj.compute_payload({}, cat, TariffSettings(), {}, {}, inv, date(2026, 10, 20))
     assert p['invoice_check']['2026-10']['ok'] is True
-    assert p['invoice_confirmed_periods'] == ['2026-02-01']
+    assert p['invoice_confirmed_periods'] == ['2026-10-01']
 
 
 def test_load_notified_missing_file_is_empty(tmp_path):
@@ -215,7 +215,7 @@ def test_g13_partial_month_invoice_matches_catalog(g13_module):
     m = tic.check_invoices(g13_module, _g13_invoice(g13_module))['2026-11']
     assert m['ok'] is True
     assert m['tariff'] == 'G13'
-    assert m['period_from'] == '2026-02-01'
+    assert m['period_from'] == '2026-10-01'
     assert m['diverged'] == []
     assert 'fixed_stalysieciowy_net' in m['fields']
 

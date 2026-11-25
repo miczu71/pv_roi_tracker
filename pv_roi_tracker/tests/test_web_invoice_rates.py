@@ -114,7 +114,7 @@ def test_manual_override_inherits_catalog_fields(tmp_path):
     rates = web.latest_invoice_rates(_today=date(2027, 6, 1))
     assert rates.get('peak_gross') == pytest.approx(1.31, abs=1e-4)       # z korekty 2027-01
     assert rates.get('offpeak_gross') == pytest.approx(0.67, abs=1e-4)    # z korekty 2027-01
-    assert rates.get('fixed_abonament_net') == pytest.approx(4.56, abs=1e-3)  # z katalogu
+    assert rates.get('fixed_abonament_net') == pytest.approx(0.0, abs=1e-3)  # z katalogu (okres od 2026-10: abonament 0)
     assert rates.get('fixed_stalysieciowy_net') == pytest.approx(10.86, abs=1e-3)  # z katalogu
 
 

@@ -2882,8 +2882,44 @@ function _renderInvoiceTable(invoices) {
         'style="font-size:11px;padding:2px 7px;background:#e53e3e;color:#fff;border:none;border-radius:3px;cursor:pointer" ' +
         'title="Usuń fakturę i przywróć dane sprzed uzgodnienia">Usuń</button>';
 
-    rows += '<tr onclick="toggleInvoiceDetail(' + idx + ')" style="cursor:pointer' + (isStub ? ';background:#fff5f5' : '') + '">' +
-      '<td>' + monthCell + '</td>' +
+    // Miesiąc z kilkoma fakturami (zmiana taryfy): nagłówek z sumami, potem faktury chronologicznie
+    const partsHtml = ((inv.parts && inv.parts.length > 0)
+      ? inv.parts.map(function(part, pi) {
+          const partKey = JSON.stringify(part.key).replace(/"/g,'&quot;');
+          const kwh = (part.imported_kwh != null ? ' · import: ' + part.imported_kwh + ' kWh' : '') +
+                      (part.exported_kwh != null ? ' · eksport: ' + part.exported_kwh + ' kWh' : '');
+          const due = part.amount_due != null ? ' · do zapłaty: ' + part.amount_due.toFixed(2) + ' zł' : '';
+          const period = part.billing_period_raw ? ' · ' + String(part.billing_period_raw).replace(/</g,'&lt;') : '';
+          const tar = part.tariff ? ' · ' + _esc(part.tariff) : '';
+          const pdfBtn = part.has_pdf
+            ? '<button onclick="event.stopPropagation();viewInvoicePdf(' + partKey + ')" ' +
+              'style="font-size:10px;padding:1px 5px;background:#718096;color:#fff;border:none;border-radius:2px;cursor:pointer;margin-left:6px">PDF</button>'
+            : '';
+          const delBtn = '<button onclick="event.stopPropagation();removeInvoice(' + partKey + ')" ' +
+            'style="font-size:10px;padding:1px 5px;background:#e53e3e;color:#fff;border:none;border-radius:2px;cursor:pointer;margin-left:3px">Usuń</button>';
+          return '<tr style="background:#f7f7ee">' +
+            '<td colspan="13" style="padding:3px 8px 3px 28px;border-left:3px solid #d69e2e;font-size:11px">' +
+              '<span style="background:#d69e2e;color:#fff;padding:1px 5px;border-radius:2px;font-size:10px;font-weight:600">FAKTURA ' + (pi + 1) + '/' + inv.month_total.invoices + '</span> ' +
+              (part.invoice_number ? _esc(part.invoice_number) : '—') + period + tar + kwh + due + pdfBtn + delBtn +
+            '</td>' +
+          '</tr>';
+        }).join('')
+      : '');
+    const mt = inv.month_total;
+    const monthHeader = mt
+      ? '<tr style="background:#fffbea"><td colspan="13" style="padding:4px 8px;font-size:12px;border-left:3px solid #d69e2e">' +
+          '<b>' + _esc(inv.month || '') + '</b> · rozliczony ' + mt.invoices + ' fakturami' +
+          (mt.imported_kwh != null ? ' · import razem: ' + n0(mt.imported_kwh) + ' kWh' : '') +
+          (mt.exported_kwh != null ? ' · eksport razem: ' + n0(mt.exported_kwh) + ' kWh' : '') +
+          (mt.amount_due != null ? ' · do zapłaty razem: ' + mt.amount_due.toFixed(2) + ' zł' : '') +
+        '</td></tr>'
+      : '';
+    const mainBadge = mt
+      ? '<span style="background:#d69e2e;color:#fff;padding:1px 5px;border-radius:2px;font-size:10px;font-weight:600">FAKTURA ' +
+        mt.invoices + '/' + mt.invoices + '</span> '
+      : '';
+    rows += monthHeader + partsHtml + '<tr onclick="toggleInvoiceDetail(' + idx + ')" style="cursor:pointer' + (isStub ? ';background:#fff5f5' : '') + '">' +
+      '<td>' + mainBadge + monthCell + '</td>' +
       '<td style="color:var(--muted)">' + (inv.invoice_number || '—') + '</td>' +
       '<td style="text-align:right">' + (isStub ? '—' : n0(inv.imported_kwh)) + '</td>' +
       '<td style="text-align:right">' + (isStub ? '—' : n0(inv.exported_kwh)) + '</td>' +
@@ -2938,28 +2974,6 @@ function _renderInvoiceTable(invoices) {
           '</div>') +
       '</td>' +
     '</tr>' +
-    // Part sub-rows (druga faktura rozliczeniowa miesiąca — zmiana taryfy)
-    ((inv.parts && inv.parts.length > 0)
-      ? inv.parts.map(function(part) {
-          const partKey = JSON.stringify(part.key).replace(/"/g,'&quot;');
-          const kwh = (part.imported_kwh != null ? ' · import: ' + part.imported_kwh + ' kWh' : '') +
-                      (part.exported_kwh != null ? ' · eksport: ' + part.exported_kwh + ' kWh' : '');
-          const due = part.amount_due != null ? ' · do zapłaty: ' + part.amount_due.toFixed(2) + ' zł' : '';
-          const period = part.billing_period_raw ? ' · ' + String(part.billing_period_raw).replace(/</g,'&lt;') : '';
-          const pdfBtn = part.has_pdf
-            ? '<button onclick="event.stopPropagation();viewInvoicePdf(' + partKey + ')" ' +
-              'style="font-size:10px;padding:1px 5px;background:#718096;color:#fff;border:none;border-radius:2px;cursor:pointer;margin-left:6px">PDF</button>'
-            : '';
-          const delBtn = '<button onclick="event.stopPropagation();removeInvoice(' + partKey + ')" ' +
-            'style="font-size:10px;padding:1px 5px;background:#e53e3e;color:#fff;border:none;border-radius:2px;cursor:pointer;margin-left:3px">Usuń</button>';
-          return '<tr style="background:#f7f7ee">' +
-            '<td colspan="13" style="padding:3px 8px 3px 28px;border-left:3px solid #d69e2e;font-size:11px">' +
-              '<span style="background:#d69e2e;color:#fff;padding:1px 5px;border-radius:2px;font-size:10px;font-weight:600">CZĘŚĆ MIESIĄCA</span> ' +
-              (part.invoice_number ? _esc(part.invoice_number) : '—') + period + kwh + due + pdfBtn + delBtn +
-            '</td>' +
-          '</tr>';
-        }).join('')
-      : '') +
     // Correction sub-rows (korekty / noty) nested under the billing month
     ((inv.corrections && inv.corrections.length > 0)
       ? inv.corrections.map(function(cor) {

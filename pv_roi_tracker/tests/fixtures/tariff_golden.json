@@ -458,6 +458,86 @@
    "2026-02-01|G13|other": {
     "gross": 0.625701,
     "net": 0.5087
+   },
+   "2026-10-01|G11|all": {
+    "gross": 0.974037,
+    "net": 0.7919
+   },
+   "2026-10-01|G12w|offpeak": {
+    "gross": 0.630621,
+    "net": 0.5127
+   },
+   "2026-10-01|G12w|peak": {
+    "gross": 1.230369,
+    "net": 1.0003
+   },
+   "2026-10-01|G12|day": {
+    "gross": 1.076988,
+    "net": 0.8756
+   },
+   "2026-10-01|G12|night": {
+    "gross": 0.636279,
+    "net": 0.5173
+   },
+   "2026-10-01|G13s|summer_dayoff_night": {
+    "gross": 0.809217,
+    "net": 0.6579
+   },
+   "2026-10-01|G13s|summer_dayoff_offpeak": {
+    "gross": 0.241695,
+    "net": 0.1965
+   },
+   "2026-10-01|G13s|summer_dayoff_peak": {
+    "gross": 0.550794,
+    "net": 0.4478
+   },
+   "2026-10-01|G13s|summer_workday_night": {
+    "gross": 0.809217,
+    "net": 0.6579
+   },
+   "2026-10-01|G13s|summer_workday_offpeak": {
+    "gross": 0.514755,
+    "net": 0.4185
+   },
+   "2026-10-01|G13s|summer_workday_peak": {
+    "gross": 1.275387,
+    "net": 1.0369
+   },
+   "2026-10-01|G13s|winter_dayoff_night": {
+    "gross": 0.796917,
+    "net": 0.6479
+   },
+   "2026-10-01|G13s|winter_dayoff_offpeak": {
+    "gross": 0.613155,
+    "net": 0.4985
+   },
+   "2026-10-01|G13s|winter_dayoff_peak": {
+    "gross": 0.82041,
+    "net": 0.667
+   },
+   "2026-10-01|G13s|winter_workday_night": {
+    "gross": 0.796917,
+    "net": 0.6479
+   },
+   "2026-10-01|G13s|winter_workday_offpeak": {
+    "gross": 0.982032,
+    "net": 0.7984
+   },
+   "2026-10-01|G13s|winter_workday_peak": {
+    "gross": 1.335657,
+    "net": 1.0859
+   },
+   "2026-10-01|G13|evening_peak": {
+    "gross": 1.496049,
+    "net": 1.2163
+   },
+   "2026-10-01|G13|morning_peak": {
+    "gross": 0.904788,
+    "net": 0.7356
+   },
+   "2026-10-01|G13|other": {
+    "gross": 0.625701,
+    "net": 0.5087
    }
   }
  },
@@ -870,10 +950,10 @@
     "dist_var_peak_net": 0.3298,
     "energy_offpeak_net": 0.413,
     "energy_peak_net": 0.622,
-    "fixed_abonament_net": 4.56,
+    "fixed_abonament_net": 0.0,
     "fixed_mocowa_net": 24.05,
     "fixed_stalysieciowy_net": 10.86,
-    "fixed_total_net": 39.47,
+    "fixed_total_net": 34.91,
     "offpeak_gross": 0.6306210000000001,
     "peak_gross": 1.230369
    },
@@ -889,10 +969,10 @@
     "dist_var_peak_net": 0.3298,
     "energy_offpeak_net": 0.413,
     "energy_peak_net": 0.622,
-    "fixed_abonament_net": 4.56,
+    "fixed_abonament_net": 0.0,
     "fixed_mocowa_net": 24.05,
     "fixed_stalysieciowy_net": 10.86,
-    "fixed_total_net": 39.47,
+    "fixed_total_net": 34.91,
     "offpeak_gross": 0.6306210000000001,
     "peak_gross": 1.230369
    },
@@ -908,10 +988,10 @@
     "dist_var_peak_net": 0.3298,
     "energy_offpeak_net": 0.413,
     "energy_peak_net": 0.622,
-    "fixed_abonament_net": 4.56,
+    "fixed_abonament_net": 0.0,
     "fixed_mocowa_net": 24.05,
     "fixed_stalysieciowy_net": 10.86,
-    "fixed_total_net": 39.47,
+    "fixed_total_net": 34.91,
     "offpeak_gross": 0.6306210000000001,
     "peak_gross": 1.230369
    },

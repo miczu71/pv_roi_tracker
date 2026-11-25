@@ -162,7 +162,7 @@ def test_tariff_catalog(client, wired):
     j = client.get('/api/tariff_catalog').get_json()
     assert j['ok'] is True and j['meta']['vat'] == 1.23
     assert 'G12w' in j['zones']
-    assert len(j['periods']) == 6 and all('inherits' not in p for p in j['periods'])
+    assert len(j['periods']) == 7 and all('inherits' not in p for p in j['periods'])
 
 
 def test_tariff_now_wg_bazy_z_inputs(client, wired):

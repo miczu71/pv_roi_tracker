@@ -713,6 +713,7 @@ def _build_invoices_data(records, stored: dict):
                         'key': part_key,
                         'invoice_number': part.get('invoice_number'),
                         'billing_period_raw': part.get('billing_period_raw'),
+                        'tariff': part.get('tariff'),
                         'imported_kwh': part.get('imported_kwh'),
                         'exported_kwh': part.get('exported_kwh'),
                         'amount_due': part.get('amount_due_pln'),
@@ -720,6 +721,16 @@ def _build_invoices_data(records, stored: dict):
                         'has_pdf': bool(part.get('pdf_path')),
                         'warnings': part.get('warnings', []),
                     })
+
+            # Miesiąc rozliczony kilkoma fakturami: sumy nagłówka (faktura główna + części)
+            month_total = None
+            if parts:
+                recs = [inv] + [stored[pt['key']] for pt in parts]
+                def _sum(field):
+                    vals = [r.get(field) for r in recs if r.get(field) is not None]
+                    return round(sum(vals), 2) if vals else None
+                month_total = {'invoices': len(recs), 'imported_kwh': _sum('imported_kwh'),
+                               'exported_kwh': _sum('exported_kwh'), 'amount_due': _sum('amount_due_pln')}
 
             inv_warnings = inv.get('warnings', [])
             out.append({
@@ -750,6 +761,8 @@ def _build_invoices_data(records, stored: dict):
                 'invoice_number': inv.get('invoice_number'),
                 'filename': inv.get('filename'),
                 'billing_period_raw': inv.get('billing_period_raw'),
+                'tariff': inv.get('tariff'),
+                'month_total': month_total,
                 'warnings': inv_warnings,
                 'warnings_count': len(inv_warnings),
                 # Detail fields for expand panel

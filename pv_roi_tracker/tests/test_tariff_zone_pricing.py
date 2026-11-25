@@ -149,8 +149,8 @@ def test_simulate_s1_hour_price_fn_wycenia_godzine(g13):
 
 def test_feed_payload_oplaty_stale_g13_2026(g13):
     attrs = feed_payload(g13, datetime(2026, 11, 17, 10, 15))['attributes']
-    assert attrs['fixed_monthly_net'] == pytest.approx(39.47, abs=0.005)
-    assert attrs['fixed_monthly_gross'] == pytest.approx(39.47 * 1.23, abs=0.01)
+    assert attrs['fixed_monthly_net'] == pytest.approx(34.91, abs=0.005)
+    assert attrs['fixed_monthly_gross'] == pytest.approx(34.91 * 1.23, abs=0.01)
 
 
 # ── TariffModule.zone_prices_for_month ───────────────────────────────────────

@@ -141,7 +141,7 @@
     },
     {
       "valid_from": "2026-02-01",
-      "valid_to": "2026-12-31",
+      "valid_to": "2026-09-30",
       "confirmed": true,
       "sources": ["A", "B", "E", "G"],
       "energy_net_note": "G13s: brutto z oferty „Tanie godziny” (PDF 12/2025 i 08/2026, identyczne ceny) / 1,23 − 0,005 akcyzy; wniosek, nie zapis dokumentu; dostępność dla Wrocławia niepotwierdzona",
@@ -182,6 +182,14 @@
         "capacity_by_annual_kwh": {"lt500": 4.29, "500_1200": 10.31, "1200_2800": 17.18, "gt2800": 24.05},
         "sales_fee_by_tariff": {"G13s": 19.10}
       }
+    },
+    {
+      "valid_from": "2026-10-01",
+      "valid_to": "2026-12-31",
+      "confirmed": true,
+      "note": "Jak okres od 2026-02-01, ale opłata abonamentowa 0,00 zł (faktury 0020/26, 0021/26, 0022/26: „Stawka opłaty abonamentowej 0,00”; przyczyny nie podaje żaden dokument, wcześniej 4,56). Do potwierdzenia na kolejnych fakturach.",
+      "inherits": "2026-02-01",
+      "override": {"fixed_net": {"subscription_dist": 0.0}}
     }
   ],
   "dynamic_sales": {

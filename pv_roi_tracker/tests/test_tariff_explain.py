@@ -195,8 +195,9 @@ def test_rates_q_i_skalary_bez_strefy(module):
 def test_rates_null_to_null_nie_zero(cat):
     import copy
     c = copy.deepcopy(cat)
-    c['periods'][-1]['energy_net']['G11']['all'] = None
-    c['periods'][-1]['oze_net'] = None
+    feb = next(p for p in c['periods'] if p['valid_from'] == '2026-02-01')   # okres z datą 2026-03-01
+    feb['energy_net']['G11']['all'] = None
+    feb['oze_net'] = None
     r = te.rates_rows(TariffModule(c), {}, tariff='G11', date_from='2026-03-01')
     energy = next(x for x in r['rows'] if x['component'] == 'energy')
     oze = next(x for x in r['rows'] if x['component'] == 'oze')

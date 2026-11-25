@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.60.1] — 2026-11-25
+
+### Naprawiono
+- **Opłata abonamentowa 0,00 zł od 2026-10-01.** Faktury 0020/26, 0021/26 i 0022/26 mają stawkę abonamentu 0,00 (wcześniej 4,56). Katalog taryf ma nowy okres od 2026-10-01 (`inherits` z okresu od lutego, `subscription_dist: 0.0`); opłata stała G12w spada z 39,47 do 34,91 zł netto/mies. Kontrola `invoice_check` dla października przechodzi, a okres od lutego do września potwierdza się osobno.
+
+### Zmieniono
+- **Miesiąc z kilkoma fakturami (zmiana taryfy)** pokazuje nagłówek z sumami (import, eksport, do zapłaty) i faktury w kolejności chronologicznej jako „FAKTURA n/N” z okresem i taryfą, zamiast jednej „głównej” z doczepioną „częścią”. Magazyn faktur bez zmian.
+
 ## [0.60.0] — 2026-11-25
 
 ### Dodano
