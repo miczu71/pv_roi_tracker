@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.60.0] — 2026-11-25
+
+### Dodano
+- **Parser faktur G13 (trzy strefy).** Faktura 0022/26 (G13, okres częściowy) jest rozpoznawana z układu: nowe pola `energy/dist_var/*_gross/imported/exported_kwh` dla stref `_morning`/`_evening`/`_other`, VAT z „Rozliczenie VAT”, brak fałszywych ostrzeżeń dwustrefowych (pola peak/offpeak dla G13 = brak).
+- **Kontrola stawek per strefa** (`tariff_invoice_check`) wg okresu faktury, nie miesiąca: stawki stref, opłaty jakościowa/OZE/kogeneracyjna, stała sieciowa proporcjonalnie do dni. Moc umowna/mocowa nie jest porównywana.
+
+### Naprawiono
+- Jedna definicja okresu trzystrefowego (`three_zone_tariff_over`) w wycenie faktury; logi zamiast cichych `except`; log miesięcy G13 wykluczonych z pompy ciepła.
+- Usunięcie części faktury przy niepełnej pozostałej części przywraca historic ze snapshotu (z logiem); trening faktury rekonsyliuje z danych miesiąca (części), a korekty/noty nie rekonsyliują historic (jak ingest).
+
 ## [0.59.0] — 2026-11-20
 
 ### Naprawiono
