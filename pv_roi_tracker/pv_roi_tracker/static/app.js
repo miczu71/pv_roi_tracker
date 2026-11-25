@@ -2814,6 +2814,27 @@ function renderDepositChart(invoices) {
 }
 
 /* Invoice table with click-to-expand detail rows */
+/* Strefy taryfy faktury: G13 (3 strefy, pola *_gross stref) albo G12W/G11 (szczyt/poza). */
+const _G13_ZONES = [['morning', 'przedpoł.', 'przedpołudniowa'], ['evening', 'popoł.', 'popołudniowa'], ['other', 'pozost.', 'pozostałe godziny']];
+function _isG13(inv) { return _G13_ZONES.some(z => inv[z[0] + '_gross'] != null); }
+function _zoneRates(inv) {
+  if (_isG13(inv)) return _G13_ZONES.map(z => [z[1], inv[z[0] + '_gross']]).filter(r => r[1] != null);
+  return [['szczyt', inv.peak_gross], ['poza', inv.offpeak_gross]].filter(r => r[1] != null);
+}
+function _zoneRatesCell(inv) {
+  const rates = _zoneRates(inv);
+  if (rates.length === 0) return '<td style="text-align:right;font-size:11px">—</td>';
+  return '<td style="text-align:right;font-size:11px"><table style="margin-left:auto;border-collapse:collapse;font-size:11px;line-height:1.45">' +
+    rates.map(r => '<tr><td style="color:var(--muted);padding:0 6px 0 0;border:none">' + r[0] +
+      '</td><td style="text-align:right;padding:0;border:none;font-variant-numeric:tabular-nums">' + r[1].toFixed(4) + '</td></tr>').join('') +
+    '</table></td>';
+}
+/* Panel szczegółów: wartości per strefa jako „etykieta: wartość” (G13: 3 strefy, inaczej szczyt/poza). */
+function _zoneLines(inv, field, fmt) {
+  if (_isG13(inv)) return _G13_ZONES.map(z => z[2] + ': ' + fmt(inv[field.replace('{z}', z[0])])).join('<br>');
+  return null;
+}
+
 function _renderInvoiceTable(invoices) {
   const wrap = document.getElementById('invoiceTableWrap');
   if (!wrap) return;
@@ -2906,8 +2927,7 @@ function _renderInvoiceTable(invoices) {
             '<td style="text-align:right">—</td><td style="text-align:right">—</td>' +
             '<td style="text-align:right">' + (part.amount_due != null ? part.amount_due.toFixed(2) + ' zł' : '—') + '</td>' +
             '<td style="text-align:right">' + (part.deposit_used != null ? part.deposit_used.toFixed(2) + ' zł' : '—') + '</td>' +
-            '<td style="text-align:right;font-size:11px">' + n4(part.peak_gross) + '</td>' +
-            '<td style="text-align:right;font-size:11px">' + n4(part.offpeak_gross) + '</td>' +
+            _zoneRatesCell(part) +
             '<td></td>' +
             '<td style="text-align:center">' + ((part.warnings_count || 0) > 0 ? '<span title="' + warnTip + '" style="cursor:help;color:#c0392b">⚠ ' + part.warnings_count + '</span>' : '') + '</td>' +
             '<td style="text-align:right;white-space:nowrap">' + pdfBtn + delBtn + '</td>' +
@@ -2925,7 +2945,7 @@ function _renderInvoiceTable(invoices) {
           '<td style="text-align:right;color:' + dEcol + '">' + dE + '</td>' +
           '<td style="text-align:right">' + (mt.amount_due != null ? mt.amount_due.toFixed(2) + ' zł' : '—') + '</td>' +
           '<td style="text-align:right">' + (mt.deposit_used != null ? mt.deposit_used.toFixed(2) + ' zł' : '—') + '</td>' +
-          '<td></td><td></td>' +
+          '<td></td>' +
           '<td style="text-align:center">' + statusCell + '</td><td></td><td></td>' +
         '</tr>'
       : '';
@@ -2939,25 +2959,24 @@ function _renderInvoiceTable(invoices) {
       '<td style="text-align:right;color:' + dEcol + '">' + (isStub ? '—' : (mt ? '—' : dE)) + '</td>' +
       '<td style="text-align:right">' + (inv.amount_due != null ? inv.amount_due.toFixed(2) + ' zł' : '—') + '</td>' +
       '<td style="text-align:right">' + (inv.deposit_used != null ? inv.deposit_used.toFixed(2) + ' zł' : '—') + '</td>' +
-      '<td style="text-align:right;font-size:11px">' + (isStub ? '—' : n4(inv.peak_gross)) + '</td>' +
-      '<td style="text-align:right;font-size:11px">' + (isStub ? '—' : n4(inv.offpeak_gross)) + '</td>' +
+      (isStub ? '<td style="text-align:right;font-size:11px">—</td>' : _zoneRatesCell(inv)) +
       '<td style="text-align:center">' + statusCell + '</td>' +
       '<td style="text-align:center">' + warnCell + '</td>' +
       '<td style="text-align:right;white-space:nowrap">' + actionBtns + '</td>' +
     '</tr>' +
     '<tr id="inv-detail-' + idx + '" style="display:none;background:var(--bg)">' +
-      '<td colspan="13" style="padding:10px 14px">' +
+      '<td colspan="12" style="padding:10px 14px">' +
         (isStub
           ? '<div style="font-size:12px;color:#c0392b"><b>Błąd parsowania:</b> ' + (inv.parse_error||'').replace(/</g,'&lt;') + '</div>' +
             '<div style="font-size:12px;color:var(--muted);margin-top:4px">Kliknij <b>Trenuj</b>, aby ręcznie uzupełnić dane i nauczyć parser tego układu.</div>'
           : '<div style="display:flex;gap:24px;flex-wrap:wrap;font-size:12px">' +
             '<div><b>Sprzedaż energii (net zł/kWh)</b><br>' +
-              'Szczyt: ' + n4(inv.energy_peak_net) + '<br>' +
-              'Poza szczytem: ' + n4(inv.energy_offpeak_net) +
+              (_zoneLines(inv, 'energy_{z}_net', n4) ||
+                ('Szczyt: ' + n4(inv.energy_peak_net) + '<br>' + 'Poza szczytem: ' + n4(inv.energy_offpeak_net))) +
             '</div>' +
             '<div><b>Dystrybucja zmienna (net zł/kWh)</b><br>' +
-              'Skł. zmienny szczyt: ' + n4(inv.dist_var_peak_net) + '<br>' +
-              'Skł. zmienny poza: ' + n4(inv.dist_var_offpeak_net) + '<br>' +
+              (_zoneLines(inv, 'dist_var_{z}_net', n4) ||
+                ('Skł. zmienny szczyt: ' + n4(inv.dist_var_peak_net) + '<br>' + 'Skł. zmienny poza: ' + n4(inv.dist_var_offpeak_net))) + '<br>' +
               'Jakościowa: ' + n4(inv.dist_jakosciowa_net) + '<br>' +
               'OZE: ' + n4(inv.dist_oze_net) + '<br>' +
               'Kogeneracja: ' + n4(inv.dist_kogeneracja_net) +
@@ -2973,9 +2992,9 @@ function _renderInvoiceTable(invoices) {
               'Z poprzednich: ' + n2(inv.deposit_previous) + '<br>' +
               'Rozliczony: ' + n2(inv.deposit_used) +
             '</div>' +
-            '<div><b>Import szczyt/poza (kWh)</b><br>' +
-              'Szczyt: ' + n0(inv.imported_kwh_peak) + '<br>' +
-              'Poza: ' + n0(inv.imported_kwh_offpeak) + '<br>' +
+            '<div><b>' + (_isG13(inv) ? 'Import per strefa (kWh)' : 'Import szczyt/poza (kWh)') + '</b><br>' +
+              (_zoneLines(inv, 'imported_kwh_{z}', n0) ||
+                ('Szczyt: ' + n0(inv.imported_kwh_peak) + '<br>' + 'Poza: ' + n0(inv.imported_kwh_offpeak))) + '<br>' +
               'Blended gross: ' + n4(inv.blended_gross) + ' zł/kWh<br>' +
               'Śr. cena: ' + n4(inv.avg_price) + ' zł/kWh' +
             '</div>' +
@@ -3017,7 +3036,7 @@ function _renderInvoiceTable(invoices) {
           const delBtn = '<button onclick="event.stopPropagation();removeInvoice(' + corKey + ')" ' +
             'style="font-size:10px;padding:1px 5px;background:#e53e3e;color:#fff;border:none;border-radius:2px;cursor:pointer;margin-left:3px">Usuń</button>';
           return '<tr style="background:#f0f7ff">' +
-            '<td colspan="13" style="padding:3px 8px 3px 28px;border-left:3px solid ' + badgeColor + ';font-size:11px">' +
+            '<td colspan="12" style="padding:3px 8px 3px 28px;border-left:3px solid ' + badgeColor + ';font-size:11px">' +
               '<span style="background:' + badgeColor + ';color:#fff;padding:1px 5px;border-radius:2px;font-size:10px;font-weight:600">' + badgeLabel + '</span> ' +
               (cor.invoice_number || '—') +
               (cor.corrects_number ? ' <span style="color:var(--muted)">→ koryguje nr ' + cor.corrects_number + '</span>' : '') +
@@ -3041,8 +3060,7 @@ function _renderInvoiceTable(invoices) {
       '<th style="text-align:right">Δ odd.</th>' +
       '<th style="text-align:right">Do zapłaty</th>' +
       '<th style="text-align:right">Depozyt uzyt.</th>' +
-      '<th style="text-align:right">Szczyt zł/kWh</th>' +
-      '<th style="text-align:right">Poza szczytem</th>' +
+      '<th style="text-align:right">Stawki brutto zł/kWh</th>' +
       '<th style="text-align:center">Status</th>' +
       '<th style="text-align:center">⚠</th>' +
       '<th style="text-align:right">Akcje</th>' +

@@ -22,3 +22,25 @@ def test_month_total_sums_main_and_parts():
 def test_month_total_absent_without_parts():
     (row,) = web._build_invoices_data([], {'2026-10': _rec('0020/26', '01.10.2026 - 31.10.2026', 'G12W', 100.0, 5.0, 1.0)})
     assert row['month_total'] is None
+
+
+def test_g13_zone_fields_exposed_in_row_and_parts():
+    g13 = dict(_rec('0022/26', '03.11.2026 - 18.11.2026', 'G13', 287.0, 39.0, 10.0),
+               morning_gross=0.9048, evening_gross=1.496, other_gross=0.6257,
+               imported_kwh_morning=26.0, imported_kwh_evening=12.0, imported_kwh_other=249.0,
+               energy_morning_net=0.4718, energy_evening_net=0.783, energy_other_net=0.426,
+               dist_var_morning_net=0.2203, dist_var_evening_net=0.3898, dist_var_other_net=0.0392)
+    part = dict(g13, invoice_number='0023/26', billing_period_raw='19.11.2026 - 30.11.2026')
+    (row,) = web._build_invoices_data([], {'2026-11': g13, '2026-11~cz~0023_26': part})
+    for src in (row, row['parts'][0]):
+        assert (src['morning_gross'], src['evening_gross'], src['other_gross']) == (0.9048, 1.496, 0.6257)
+    assert row['imported_kwh_other'] == 249.0
+    assert row['energy_evening_net'] == 0.783 and row['dist_var_morning_net'] == 0.2203
+
+
+def test_two_zone_invoice_keeps_peak_rates_and_no_g13_values():
+    inv = dict(_rec('0020/26', '01.10.2026 - 31.10.2026', 'G12W', 100.0, 5.0, 1.0),
+               peak_gross=1.2304, offpeak_gross=0.6306)
+    (row,) = web._build_invoices_data([], {'2026-10': inv})
+    assert (row['peak_gross'], row['offpeak_gross']) == (1.2304, 0.6306)
+    assert row['morning_gross'] is None and row['other_gross'] is None

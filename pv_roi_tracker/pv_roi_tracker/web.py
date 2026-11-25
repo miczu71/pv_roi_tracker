@@ -17,6 +17,7 @@ from dateutil.relativedelta import relativedelta
 from flask import Flask, Response, jsonify, request
 
 from . import __version__
+from .invoice_parser import _G13_ZONE_FIELDS
 from .models import MonthlyRecord
 from .roi import RoiResult, bill_comparison as _bill_comparison, underperformance_analysis as _underperformance_analysis
 from .tariff_analysis import _month_label
@@ -652,6 +653,10 @@ def _build_degradation(records, today):
         return None
 
 
+# Taryfa G13 (trzy strefy): pola stref przekazywane do UI (stawki brutto → kolumna tabeli faktur).
+_G13_RATE_FIELDS = tuple(f for f in _G13_ZONE_FIELDS if f.endswith('_gross'))
+
+
 def _build_invoices_data(records, stored: dict):
     from . import invoice_store as _istore
     out = []
@@ -720,6 +725,7 @@ def _build_invoices_data(records, stored: dict):
                         'deposit_used': part.get('deposit_used_pln'),
                         'peak_gross': part.get('peak_gross'),
                         'offpeak_gross': part.get('offpeak_gross'),
+                        **{f: part.get(f) for f in _G13_RATE_FIELDS},
                         'filename': part.get('filename'),
                         'has_pdf': bool(part.get('pdf_path')),
                         'warnings': part.get('warnings', []),
@@ -781,6 +787,7 @@ def _build_invoices_data(records, stored: dict):
                 'fixed_mocowa_net': inv.get('fixed_mocowa_net'),
                 'fixed_abonament_net': inv.get('fixed_abonament_net'),
                 'fixed_stalysieciowy_net': inv.get('fixed_stalysieciowy_net'),
+                **{f: inv.get(f) for f in _G13_ZONE_FIELDS},
                 'corrections': corrections,
                 'parts': parts,
             })
