@@ -240,6 +240,30 @@ def _periods_peak_fn():
     return _tz.peak_fn(periods, _tcat.load_catalog()) if periods else None
 
 
+def _hour_price(tmod, dt, skip_months=(), g13_invoice=None):
+    """Cena brutto godziny dla taryf trójstrefowych (G13, G13s); None dla G11/G12/G12w, miesięcy z
+    `skip_months` i dat poza katalogiem. `g13_invoice`: `{YYYY-MM: {morning|evening|other: brutto}}` —
+    stawki stref z faktury G13 mają pierwszeństwo przed katalogiem w godzinach trójstrefowych."""
+    from .tariff_invoice_check import G13_ZONES
+    from .tariff_zones import THREE_ZONE_TARIFFS
+    ym = dt.strftime('%Y-%m')
+    if ym in skip_months:
+        return None
+    try:
+        tariff = tmod.tariff_on(dt.date())
+        if tariff in ('G11', 'G12', 'G12w'):
+            return None
+        inv = (g13_invoice or {}).get(ym)
+        if inv and tariff in THREE_ZONE_TARIFFS:
+            zone = tmod.zone_at(dt, tariff)
+            key = next((z for z, cz in G13_ZONES.items() if cz == zone), None)
+            if key is not None and inv.get(key) is not None:
+                return inv[key]
+        return tmod.price_at(dt).gross
+    except (LookupError, ValueError):
+        return None
+
+
 def _record_job(name: str, ok: bool, detail: str = '') -> None:
     from datetime import datetime as _dtt
     now = _dtt.now().isoformat(timespec='seconds')
@@ -1046,22 +1070,12 @@ def main() -> None:
             float(rates.get('offpeak_gross', live_reader._TARIFF_OFFPEAK_PRICE)),
         )
 
-    def _hour_price_fn_for(skip_months=()):
-        """`datetime -> cena brutto | None` z modułu taryf dla godzin taryf trójstrefowych (G13, G13s);
+    def _hour_price_fn_for(skip_months=(), g13_invoice=None):
+        """`datetime -> cena brutto | None` dla godzin taryf trójstrefowych (faktura G13 > katalog);
         None dla G11/G12/G12w, miesięcy z `skip_months` (faktura/rekord) i dat poza katalogiem —
         wtedy zostaje para (peak, offpeak) + `is_peak_fn`."""
         tmod = _tariff_module_now()
-
-        def fn(dt):
-            if dt.strftime('%Y-%m') in skip_months:
-                return None
-            try:
-                if tmod.tariff_on(dt.date()) in ('G11', 'G12', 'G12w'):
-                    return None
-                return tmod.price_at(dt).gross
-            except (LookupError, ValueError):
-                return None
-        return fn
+        return lambda dt: _hour_price(tmod, dt, skip_months, g13_invoice)
 
     def _zone_prices_for(d: date) -> dict:
         """Ceny brutto per strefa (PLN/kWh) do wyceny poboru: taryfa dnia `d` oraz taryfa 1. dnia miesiąca
@@ -1338,8 +1352,14 @@ def main() -> None:
                 if pk is not None and ym not in _three_zone:
                     rates_by_month[ym] = (pk, inv.get('offpeak_gross'))
             _invoice_rates_months = set(rates_by_month)     # miesiące z fakturą — bez wyceny godzinowej z katalogu
+            _g13_invoice = {}
+            for ym, inv in stored_invoices.items():
+                zv = {z: inv.get(f'{z}_gross') for z in ('morning', 'evening', 'other')}
+                if ym in _three_zone and all(v is not None for v in zv.values()):
+                    _g13_invoice[ym] = zv        # stawki stref z faktury G13 — wycena godzin G13
             _excluded = sorted(ym for ym in stored_invoices
-                               if ym in _three_zone and stored_invoices[ym].get('peak_gross') is not None)
+                               if ym in _three_zone and ym not in _g13_invoice
+                               and stored_invoices[ym].get('peak_gross') is not None)
             if _excluded:
                 logger.info('Heatpump: miesiące G13 z fakturą wyceniane z cennika, nie z faktury: %s', _excluded)
             for r in records:
@@ -1362,7 +1382,8 @@ def main() -> None:
                 battery_efficiency=live_reader._BATTERY_RT_EFF,
                 today=today, hdd_base=HEATPUMP_HDD_BASE_TEMP,
                 is_peak_fn=_periods_peak_fn(),
-                hour_price_fn=_hour_price_fn_for(skip_months=_invoice_rates_months))
+                hour_price_fn=_hour_price_fn_for(skip_months=_invoice_rates_months,
+                                                 g13_invoice=_g13_invoice))
             _web.update_heatpump(payload)
             _record_job('heatpump', True)
             if payload:

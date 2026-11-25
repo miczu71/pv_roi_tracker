@@ -128,6 +128,9 @@ _SENSORS: list[_Sensor] = [
     _Sensor('fixed_total_net',            'PV Fixed Total Net',             None,                          'PLN',     'monetary', None, 'mdi:sigma'),
     _Sensor('rate_peak_gross',            'PV Rate Peak Gross',             None,                          'PLN/kWh', None,       'measurement', 'mdi:cash'),
     _Sensor('rate_offpeak_gross',         'PV Rate Offpeak Gross',          None,                          'PLN/kWh', None,       'measurement', 'mdi:cash-outline'),
+    _Sensor('rate_morning_gross',         'PV Rate Morning Gross',          None,                          'PLN/kWh', None,       'measurement', 'mdi:weather-sunset-up'),
+    _Sensor('rate_evening_gross',         'PV Rate Evening Gross',          None,                          'PLN/kWh', None,       'measurement', 'mdi:weather-sunset-down'),
+    _Sensor('rate_other_gross',           'PV Rate Other Gross',            None,                          'PLN/kWh', None,       'measurement', 'mdi:cash-multiple'),
 ]
 
 # slug → key in the invoice_rates dict (web.latest_invoice_rates()) for the
@@ -146,6 +149,9 @@ _INVOICE_RATE_SENSORS: dict[str, str] = {
     'fixed_total_net':           'fixed_total_net',
     'rate_peak_gross':           'peak_gross',
     'rate_offpeak_gross':        'offpeak_gross',
+    'rate_morning_gross':        'morning_gross',
+    'rate_evening_gross':        'evening_gross',
+    'rate_other_gross':          'other_gross',
 }
 
 # Sensors removed in previous versions — clear their retained discovery messages on connect.

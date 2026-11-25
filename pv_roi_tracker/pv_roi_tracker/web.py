@@ -19,6 +19,9 @@ from flask import Flask, Response, jsonify, request
 from . import __version__
 from .invoice_parser import _G13_ZONE_FIELDS
 from .models import MonthlyRecord
+from . import tariff_catalog as tc
+from .tariff_invoice_check import G13_ZONES
+from .tariff_zones import THREE_ZONE_TARIFFS
 from .roi import RoiResult, bill_comparison as _bill_comparison, underperformance_analysis as _underperformance_analysis
 from .tariff_analysis import _month_label
 
@@ -232,13 +235,43 @@ def _active_override(module, today):
     return max(active, key=lambda o: o['from']) if active else None
 
 
-def _catalog_layer_rates(module, today) -> dict:
-    """Warstwa 1: stawki modułu (katalog + korekty) w dniu `today`; {} gdy dzień poza katalogiem."""
+_G13_GROSS_FIELDS = ('morning_gross', 'evening_gross', 'other_gross')
+
+
+def _three_zone_today(module, today) -> bool:
     try:
-        return module.legacy_rates(today)
+        return module.tariff_on(today) in THREE_ZONE_TARIFFS
+    except (LookupError, ValueError):
+        return False
+
+
+def _g13_catalog_rates(module, today) -> dict:
+    """Stawki brutto stref G13 z katalogu (jak `_check_g13`); {} gdy taryfa dnia nie jest trójstrefowa."""
+    if not _three_zone_today(module, today):
+        return {}
+    try:
+        tariff = module.tariff_on(today)
+        period = module._period_info(today)[0]
+        out = {}
+        for z, cz in G13_ZONES.items():
+            r = tc.rates_per_kwh(tariff, period, cz)
+            out[f'{z}_gross'] = (r['energy'] + r['dist'] + r['fees']) * module.vat
+        return out
+    except (LookupError, ValueError, KeyError) as exc:
+        log.warning('Moduł taryf: brak stawek stref na %s (%s)', today, exc)
+        return {}
+
+
+def _catalog_layer_rates(module, today) -> dict:
+    """Warstwa 1: stawki modułu (katalog + korekty) w dniu `today`; {} gdy dzień poza katalogiem.
+    Dla taryf trójstrefowych dokłada `{morning,evening,other}_gross`."""
+    try:
+        rates = dict(module.legacy_rates(today))
     except (LookupError, ValueError) as exc:
         log.warning('Moduł taryf: brak stawek na %s (%s) — warstwa katalogu pusta', today, exc)
-        return {}
+        rates = {}
+    rates.update(_g13_catalog_rates(module, today))
+    return rates
 
 
 def _override_layer_rates(module, real: dict, today) -> dict:
@@ -811,6 +844,7 @@ _RATE_FIELDS = [
     'dist_jakosciowa_net', 'dist_oze_net', 'dist_kogeneracja_net',
     'fixed_mocowa_net', 'fixed_abonament_net', 'fixed_stalysieciowy_net',
     'peak_gross', 'offpeak_gross', 'fixed_total_net',
+    'morning_gross', 'evening_gross', 'other_gross',
 ]
 
 
@@ -843,7 +877,9 @@ def latest_invoice_rates(real: Optional[dict] = None, _today=None) -> dict:
     # 2. Faktura nadpisuje warstwę 1 (dla pól, które faktycznie sparsowała)
     latest = _latest_real_invoice(real)
     if latest is not None:
-        rates.update({k: latest[k] for k in _RATE_FIELDS if latest.get(k) is not None})
+        three_zone = _three_zone_today(module, today)
+        rates.update({k: latest[k] for k in _RATE_FIELDS
+                      if latest.get(k) is not None and (three_zone or k not in _G13_GROSS_FIELDS)})
 
     # 3. Korekta ręczna wygrywa w oknie luki (ogłoszona taryfa nowsza niż faktura)
     ov = _override_layer_rates(module, real, today)
@@ -853,7 +889,7 @@ def latest_invoice_rates(real: Optional[dict] = None, _today=None) -> dict:
     return rates
 
 
-def _build_tariff_drift(real: dict):
+def _build_tariff_drift(real: dict, _today=None):
     """`real` is an already stub-filtered billing invoices dict.
     Porównuje najnowszą fakturę do stawek modułu taryf.
     Zwraca None gdy brak dryftu lub brak faktury."""
@@ -862,14 +898,22 @@ def _build_tariff_drift(real: dict):
         if latest is None:
             return None
         from datetime import date as _date
+        today = _today or _date.today()
+        module = _tariff_module()
         try:
-            baseline_rates = _tariff_module().legacy_rates(_date.today())
+            baseline_rates = module.legacy_rates(today)
         except (LookupError, ValueError):
             baseline_rates = {}
         baseline_peak = baseline_rates.get('peak_gross', 1.23)
         baseline_offpeak = baseline_rates.get('offpeak_gross', 0.63)
         baseline_fixed = baseline_rates.get('fixed_total_net', 39.47)
         drift = {}
+        zone_baseline = _g13_catalog_rates(module, today)
+        for z in G13_ZONES:
+            zv = latest.get(f'{z}_gross')
+            zb = zone_baseline.get(f'{z}_gross')
+            if zv is not None and zb is not None and abs(zv - zb) > 0.02:
+                drift[z] = {'configured': round(zb, 4), 'invoice': round(zv, 4)}
         pk = latest.get('peak_gross')
         op = latest.get('offpeak_gross')
         if pk is not None and abs(pk - baseline_peak) > 0.02:
