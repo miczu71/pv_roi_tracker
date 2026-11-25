@@ -1399,3 +1399,222 @@ class TestZoneTariffProvider:
         data.tariff = 'G12W'
         ip.apply_zone_tariff(data)
         assert data.tariff == 'G13' and data.peak_gross is None
+
+
+# ── E5b: faktura G13 (trzy strefy: szczyt przedpołudniowy / popołudniowy / pozostałe) ──
+# Tekst odwzorowuje wyjście pypdf z faktury T/K1/BN567872/0022/26 (03–18.11.2026), bez danych
+# osobowych: „ł” → „ø”, strony powielone, blok „oddanie” rozerwany przerwą strony (strefa
+# „pozostałe” leży za drugim „(pobór)”).
+
+_G13_REAL_PDF_PATH = Path('/home/claude/private_fixtures/pv_roi/FV_0022_26.pdf')
+
+_G13_READINGS_HEAD = """Licznik energii elektrycznej (pobór)-111111111111
+szczyt przedpoøudniowy 18.11.2026 (Zdalny) 26,0000
+szczyt popoøudniowy 18.11.2026 (Zdalny) 12,0000
+pozostaøe godziny doby 18.11.2026 (Zdalny) 249,0000
+Licznik energii elektrycznej (oddanie)-111111111111
+szczyt przedpoøudniowy 18.11.2026 (Zdalny) 9,0000
+szczyt popoøudniowy 18.11.2026 (Zdalny) 0,0000
+"""
+
+_G13_TABLES = """Sprzedaż energii elektrycznej
+Szczegóøy rozliczenia
+Nazwa Ilość Jednostka Cena netto (zø) Wartość netto (zø) VAT (%) Kwota VAT (zø) Wartość brutto (zø)
+Energia czynna
+szczyt przedpoøudniowy 26 kWh 0,47180 12,27 23 2,82 15,09
+szczyt popoøudniowy 12 kWh 0,78300 9,40 23 2,16 11,56
+pozostaøe godziny doby 249 kWh 0,42600 106,07 23 24,40 130,47
+Razem za sprzedaż energii 127,74 29,38 157,12
+Dystrybucja energii elektrycznej
+Szczegóøy rozliczenia
+Nazwa Ilość Jednostka Cena netto (zø) Wartość netto (zø) VAT (%) Kwota VAT (zø) Wartość brutto (zø)
+Skøadnik zmienny stawki sieciowej
+szczyt przedpoøudniowy 26 kWh 0,22030 5,73 23 1,32 7,05
+szczyt popoøudniowy 12 kWh 0,38980 4,68 23 1,08 5,76
+pozostaøe godziny doby 249 kWh 0,03920 9,76 23 2,24 12,00
+Stawka jakościowa
+szczyt przedpoøudniowy 26 kWh 0,03320 0,86 23 0,20 1,06
+szczyt popoøudniowy 12 kWh 0,03320 0,40 23 0,09 0,49
+pozostaøe godziny doby 249 kWh 0,03320 8,27 23 1,90 10,17
+Opøata OZE
+szczyt przedpoøudniowy 26 kWh 0,00730 0,19 23 0,04 0,23
+szczyt popoøudniowy 12 kWh 0,00730 0,09 23 0,02 0,11
+pozostaøe godziny doby 249 kWh 0,00730 1,82 23 0,42 2,24
+Opøata kogeneracyjna
+szczyt przedpoøudniowy 26 kWh 0,00300 0,08 23 0,02 0,10
+szczyt popoøudniowy 12 kWh 0,00300 0,04 23 0,01 0,05
+pozostaøe godziny doby 249 kWh 0,00300 0,75 23 0,17 0,92
+Opøata mocowa 0,533 mc 24,05000 12,83 23 2,95 15,78
+Stawka opøaty abonamentowej 0 mc 0,00000 0,00 23 0,00 0,00
+Staøa przesyøowa 3 fazowa tar. G 0,5333 mc 10,86000 5,79 23 1,33 7,12
+Razem za dystrybucję energii 51,29 11,79 63,08
+"""
+
+_G13_SUMMARY = """Twoje rozliczenie
+Podsumowanie zużycia energii i opøat od 03.11.2026 do 18.11.2026
+Lp. Nazwa Ilość (kWh) Wartość netto (zø) VAT (%) Kwota VAT (zø) Wartość brutto (zø)
+1. Sprzedaż energii elektrycznej 287 127,74 23 29,38 157,12
+2. Dystrybucja energii elektrycznej 287 51,29 23 11,79 63,08
+3. Wynik rozliczenia (1+2) 179,03 23 41,17 220,20
+4. Depozyt prosumencki w rozliczanym okresie (zø) 0,00
+5. Depozyt prosumencki z okresów poprzednich (zø) 157,12
+6. Rozliczenie depozytu (4+5) 157,12
+Razem (3-6) 63,08
+Termin pøatności 07.12.2026
+Rozliczenie VAT Wartość netto (zø) VAT (%) Kwota VAT (zø) Wartość brutto (zø)
+179,03 23 41,17 220,20
+Średnia cena za 1 kWh to 0,77 zø. Wyliczyliśmy ją, dzieląc øączne koszty przez ilość zużytej energii.
+"""
+
+
+def _make_g13_text(period='03.11.2026 - 18.11.2026', readings_tail=True) -> str:
+    """Układ pypdf: podsumowanie + odczyty (do „oddanie” szczyty), strona powielona,
+    pozostałe godziny „oddanie” za przerwą strony, potem tabele (również powielone)."""
+    tail = ('Nazwa Ilość energii do dnia\n'
+            'pozostaøe godziny doby 18.11.2026 (Zdalny) 30,0000\n') if readings_tail else ''
+    return (
+        'To jest Twoja faktura\n'
+        'Numer faktury\nT/K1/BN567872/0022/26\n'
+        f'Okres rozliczeniowy\n{period}\n'
+        'Pobrano z sieci 287 kWh Wprowadzono do sieci 39 kWh\n'
+        + _G13_SUMMARY
+        + 'Grupa taryfowa\nG13\nMoc umowna\n5 kW\n'
+        + _G13_READINGS_HEAD
+        + '1/4\n'
+        + _G13_SUMMARY
+        + _G13_READINGS_HEAD
+        + tail
+        + _G13_TABLES
+        + _G13_TABLES
+    )
+
+
+class TestG13Format:
+    @pytest.fixture(scope='class')
+    def d(self):
+        return _parse_text(_make_g13_text())
+
+    def test_tariff_detected_from_layout(self, d):
+        assert d.tariff == 'G13'
+
+    def test_import_kwh_zones(self, d):
+        assert (d.imported_kwh_morning, d.imported_kwh_evening, d.imported_kwh_other) == (26, 12, 249)
+        assert d.imported_kwh == 287
+
+    def test_export_kwh_zones_across_page_break(self, d):
+        assert (d.exported_kwh_morning, d.exported_kwh_evening, d.exported_kwh_other) == (9, 0, 30)
+        assert d.exported_kwh == 39
+
+    def test_energy_rates(self, d):
+        assert d.energy_morning_net == pytest.approx(0.4718)
+        assert d.energy_evening_net == pytest.approx(0.7830)
+        assert d.energy_other_net == pytest.approx(0.4260)
+
+    def test_dist_var_rates(self, d):
+        assert d.dist_var_morning_net == pytest.approx(0.2203)
+        assert d.dist_var_evening_net == pytest.approx(0.3898)
+        assert d.dist_var_other_net == pytest.approx(0.0392)
+
+    def test_quality_oze_cogeneration_rates_and_amounts(self, d):
+        assert d.dist_jakosciowa_net == pytest.approx(0.0332)
+        assert d.dist_oze_net == pytest.approx(0.0073)
+        assert d.dist_kogeneracja_net == pytest.approx(0.003)
+        assert d.dist_jakosciowa_amount_net == pytest.approx(9.53)
+        assert d.dist_oze_amount_net == pytest.approx(2.10)
+        assert d.dist_kogeneracja_amount_net == pytest.approx(0.87)
+
+    def test_amounts_energy_and_dist_var(self, d):
+        assert d.energy_amount_net == pytest.approx(127.74)
+        assert d.dist_var_amount_net == pytest.approx(20.17)
+
+    def test_fixed_fees_incl_new_label(self, d):
+        assert d.fixed_mocowa_net == pytest.approx(12.83)
+        assert d.fixed_abonament_net == pytest.approx(0.0)
+        assert d.fixed_stalysieciowy_net == pytest.approx(5.79)
+        assert d.fixed_total_net == pytest.approx(18.62)
+
+    def test_zone_gross_rates(self, d):
+        assert d.morning_gross == pytest.approx(0.9048, abs=0.0001)
+        assert d.evening_gross == pytest.approx(1.4960, abs=0.0001)
+        assert d.other_gross == pytest.approx(0.6257, abs=0.0001)
+
+    def test_declared_vat(self, d):
+        assert d.vat_total_pln == pytest.approx(41.17)
+
+    def test_two_zone_fields_stay_none(self, d):
+        for f in ('imported_kwh_peak', 'imported_kwh_offpeak', 'exported_kwh_peak', 'exported_kwh_offpeak',
+                  'energy_peak_net', 'energy_offpeak_net', 'dist_var_peak_net', 'dist_var_offpeak_net',
+                  'peak_gross', 'offpeak_gross', 'blended_gross'):
+            assert getattr(d, f) is None, f
+
+    def test_deposit_and_amount(self, d):
+        assert d.deposit_previous_pln == pytest.approx(157.12)
+        assert d.deposit_used_pln == pytest.approx(157.12)
+        assert d.amount_due_pln == pytest.approx(63.08)
+
+    def test_no_missing_field_warnings(self, d):
+        from pv_roi_tracker.invoice_store import _warnings_need_training
+        assert not any('nie znalezion' in w or 'nieobliczon' in w or 'parser trzech stref' in w
+                       for w in d.warnings), d.warnings
+        assert not _warnings_need_training(d.warnings)
+
+    def test_provider_g13_keeps_zone_fields_and_no_e5a_warning(self):
+        from datetime import date
+        from pv_roi_tracker import invoice_parser as ip
+        ip.set_zone_tariff_provider(lambda day: 'G13' if day >= date(2026, 11, 3) else 'G12w')
+        try:
+            d = _parse_text(_make_g13_text())
+        finally:
+            ip.set_zone_tariff_provider(lambda day: None)
+        assert d.tariff == 'G13'
+        assert d.energy_morning_net == pytest.approx(0.4718)
+        assert d.imported_kwh_other == 249
+        assert not any('parser trzech stref' in w for w in d.warnings)
+
+    def test_missing_zone_row_warns_and_needs_training(self):
+        from pv_roi_tracker.invoice_store import _warnings_need_training
+        text = _make_g13_text().replace('pozostaøe godziny doby 249 kWh 0,03920 9,76 23 2,24 12,00\n', '')
+        d = _parse_text(text)
+        assert d.dist_var_other_net is None
+        assert any('nie znalezion' in w for w in d.warnings)
+        assert _warnings_need_training(d.warnings)
+
+    def test_zone_sum_mismatch_warns_but_not_training(self):
+        from pv_roi_tracker.invoice_store import _warnings_need_training
+        d = _parse_text(_make_g13_text().replace('Pobrano z sieci 287 kWh', 'Pobrano z sieci 330 kWh'))
+        assert any(w.startswith('walidacja:') and 'pobrano' in w for w in d.warnings), d.warnings
+        assert not _warnings_need_training(d.warnings)
+
+    def test_export_without_page_break_block(self):
+        text = _make_g13_text(readings_tail=False)
+        d = _parse_text(text)
+        assert d.exported_kwh_other is None
+        assert any('nie znalezion' in w and 'oddan' in w for w in d.warnings), d.warnings
+
+    def test_two_zone_invoice_unchanged(self):
+        d = _parse_text(_make_old_format_text())
+        assert d.tariff in ('G11', 'G12W')
+        assert d.imported_kwh_morning is None and d.energy_morning_net is None
+
+
+@pytest.mark.skipif(not _G13_REAL_PDF_PATH.exists(),
+                    reason='prywatny PDF faktury G13 (dane osobowe) nie leży w repo')
+class TestRealG13Pdf:
+    @pytest.fixture(scope='class')
+    def d(self):
+        return parse_invoice(_G13_REAL_PDF_PATH.read_bytes())
+
+    def test_zones_and_rates(self, d):
+        assert d.tariff == 'G13'
+        assert d.invoice_number == 'T/K1/BN567872/0022/26'
+        assert d.billing_period_raw == '03.11.2026 - 18.11.2026'
+        assert (d.imported_kwh_morning, d.imported_kwh_evening, d.imported_kwh_other) == (26, 12, 249)
+        assert (d.exported_kwh_morning, d.exported_kwh_evening, d.exported_kwh_other) == (9, 0, 30)
+        assert d.energy_morning_net == pytest.approx(0.4718)
+        assert d.dist_var_evening_net == pytest.approx(0.3898)
+        assert d.fixed_stalysieciowy_net == pytest.approx(5.79)
+        assert d.vat_total_pln == pytest.approx(41.17)
+        assert d.amount_due_pln == pytest.approx(63.08)
+
+    def test_clean_parse(self, d):
+        assert not any('nie znalezion' in w or 'nieobliczon' in w for w in d.warnings), d.warnings

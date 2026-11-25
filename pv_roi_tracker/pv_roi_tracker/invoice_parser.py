@@ -75,7 +75,10 @@ def neutralize_three_zone(data: 'InvoiceData', tariff: Optional[str]) -> 'Invoic
     data.tariff = tariff
     for f in _THREE_ZONE_NONE_FIELDS:
         setattr(data, f, None)
-    if _THREE_ZONE_WARNING not in data.warnings:
+    # Parser trzech stref (E5b) sam wypełnia pola stref — ostrzeżenie „stawki z cennika” tylko
+    # dla faktury G13 bez odczytanych stref (np. dotrenowana ręcznie / korekta).
+    has_zones = any(getattr(data, f) is not None for f in _G13_ZONE_FIELDS)
+    if not has_zones and _THREE_ZONE_WARNING not in data.warnings:
         data.warnings.append(_THREE_ZONE_WARNING)
     return data
 
@@ -274,6 +277,8 @@ _BUILTIN_PATTERNS: dict[str, list] = {
         # Oldest format: pypdf splits "Składnik stały stawki\nsieciowej"
         r'Sk.adnik sta.y stawki\s+sieciowej\s+(?!\d)\S+\s+\d+\s+[\d,]+\s+([\d,]+)',
         r'Sk.adnik sta.y stawki\s+sieciowej\s+[\d,]+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
+        # Wzór G13 (2026-11): "Stała przesyłowa 3 fazowa tar. G 0,5333 mc 10,86000 5,79"
+        r'Sta.a przesy.owa\b[^\n]*?\s[\d,]+\s+[^\s]*mc\s+[\d,]+\s+([\d,]+)',
     ],
 }
 
@@ -430,7 +435,8 @@ class InvoiceData:
     # is simply 23% of the sum of known net components.
     vat_total_pln: Optional[float] = field(default=None)
 
-    # Tariff zone: 'G11' for single-zone (całodobowa), 'G12W' for two-zone (szczyt/pozaszczyt)
+    # Tariff zone: 'G11' for single-zone (całodobowa), 'G12W' for two-zone (szczyt/pozaszczyt),
+    # 'G13' for three-zone (szczyt przedpołudniowy / popołudniowy / pozostałe godziny doby)
     tariff: Optional[str] = field(default=None)
 
     # Invoice identity
@@ -444,6 +450,27 @@ class InvoiceData:
     correction_delta_pln: Optional[float] = field(default=None)   # Zwiększenie wartości brutto / Do zapłaty (nota)
     requires_payment: Optional[bool] = field(default=None)        # nota: False = NIE WYMAGA PŁATNOŚCI
     prev_deposit_previous_pln: Optional[float] = field(default=None)  # korekta: wartość z sekcji POLICZONO
+
+    # Taryfa G13 (trzy strefy): morning = szczyt przedpołudniowy, evening = szczyt popołudniowy,
+    # other = pozostałe godziny doby. Wypełniane tylko dla faktury G13 (pozostałe taryfy: None);
+    # pola peak/offpeak zostają wtedy None. kWh poboru = ilości rozliczeniowe z tabeli sprzedaży,
+    # kWh oddania = odczyty licznika; stawki netto zł/kWh z faktury; *_gross = stawka krańcowa
+    # (energia + sieciowa zmienna + jakościowa + OZE + kogeneracja) × 1,23.
+    imported_kwh_morning: Optional[float] = field(default=None)
+    imported_kwh_evening: Optional[float] = field(default=None)
+    imported_kwh_other: Optional[float] = field(default=None)
+    exported_kwh_morning: Optional[float] = field(default=None)
+    exported_kwh_evening: Optional[float] = field(default=None)
+    exported_kwh_other: Optional[float] = field(default=None)
+    energy_morning_net: Optional[float] = field(default=None)
+    energy_evening_net: Optional[float] = field(default=None)
+    energy_other_net: Optional[float] = field(default=None)
+    dist_var_morning_net: Optional[float] = field(default=None)
+    dist_var_evening_net: Optional[float] = field(default=None)
+    dist_var_other_net: Optional[float] = field(default=None)
+    morning_gross: Optional[float] = field(default=None)
+    evening_gross: Optional[float] = field(default=None)
+    other_gross: Optional[float] = field(default=None)
 
     # Parse quality: empty list = clean parse; non-empty = missing fields or
     # failed sanity checks — not fatal but worth surfacing in the UI.
@@ -559,6 +586,17 @@ def _validate(data: InvoiceData) -> list:
                 f'{data.exported_kwh_peak:.0f}+{data.exported_kwh_offpeak:.0f}'
                 f'={split_sum:.0f}'
             )
+
+    # G13: pobór/oddanie ≈ suma trzech stref
+    for label, total, zones in (
+            ('pobrano', data.imported_kwh,
+             (data.imported_kwh_morning, data.imported_kwh_evening, data.imported_kwh_other)),
+            ('oddano', data.exported_kwh,
+             (data.exported_kwh_morning, data.exported_kwh_evening, data.exported_kwh_other))):
+        if all(z is not None for z in zones) and not _approx(total, sum(zones)):
+            warnings.append(
+                f'walidacja: {label} {total:.0f} ≠ suma stref G13 '
+                f'{"+".join(f"{z:.0f}" for z in zones)}={sum(zones):.0f}')
 
     # Deposit arithmetic: used ≈ current + previous
     if (data.deposit_current_pln is not None
@@ -740,6 +778,121 @@ def _parse_nota(text: str) -> InvoiceData:
     )
 
 
+# ── Taryfa G13: trzy strefy ───────────────────────────────────────────────────
+# pypdf: „ł” → „ø” (przedpoøudniowy), więc wzorce używają „.” zamiast „ł”.
+
+_G13_ZONES = (
+    ('morning', r'szczyt\s+przedpo.udniowy', 'szczyt przedpołudniowy'),
+    ('evening', r'szczyt\s+popo.udniowy', 'szczyt popołudniowy'),
+    ('other', r'pozosta.e\s+godziny\s+doby', 'pozostałe godziny doby'),
+)
+# Pola InvoiceData wypełniane z _parse_g13 (pozostałe klucze wyniku zasilają pola wspólne).
+_G13_ZONE_FIELDS = tuple(
+    f'{prefix}_{zone}{suffix}'
+    for zone in ('morning', 'evening', 'other')
+    for prefix, suffix in (('imported_kwh', ''), ('exported_kwh', ''), ('energy', '_net'),
+                           ('dist_var', '_net'))
+) + tuple(f'{zone}_gross' for zone in ('morning', 'evening', 'other'))
+_G13_DETECT_RE = re.compile(r'szczyt\s+przedpo.udniowy\s+\d+(?:\s\d{3})*\s+kWh', re.IGNORECASE)
+# Nagłówki bloków tabeli sprzedaży/dystrybucji — blok kończy się na następnym z nich.
+_G13_HEADINGS = {
+    'energy': r'Energia czynna',
+    'dist_var': r'Sk.adnik zmienny stawki\s+sieciowej',
+    'quality': r'Stawka jako.ciow\w*',
+    'oze': r'Op.ata OZE',
+    'cogeneration': r'Op.ata kogeneracyjna',
+}
+_G13_STOP_RE = re.compile(
+    '|'.join(list(_G13_HEADINGS.values()) + [r'Op.ata mocowa', r'Razem za']), re.IGNORECASE)
+_G13_READING_RE = re.compile(
+    r'\((?P<meter>pob.r|oddanie)\)'
+    r'|(?P<zone>szczyt\s+przedpo.udniowy|szczyt\s+popo.udniowy|pozosta.e\s+godziny\s+doby)'
+    r'\s+\d{2}[./]\d{2}[./]\d{4}\s+\([^)]*\)\s+(?P<value>\d+(?:\s\d{3})*(?:,\d+)?)',
+    re.IGNORECASE)
+
+
+def _g13_rows(text: str, heading_key: str) -> dict:
+    """`{strefa: (ilość kWh, cena netto, wartość netto)}` z bloku pod nagłówkiem tabeli G13.
+    Brak nagłówka / wiersza → strefa pominięta. Powielone strony: bierze pierwszy blok."""
+    start = re.search(_G13_HEADINGS[heading_key] + r'[ \t]*\n', text, re.IGNORECASE)
+    if not start:
+        return {}
+    block = text[start.end():]
+    stop = _G13_STOP_RE.search(block)
+    if stop:
+        block = block[:stop.start()]
+    rows: dict = {}
+    for key, zone_re, _label in _G13_ZONES:
+        m = re.search(zone_re + r'\s+(\d+(?:\s\d{3})*)\s+kWh\s+([\d,]+)\s+([\d,]+)', block, re.IGNORECASE)
+        if m:
+            rows[key] = (_n(m.group(1)), _n(m.group(2)), _n(m.group(3)))
+    return rows
+
+
+def _g13_exports(text: str) -> dict:
+    """Odczyty „oddanie” per strefa. PDF powiela strony i rozrywa blok przerwą strony, więc
+    idziemy po tekście ze stanem (ostatni znacznik „(pobór)”/„(oddanie)”) i bierzemy pierwszą
+    wartość dla (oddanie, strefa)."""
+    exports: dict = {}
+    mode = None
+    for m in _G13_READING_RE.finditer(text):
+        if m.group('meter'):
+            mode = 'import' if m.group('meter').lower().startswith('pob') else 'export'
+            continue
+        if mode != 'export':
+            continue
+        zone = next(k for k, zone_re, _l in _G13_ZONES if re.fullmatch(zone_re, m.group('zone'), re.IGNORECASE))
+        exports.setdefault(zone, _n(m.group('value')))
+    return exports
+
+
+def _parse_g13(text: str, warnings: list) -> dict:
+    """Pola trzech stref faktury G13 (klucze = nazwy pól `InvoiceData`). Brakujący składnik →
+    ostrzeżenie „nie znaleziona/y” (→ needs_training) i None w polu."""
+    out: dict = {}
+    rows = {k: _g13_rows(text, k) for k in _G13_HEADINGS}
+    exports = _g13_exports(text)
+
+    for key, _zone_re, label in _G13_ZONES:
+        for field_name, heading, idx, what in (
+                (f'imported_kwh_{key}', 'energy', 0, 'ilość poboru'),
+                (f'energy_{key}_net', 'energy', 1, 'cena energii'),
+                (f'dist_var_{key}_net', 'dist_var', 1, 'składnik zmienny sieciowy')):
+            row = rows[heading].get(key)
+            out[field_name] = row[idx] if row else None
+            if row is None:
+                warnings.append(f'G13: {what} ({label}) nie znaleziona')
+        out[f'exported_kwh_{key}'] = exports.get(key)
+        if key not in exports:
+            warnings.append(f'G13: odczyt oddania ({label}) nie znaleziony')
+
+    # Stawka jakościowa / OZE / kogeneracja: ta sama cena w strefach → pole = stawka, kwota = suma.
+    for heading, rate_field, amount_field, what in (
+            ('quality', 'dist_jakosciowa_net', 'dist_jakosciowa_amount_net', 'stawka jakościowa'),
+            ('oze', 'dist_oze_net', 'dist_oze_amount_net', 'opłata OZE'),
+            ('cogeneration', 'dist_kogeneracja_net', 'dist_kogeneracja_amount_net', 'opłata kogeneracyjna')):
+        found = rows[heading]
+        if not found:
+            out[rate_field] = out[amount_field] = None
+            warnings.append(f'G13: {what} nie znaleziona')
+            continue
+        out[rate_field] = next(iter(found.values()))[1]
+        out[amount_field] = round(sum(r[2] for r in found.values()), 2)
+
+    out['energy_amount_net'] = round(sum(r[2] for r in rows['energy'].values()), 2) if rows['energy'] else None
+    out['dist_var_amount_net'] = round(sum(r[2] for r in rows['dist_var'].values()), 2) if rows['dist_var'] else None
+
+    # Stawka krańcowa brutto per strefa — tylko gdy znamy wszystkie składniki.
+    for key, _zone_re, _label in _G13_ZONES:
+        parts = (out[f'energy_{key}_net'], out[f'dist_var_{key}_net'], out['dist_jakosciowa_net'],
+                 out['dist_oze_net'], out['dist_kogeneracja_net'])
+        out[f'{key}_gross'] = round(sum(parts) * 1.23, 4) if all(p is not None for p in parts) else None
+
+    vat = re.search(r'Rozliczenie VAT[^\n]*\n\s*\d[\d ]*,\d{2}\s+23\s+(\d[\d ]*,\d{2})', text, re.IGNORECASE)
+    out['vat_total_pln'] = _n(vat.group(1)) if vat else None
+    return out
+
+
 def _parse_text(text: str) -> InvoiceData:
     """Core parser: operates on already-extracted, whitespace-normalised text."""
     warnings: list = []
@@ -881,6 +1034,13 @@ def _parse_text(text: str) -> InvoiceData:
         and not re.search(r'(?:szczytowa|pozaszczytowa)\s+kWh', text, re.IGNORECASE)
     )
 
+    # ── Three-zone tariff detection (G13) ────────────────────────────────────
+    # Układ G13 (od 2026-11): wiersze „szczyt przedpołudniowy / popołudniowy / pozostałe godziny
+    # doby” zamiast szczyt/pozaszczyt. Korekta G13 ma inny układ — nie zgadujemy (zostaje
+    # ścieżka dwustrefowa + neutralizacja w apply_zone_tariff).
+    _is_three_zone = (not _is_korekta) and bool(_G13_DETECT_RE.search(text))
+    g13 = _parse_g13(text, warnings) if _is_three_zone else {}
+
     # ── Import / export totals ────────────────────────────────────────────────
     imp_total = _first_float_multi(_patterns_for('imp_total'), text)
     if imp_total is None:
@@ -916,13 +1076,16 @@ def _parse_text(text: str) -> InvoiceData:
     energy_peak_net   = _first_float_multi(_patterns_for('energy_peak_net'), text)
     energy_offpeak_net = _first_float_multi(_patterns_for('energy_offpeak_net'), text)
 
-    if imp_peak is None:
+    if _is_three_zone:
+        # G13: pola peak/offpeak nie istnieją — strefy są w polach *_morning/_evening/_other.
+        imp_peak = imp_offpeak = energy_peak_net = energy_offpeak_net = None
+    if imp_peak is None and not _is_three_zone:
         warnings.append('import szczytowy (kWh) nie znaleziony')
-    if imp_offpeak is None and not _is_single_zone:
+    if imp_offpeak is None and not _is_single_zone and not _is_three_zone:
         warnings.append('import pozaszczytowy (kWh) nie znaleziony')
-    if energy_peak_net is None:
+    if energy_peak_net is None and not _is_three_zone:
         warnings.append('cena energii szczytowej (net) nie znaleziona — szczyt gross nieobliczony')
-    if energy_offpeak_net is None and not _is_single_zone:
+    if energy_offpeak_net is None and not _is_single_zone and not _is_three_zone:
         warnings.append('cena energii pozaszczytowej (net) nie znaleziona — poza-szczyt gross nieobliczony')
 
     # ── Peak / offpeak export from meter reading section ──────────────────────
@@ -934,7 +1097,7 @@ def _parse_text(text: str) -> InvoiceData:
         or re.search(r'\(oddanie\)\s*\n\s*\w+\s+\d+\s*\nszczyt\s+[\d./]+\s+\([^\)]+\)\s+([\d,]+)', text)
         or re.search(r'\(oddanie\)\s*\n\s*\w+\s+\d+\s*\nca.odobowa\s+[\d./]+\s+\([^\)]+\)\s+([\d,]+)', text)
     )
-    exp_peak = _n(_exp_m.group(1)) if _exp_m else None
+    exp_peak = _n(_exp_m.group(1)) if _exp_m and not _is_three_zone else None
     _exp_m2 = (
         re.search(r'\(oddanie\)-\d+\n[^\n]+\npozaszczytowa\s+[\d./]+\s+\([^\)]+\)\s+([\d,]+)', text)
         or re.search(r'\(oddanie\)\s*\n\s*\w+\s+\d+\s*\n[^\n]+\npozaszczytowa\s+[\d./]+\s+\([^\)]+\)\s+([\d,]+)', text)
@@ -997,12 +1160,18 @@ def _parse_text(text: str) -> InvoiceData:
     dist_jakosciowa_net  = _dist_peak([r'Stawka jako.ciow\w*', r'Jako.ciow\w*'])
     dist_oze_net         = _dist_peak([r'Op.ata OZE', r'Stawka OZE'])
     dist_kogeneracja_net = _dist_peak([r'Op.ata kogeneracyjna', r'Kogeneracyjna'])
+    if _is_three_zone:
+        # G13: stawki jakościowa/OZE/kogeneracja są wierszami per strefa — bierzemy je z _parse_g13.
+        dist_var_peak_net = dist_var_offpeak_net = None
+        dist_jakosciowa_net = g13['dist_jakosciowa_net']
+        dist_oze_net = g13['dist_oze_net']
+        dist_kogeneracja_net = g13['dist_kogeneracja_net']
 
-    if dist_var_peak_net is None:
+    if dist_var_peak_net is None and not _is_three_zone:
         warnings.append('składnik zmienny sieciowy szczytowy nie znaleziony — szczyt gross nieobliczony')
-    if dist_var_offpeak_net is None and not _is_single_zone:
+    if dist_var_offpeak_net is None and not _is_single_zone and not _is_three_zone:
         warnings.append('składnik zmienny sieciowy pozaszczytowy nie znaleziony — poza-szczyt gross nieobliczony')
-    if dist_jakosciowa_net is None:
+    if dist_jakosciowa_net is None and not _is_three_zone:
         warnings.append('stawka jakościowa nie znaleziona (użyto 0)')
     # G11 OZE fallback: allow page-break content between "Opłata OZE" label and
     # the całodobowa data row (payment slip sometimes inserted mid-table by pypdf).
@@ -1012,9 +1181,9 @@ def _parse_text(text: str) -> InvoiceData:
             text, re.IGNORECASE | re.DOTALL)
         if _oze_m:
             dist_oze_net = _n(_oze_m.group(1))
-    if dist_oze_net is None:
+    if dist_oze_net is None and not _is_three_zone:
         warnings.append('opłata OZE nie znaleziona (użyto 0)')
-    if dist_kogeneracja_net is None:
+    if dist_kogeneracja_net is None and not _is_three_zone:
         warnings.append('opłata kogeneracyjna nie znaleziona (użyto 0)')
 
     # ── Monetary amounts (wartość netto) for the variable components ─────────
@@ -1044,6 +1213,12 @@ def _parse_text(text: str) -> InvoiceData:
     dist_kogeneracja_amount_net = _sum_optional(
         _dist_peak([r'Op.ata kogeneracyjna', r'Kogeneracyjna'], _amount_pattern),
         _dist_offpeak([r'Op.ata kogeneracyjna', r'Kogeneracyjna'], _amount_pattern))
+    if _is_three_zone:
+        energy_amount_net = g13['energy_amount_net']
+        dist_var_amount_net = g13['dist_var_amount_net']
+        dist_jakosciowa_amount_net = g13['dist_jakosciowa_amount_net']
+        dist_oze_amount_net = g13['dist_oze_amount_net']
+        dist_kogeneracja_amount_net = g13['dist_kogeneracja_amount_net']
 
     # ── Optional fees — rarely present; absence is not a warning ─────────────
     oplata_przejsciowa_net = _first_float_multi(_patterns_for('oplata_przejsciowa'), text)
@@ -1077,6 +1252,10 @@ def _parse_text(text: str) -> InvoiceData:
     )
     if vat_total_pln is not None:
         vat_total_pln = round(vat_total_pln * 0.23, 2)
+    if _is_three_zone and g13['vat_total_pln'] is not None:
+        # G13: faktura drukuje wiersz „Rozliczenie VAT” — dokładniejszy niż 23% sumy składników
+        # (różnica groszowa z zaokrągleń per wiersz).
+        vat_total_pln = g13['vat_total_pln']
 
     # ── Prosument deposit ─────────────────────────────────────────────────────
     # For korekta: _field() takes the LAST match (corrected NALEŻAŁO POLICZYĆ
@@ -1141,7 +1320,7 @@ def _parse_text(text: str) -> InvoiceData:
                         + (dist_oze_net or 0.0)
                         + (dist_kogeneracja_net or 0.0))
         peak_gross = round(peak_var_net * VAT, 4)
-    else:
+    elif not _is_three_zone:
         warnings.append('peak_gross nieobliczony — brakuje ceny energii lub składnika zmiennego')
 
     if energy_offpeak_net is not None and dist_var_offpeak_net is not None:
@@ -1151,7 +1330,7 @@ def _parse_text(text: str) -> InvoiceData:
                            + (dist_oze_net or 0.0)
                            + (dist_kogeneracja_net or 0.0))
         offpeak_gross = round(offpeak_var_net * VAT, 4)
-    elif not _is_single_zone:
+    elif not _is_single_zone and not _is_three_zone:
         warnings.append('offpeak_gross nieobliczony — brakuje ceny energii lub składnika zmiennego')
 
     if (peak_gross is not None and offpeak_gross is not None
@@ -1259,7 +1438,7 @@ def _parse_text(text: str) -> InvoiceData:
         oplata_handlowa_net=oplata_handlowa_net,
         akcyza_net=akcyza_net,
         vat_total_pln=vat_total_pln,
-        tariff='G11' if _is_single_zone else 'G12W',
+        tariff='G13' if _is_three_zone else ('G11' if _is_single_zone else 'G12W'),
         invoice_number=invoice_number,
         billing_period_raw=billing_period_raw,
         doc_type=doc_type,
@@ -1269,6 +1448,7 @@ def _parse_text(text: str) -> InvoiceData:
         requires_payment=requires_payment,
         prev_deposit_previous_pln=prev_deposit_previous_pln,
         warnings=unique_warnings,
+        **{f: g13[f] for f in _G13_ZONE_FIELDS} if _is_three_zone else {},
     )
 
     data.warnings.extend(_validate(data))
