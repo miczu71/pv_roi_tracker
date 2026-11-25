@@ -1400,6 +1400,25 @@ class TestZoneTariffProvider:
         ip.apply_zone_tariff(data)
         assert data.tariff == 'G13' and data.peak_gross is None
 
+    def test_start_g12w_end_g13_not_neutralized(self):
+        from datetime import date
+        from pv_roi_tracker import invoice_parser as ip
+        ip.set_zone_tariff_provider(lambda d: 'G13' if d >= date(2026, 11, 3) else 'G12W')
+        data = _parse_text(_make_old_format_text())
+        data.billing_period_raw = '01.11.2026 - 18.11.2026'
+        data.year, data.month = 2026, 11
+        data.tariff = 'G12W'
+        ip.apply_zone_tariff(data)
+        assert data.tariff == 'G12W'     # okres z częścią G12w nie jest trzystrefowy
+
+    def test_three_zone_tariff_over_helper(self):
+        from datetime import date
+        from pv_roi_tracker.tariff_zones import three_zone_tariff_over as f
+        p = lambda d: 'G13s' if d >= date(2026, 11, 3) else 'G12W'
+        assert f(p, date(2026, 11, 3), date(2026, 11, 30)) == 'G13s'
+        assert f(p, date(2026, 11, 1), date(2026, 11, 30)) is None
+        assert f(lambda d: None, date(2026, 11, 3), date(2026, 11, 30)) is None
+
 
 # ── E5b: faktura G13 (trzy strefy: szczyt przedpołudniowy / popołudniowy / pozostałe) ──
 # Tekst odwzorowuje wyjście pypdf z faktury T/K1/BN567872/0022/26 (03–18.11.2026), bez danych

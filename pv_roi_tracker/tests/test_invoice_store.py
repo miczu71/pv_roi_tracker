@@ -788,6 +788,15 @@ def test_period_covers_month():
     assert c('brak dat', 2026, 11) is True
 
 
+def test_period_covers_month_february_and_december():
+    from pv_roi_tracker.invoice_store import period_covers_month as c
+    assert c('01.02.2027 - 28.02.2027', 2027, 2) is True
+    assert c('01.02.2028 - 28.02.2028', 2028, 2) is False     # rok przestępny: luty ma 29 dni
+    assert c('01.02.2028 - 29.02.2028', 2028, 2) is True
+    assert c('01.12.2026 - 30.12.2026', 2026, 12) is False
+    assert c('19.12.2026 - 31.12.2026', 2026, 12) is True
+
+
 def test_month_data_period_spans_parts(tmp_path):
     from pv_roi_tracker import invoice_store
     from pv_roi_tracker.invoice_store import month_data

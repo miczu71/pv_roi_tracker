@@ -541,6 +541,8 @@ def main() -> None:
         try:
             return _tariff_module_now().tariff_on(day)
         except (LookupError, ValueError):
+            logger.warning('zone tariff lookup failed for %s — faktura nie zostanie zneutralizowana',
+                           day, exc_info=True)
             return None
 
     invoice_parser.set_zone_tariff_provider(_zone_tariff_for)
@@ -589,7 +591,11 @@ def main() -> None:
             if month_key in stored:
                 if historic_store.reconcile_invoice(invoice_store.month_data(stored, month_key), HISTORIC_PATH):
                     invoice_store.mark_reconciled(month_key, INVOICE_PATH, clear_training=False)
-                record = {**record, 'pre_reconcile': None}
+                    record = {**record, 'pre_reconcile': None}
+                else:
+                    # Pozostała część niepełna (guard) — sumy z usuniętej faktury wracają do stanu sprzed niej.
+                    logger.info('Invoice remove %s: pozostała część miesiąca %s niepełna — przywracam historic z snapshotu',
+                                key, month_key)
         if record and record.get('pre_reconcile') and record.get('year') and record.get('month'):
             historic_store.restore_month(record['year'], record['month'],
                                          record['pre_reconcile'], HISTORIC_PATH)
@@ -622,9 +628,14 @@ def main() -> None:
         invoice_parser.apply_zone_tariff(data)
 
         snap = historic_store.snapshot_month(year, month, HISTORIC_PATH)
-        reconciled = historic_store.reconcile_invoice(data, HISTORIC_PATH)
-        invoice_store.upsert(data, filename=filename, reconciled=reconciled,
+        invoice_store.upsert(data, filename=filename, reconciled=False,
                               pre_reconcile=snap, path=INVOICE_PATH)
+        # Rekonsyliacja z danych miesiąca (jak _invoice_reconcile): miesiąc z częściami nie bierze sum jednej faktury.
+        month_key = f'{year}-{month:02d}'
+        reconciled = historic_store.reconcile_invoice(
+            invoice_store.month_data(invoice_store.load(INVOICE_PATH), month_key), HISTORIC_PATH)
+        if reconciled:
+            invoice_store.mark_reconciled(month_key, INVOICE_PATH, clear_training=False)
         # Remove the stub if it was one
         if key.startswith('unparsed-'):
             invoice_store.remove(key, INVOICE_PATH)
@@ -1315,6 +1326,10 @@ def main() -> None:
                 if pk is not None and ym not in _three_zone:
                     rates_by_month[ym] = (pk, inv.get('offpeak_gross'))
             _invoice_rates_months = set(rates_by_month)     # miesiące z fakturą — bez wyceny godzinowej z katalogu
+            _excluded = sorted(ym for ym in stored_invoices
+                               if ym in _three_zone and stored_invoices[ym].get('peak_gross') is not None)
+            if _excluded:
+                logger.info('Heatpump: miesiące G13 z fakturą wyceniane z cennika, nie z faktury: %s', _excluded)
             for r in records:
                 ym = f'{r.year}-{r.month:02d}'
                 if (ym not in rates_by_month and ym not in _three_zone

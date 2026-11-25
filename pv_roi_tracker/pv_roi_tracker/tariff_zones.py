@@ -22,6 +22,17 @@ _ZONE_TARIFFS = ('G12', 'G13', 'G13s')
 THREE_ZONE_TARIFFS = ('G13', 'G13s')
 
 
+def three_zone_tariff_over(tariff_on: Callable, start, end):
+    """Jedna definicja „okres trzystrefowy”: taryfa końca okresu, gdy początek I koniec są w G13/G13s
+    (okres z częścią G12w — np. 01–18.11 — nie jest trzystrefowy), inaczej None.
+    `tariff_on: date -> taryfa|None`. Pytanie „czy miesiąc ma jakieś dni G13” (LUB początek/koniec)
+    to osobna decyzja — `TariffModule.has_three_zone_days`."""
+    t_end = tariff_on(end)
+    if t_end in THREE_ZONE_TARIFFS and tariff_on(start) in THREE_ZONE_TARIFFS:
+        return t_end
+    return None
+
+
 def is_peak_zone(tariff: str, zone: str) -> bool:
     """Jedno źródło prawdy: strefa jest szczytem (G12: strefa dzienna `day` też jest szczytem)."""
     return zone in PEAK_ZONES or (tariff == 'G12' and zone == _G12_PEAK)

@@ -88,15 +88,15 @@ def apply_zone_tariff(data: 'InvoiceData') -> 'InvoiceData':
     (tariff = taryfa końca). Brak/zły okres → ostatni dzień miesiąca. Wyjątek providera → log."""
     import calendar
     from .invoice_store import _period_range   # lokalnie: invoice_store importuje invoice_parser
-    from .tariff_zones import THREE_ZONE_TARIFFS
+    from .tariff_zones import three_zone_tariff_over
     try:
         rng = _period_range(data.billing_period_raw)
         if rng is not None:
             start, end = date(*rng[0]), date(*rng[1])
         else:
             start = end = date(data.year, data.month, calendar.monthrange(data.year, data.month)[1])
-        t_end = _zone_tariff_provider(end)
-        if t_end in THREE_ZONE_TARIFFS and _zone_tariff_provider(start) in THREE_ZONE_TARIFFS:
+        t_end = three_zone_tariff_over(_zone_tariff_provider, start, end)
+        if t_end:
             neutralize_three_zone(data, t_end)
     except Exception:
         logger.exception('zone tariff provider failed for %s-%s', data.year, data.month)

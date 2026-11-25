@@ -86,6 +86,8 @@ class TariffModule:
             return (self.tariff_on(date(year, month, 1)) in THREE_ZONE_TARIFFS
                     or self.tariff_on(date(year, month, last)) in THREE_ZONE_TARIFFS)
         except (LookupError, ValueError):
+            logger.warning('has_three_zone_days: brak taryfy dla %d-%02d — miesiąc nie jest trzystrefowy',
+                           year, month, exc_info=True)
             return False
 
     def _period_info(self, day: date) -> tuple:
