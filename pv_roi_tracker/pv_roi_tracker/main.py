@@ -1376,6 +1376,7 @@ def main() -> None:
                 if pk is not None and ym not in _three_zone:
                     rates_by_month[ym] = (pk, inv.get('offpeak_gross'))
             _invoice_rates_months = set(rates_by_month)     # miesiące z fakturą — bez wyceny godzinowej z katalogu
+            _HOUR_PRICE_WARNED.clear()        # ostrzeżenia wyceny godzin — raz na przeliczenie, nie raz na proces
             _g13_invoice = _g13_invoice_rates(stored_invoices, _three_zone)   # stawki stref z faktury G13
             _excluded = sorted(ym for ym in stored_invoices
                                if ym in _three_zone and ym not in _g13_invoice
