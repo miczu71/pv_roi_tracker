@@ -717,9 +717,13 @@ def _build_invoices_data(records, stored: dict):
                         'imported_kwh': part.get('imported_kwh'),
                         'exported_kwh': part.get('exported_kwh'),
                         'amount_due': part.get('amount_due_pln'),
+                        'deposit_used': part.get('deposit_used_pln'),
+                        'peak_gross': part.get('peak_gross'),
+                        'offpeak_gross': part.get('offpeak_gross'),
                         'filename': part.get('filename'),
                         'has_pdf': bool(part.get('pdf_path')),
                         'warnings': part.get('warnings', []),
+                        'warnings_count': len(part.get('warnings', [])),
                     })
 
             # Miesiąc rozliczony kilkoma fakturami: sumy nagłówka (faktura główna + części)
@@ -730,7 +734,8 @@ def _build_invoices_data(records, stored: dict):
                     vals = [r.get(field) for r in recs if r.get(field) is not None]
                     return round(sum(vals), 2) if vals else None
                 month_total = {'invoices': len(recs), 'imported_kwh': _sum('imported_kwh'),
-                               'exported_kwh': _sum('exported_kwh'), 'amount_due': _sum('amount_due_pln')}
+                               'exported_kwh': _sum('exported_kwh'), 'amount_due': _sum('amount_due_pln'),
+                               'deposit_used': _sum('deposit_used_pln')}
 
             inv_warnings = inv.get('warnings', [])
             out.append({

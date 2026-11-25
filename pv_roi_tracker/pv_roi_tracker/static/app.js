@@ -2883,48 +2883,60 @@ function _renderInvoiceTable(invoices) {
         'title="Usuń fakturę i przywróć dane sprzed uzgodnienia">Usuń</button>';
 
     // Miesiąc z kilkoma fakturami (zmiana taryfy): nagłówek z sumami, potem faktury chronologicznie
+    const mt = inv.month_total;
+    const _badge = (n, total) => '<span style="background:#d69e2e;color:#fff;padding:1px 5px;border-radius:2px;font-size:10px;font-weight:600">FAKTURA ' + n + '/' + total + '</span> ';
+    const _subCell = 'padding-left:22px;border-left:3px solid #d69e2e';
     const partsHtml = ((inv.parts && inv.parts.length > 0)
       ? inv.parts.map(function(part, pi) {
           const partKey = JSON.stringify(part.key).replace(/"/g,'&quot;');
-          const kwh = (part.imported_kwh != null ? ' · import: ' + part.imported_kwh + ' kWh' : '') +
-                      (part.exported_kwh != null ? ' · eksport: ' + part.exported_kwh + ' kWh' : '');
-          const due = part.amount_due != null ? ' · do zapłaty: ' + part.amount_due.toFixed(2) + ' zł' : '';
-          const period = part.billing_period_raw ? ' · ' + String(part.billing_period_raw).replace(/</g,'&lt;') : '';
-          const tar = part.tariff ? ' · ' + _esc(part.tariff) : '';
+          const warnTip = (part.warnings || []).join('\n').replace(/"/g,'&quot;');
           const pdfBtn = part.has_pdf
             ? '<button onclick="event.stopPropagation();viewInvoicePdf(' + partKey + ')" ' +
-              'style="font-size:10px;padding:1px 5px;background:#718096;color:#fff;border:none;border-radius:2px;cursor:pointer;margin-left:6px">PDF</button>'
+              'style="font-size:11px;padding:2px 7px;margin-right:3px;background:#718096;color:#fff;border:none;border-radius:3px;cursor:pointer">PDF</button>'
             : '';
           const delBtn = '<button onclick="event.stopPropagation();removeInvoice(' + partKey + ')" ' +
-            'style="font-size:10px;padding:1px 5px;background:#e53e3e;color:#fff;border:none;border-radius:2px;cursor:pointer;margin-left:3px">Usuń</button>';
-          return '<tr style="background:#f7f7ee">' +
-            '<td colspan="13" style="padding:3px 8px 3px 28px;border-left:3px solid #d69e2e;font-size:11px">' +
-              '<span style="background:#d69e2e;color:#fff;padding:1px 5px;border-radius:2px;font-size:10px;font-weight:600">FAKTURA ' + (pi + 1) + '/' + inv.month_total.invoices + '</span> ' +
-              (part.invoice_number ? _esc(part.invoice_number) : '—') + period + tar + kwh + due + pdfBtn + delBtn +
-            '</td>' +
+            'style="font-size:11px;padding:2px 7px;background:#e53e3e;color:#fff;border:none;border-radius:3px;cursor:pointer">Usuń</button>';
+          return '<tr style="background:#fffef5">' +
+            '<td style="' + _subCell + '">' + _badge(pi + 1, mt.invoices) +
+              (part.billing_period_raw ? '<br><span style="font-size:10px;color:var(--muted)">' + _esc(String(part.billing_period_raw)) +
+              (part.tariff ? ' · ' + _esc(part.tariff) : '') + '</span>' : '') + '</td>' +
+            '<td style="color:var(--muted)">' + (part.invoice_number ? _esc(part.invoice_number) : '—') + '</td>' +
+            '<td style="text-align:right">' + n0(part.imported_kwh) + '</td>' +
+            '<td style="text-align:right">' + n0(part.exported_kwh) + '</td>' +
+            '<td style="text-align:right">—</td><td style="text-align:right">—</td>' +
+            '<td style="text-align:right">' + (part.amount_due != null ? part.amount_due.toFixed(2) + ' zł' : '—') + '</td>' +
+            '<td style="text-align:right">' + (part.deposit_used != null ? part.deposit_used.toFixed(2) + ' zł' : '—') + '</td>' +
+            '<td style="text-align:right;font-size:11px">' + n4(part.peak_gross) + '</td>' +
+            '<td style="text-align:right;font-size:11px">' + n4(part.offpeak_gross) + '</td>' +
+            '<td></td>' +
+            '<td style="text-align:center">' + ((part.warnings_count || 0) > 0 ? '<span title="' + warnTip + '" style="cursor:help;color:#c0392b">⚠ ' + part.warnings_count + '</span>' : '') + '</td>' +
+            '<td style="text-align:right;white-space:nowrap">' + pdfBtn + delBtn + '</td>' +
           '</tr>';
         }).join('')
       : '');
-    const mt = inv.month_total;
     const monthHeader = mt
-      ? '<tr style="background:#fffbea"><td colspan="13" style="padding:4px 8px;font-size:12px;border-left:3px solid #d69e2e">' +
-          '<b>' + _esc(inv.month || '') + '</b> · rozliczony ' + mt.invoices + ' fakturami' +
-          (mt.imported_kwh != null ? ' · import razem: ' + n0(mt.imported_kwh) + ' kWh' : '') +
-          (mt.exported_kwh != null ? ' · eksport razem: ' + n0(mt.exported_kwh) + ' kWh' : '') +
-          (mt.amount_due != null ? ' · do zapłaty razem: ' + mt.amount_due.toFixed(2) + ' zł' : '') +
-        '</td></tr>'
+      ? '<tr style="background:#fffbea;font-weight:600">' +
+          '<td style="border-left:3px solid #d69e2e">' + _esc(inv.month || '') +
+            '<br><span style="font-size:10px;font-weight:400;color:var(--muted)">' + mt.invoices + ' faktury</span></td>' +
+          '<td></td>' +
+          '<td style="text-align:right">' + n0(mt.imported_kwh) + '</td>' +
+          '<td style="text-align:right">' + n0(mt.exported_kwh) + '</td>' +
+          '<td style="text-align:right;color:' + dIcol + '">' + dI + '</td>' +
+          '<td style="text-align:right;color:' + dEcol + '">' + dE + '</td>' +
+          '<td style="text-align:right">' + (mt.amount_due != null ? mt.amount_due.toFixed(2) + ' zł' : '—') + '</td>' +
+          '<td style="text-align:right">' + (mt.deposit_used != null ? mt.deposit_used.toFixed(2) + ' zł' : '—') + '</td>' +
+          '<td></td><td></td>' +
+          '<td style="text-align:center">' + statusCell + '</td><td></td><td></td>' +
+        '</tr>'
       : '';
-    const mainBadge = mt
-      ? '<span style="background:#d69e2e;color:#fff;padding:1px 5px;border-radius:2px;font-size:10px;font-weight:600">FAKTURA ' +
-        mt.invoices + '/' + mt.invoices + '</span> '
-      : '';
+    const mainBadge = mt ? _badge(mt.invoices, mt.invoices) : '';
     rows += monthHeader + partsHtml + '<tr onclick="toggleInvoiceDetail(' + idx + ')" style="cursor:pointer' + (isStub ? ';background:#fff5f5' : '') + '">' +
-      '<td>' + mainBadge + monthCell + '</td>' +
+      '<td' + (mt ? ' style="' + _subCell + '"' : '') + '>' + mainBadge + (mt ? '<br><span style="font-size:10px;color:var(--muted)">' + _esc(inv.billing_period_raw || '') + (inv.tariff ? ' · ' + _esc(inv.tariff) : '') + '</span>' : monthCell) + '</td>' +
       '<td style="color:var(--muted)">' + (inv.invoice_number || '—') + '</td>' +
       '<td style="text-align:right">' + (isStub ? '—' : n0(inv.imported_kwh)) + '</td>' +
       '<td style="text-align:right">' + (isStub ? '—' : n0(inv.exported_kwh)) + '</td>' +
-      '<td style="text-align:right;color:' + dIcol + '">' + (isStub ? '—' : dI) + '</td>' +
-      '<td style="text-align:right;color:' + dEcol + '">' + (isStub ? '—' : dE) + '</td>' +
+      '<td style="text-align:right;color:' + dIcol + '">' + (isStub ? '—' : (mt ? '—' : dI)) + '</td>' +
+      '<td style="text-align:right;color:' + dEcol + '">' + (isStub ? '—' : (mt ? '—' : dE)) + '</td>' +
       '<td style="text-align:right">' + (inv.amount_due != null ? inv.amount_due.toFixed(2) + ' zł' : '—') + '</td>' +
       '<td style="text-align:right">' + (inv.deposit_used != null ? inv.deposit_used.toFixed(2) + ' zł' : '—') + '</td>' +
       '<td style="text-align:right;font-size:11px">' + (isStub ? '—' : n4(inv.peak_gross)) + '</td>' +

@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.60.2] — 2026-11-25
+
+### Zmieniono
+- **Miesiąc z kilkoma fakturami — kaskada.** Główny wiersz to miesiąc z sumami w kolumnach (import, eksport, Δ, do zapłaty, depozyt); pod nim faktury składowe w tym samym formacie i na tym samym poziomie („FAKTURA n/N”, okres i taryfa pod numerem, stawki, ostrzeżenia, PDF/Usuń). API: `parts[]` ma `deposit_used`, `peak_gross`, `offpeak_gross`, `warnings_count`; `month_total.deposit_used`.
+
 ## [0.60.1] — 2026-11-25
 
 ### Naprawiono
