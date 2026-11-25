@@ -240,12 +240,34 @@ def _periods_peak_fn():
     return _tz.peak_fn(periods, _tcat.load_catalog()) if periods else None
 
 
+_HOUR_PRICE_WARNED: set = set()
+
+
+def _warn_once(key, msg, *args) -> None:
+    """Ostrzeżenie raz na klucz — wycena godzinowa woła to dziesiątki tysięcy razy."""
+    if key not in _HOUR_PRICE_WARNED:
+        _HOUR_PRICE_WARNED.add(key)
+        logger.warning(msg, *args)
+
+
+def _g13_invoice_rates(stored_invoices: dict, three_zone_months) -> dict:
+    """`{YYYY-MM: {strefa katalogu: brutto}}` z faktur G13 z kompletem trzech stawek stref, tylko dla
+    miesięcy trójstrefowych — stawki wyceniają godziny G13 zamiast katalogu."""
+    from .tariff_invoice_check import G13_ZONES
+    out: dict = {}
+    for ym, inv in stored_invoices.items():
+        if ym not in three_zone_months:
+            continue
+        zv = {cz: inv.get(f'{z}_gross') for z, cz in G13_ZONES.items()}
+        if all(v is not None for v in zv.values()):
+            out[ym] = zv
+    return out
+
+
 def _hour_price(tmod, dt, skip_months=(), g13_invoice=None):
     """Cena brutto godziny dla taryf trójstrefowych (G13, G13s); None dla G11/G12/G12w, miesięcy z
-    `skip_months` i dat poza katalogiem. `g13_invoice`: `{YYYY-MM: {morning|evening|other: brutto}}` —
-    stawki stref z faktury G13 mają pierwszeństwo przed katalogiem w godzinach trójstrefowych."""
-    from .tariff_invoice_check import G13_ZONES        # lokalnie, jak reszta importów taryf w main.py
-    from .tariff_zones import THREE_ZONE_TARIFFS
+    `skip_months` i dat poza katalogiem. `g13_invoice`: `{YYYY-MM: {strefa katalogu: brutto}}`
+    (`_g13_invoice_rates`) — stawki z faktury G13 mają pierwszeństwo przed katalogiem (tylko taryfa G13)."""
     ym = dt.strftime('%Y-%m')
     if ym in skip_months:
         return None
@@ -253,14 +275,16 @@ def _hour_price(tmod, dt, skip_months=(), g13_invoice=None):
         tariff = tmod.tariff_on(dt.date())
         if tariff in ('G11', 'G12', 'G12w'):
             return None
-        inv = (g13_invoice or {}).get(ym)
-        if inv and tariff in THREE_ZONE_TARIFFS:
+        inv = (g13_invoice or {}).get(ym) if tariff == 'G13' else None   # G13s ma własne strefy — katalog
+        if inv:
             zone = tmod.zone_at(dt, tariff)
-            key = next((z for z, cz in G13_ZONES.items() if cz == zone), None)
-            if key is not None and inv.get(key) is not None:
-                return inv[key]
+            if zone in inv:
+                return inv[zone]
+            _warn_once(('zone', ym, zone), 'Heatpump: strefa %s (%s) bez stawki z faktury — cena z katalogu', zone, ym)
         return tmod.price_at(dt).gross
-    except (LookupError, ValueError):
+    except (LookupError, ValueError) as exc:
+        _warn_once(('err', ym, type(exc).__name__),
+                   'Heatpump: wycena godzin %s z modułu taryf nie powiodła się (%s) — para peak/offpeak', ym, exc)
         return None
 
 
@@ -1352,11 +1376,7 @@ def main() -> None:
                 if pk is not None and ym not in _three_zone:
                     rates_by_month[ym] = (pk, inv.get('offpeak_gross'))
             _invoice_rates_months = set(rates_by_month)     # miesiące z fakturą — bez wyceny godzinowej z katalogu
-            _g13_invoice = {}
-            for ym, inv in stored_invoices.items():
-                zv = {z: inv.get(f'{z}_gross') for z in ('morning', 'evening', 'other')}
-                if ym in _three_zone and all(v is not None for v in zv.values()):
-                    _g13_invoice[ym] = zv        # stawki stref z faktury G13 — wycena godzin G13
+            _g13_invoice = _g13_invoice_rates(stored_invoices, _three_zone)   # stawki stref z faktury G13
             _excluded = sorted(ym for ym in stored_invoices
                                if ym in _three_zone and ym not in _g13_invoice
                                and stored_invoices[ym].get('peak_gross') is not None)

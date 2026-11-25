@@ -19,7 +19,6 @@ from flask import Flask, Response, jsonify, request
 from . import __version__
 from .invoice_parser import _G13_ZONE_FIELDS
 from .models import MonthlyRecord
-from . import tariff_catalog as tc
 from .tariff_invoice_check import G13_ZONES
 from .tariff_zones import THREE_ZONE_TARIFFS
 from .roi import RoiResult, bill_comparison as _bill_comparison, underperformance_analysis as _underperformance_analysis
@@ -235,31 +234,28 @@ def _active_override(module, today):
     return max(active, key=lambda o: o['from']) if active else None
 
 
-_G13_GROSS_FIELDS = ('morning_gross', 'evening_gross', 'other_gross')
-
-
-def _three_zone_today(module, today) -> bool:
+def _three_zone_tariff(module, today):
+    """Taryfa dnia, gdy trójstrefowa (G13/G13s); inaczej None. Błąd katalogu → ostrzeżenie, nie cisza."""
     try:
-        return module.tariff_on(today) in THREE_ZONE_TARIFFS
-    except (LookupError, ValueError):
-        return False
+        tariff = module.tariff_on(today)
+    except (LookupError, ValueError) as exc:
+        log.warning('Moduł taryf: brak taryfy na %s (%s) — strefy G13 pominięte', today, exc)
+        return None
+    return tariff if tariff in THREE_ZONE_TARIFFS else None
 
 
 def _g13_catalog_rates(module, today) -> dict:
-    """Stawki brutto stref G13 z katalogu (jak `_check_g13`); {} gdy taryfa dnia nie jest trójstrefowa."""
-    if not _three_zone_today(module, today):
+    """Stawki brutto stref G13 z katalogu (`zone_rates`, ta sama ścieżka co `price_at`);
+    {} gdy taryfa dnia nie jest trójstrefowa."""
+    tariff = _three_zone_tariff(module, today)
+    if tariff is None:
         return {}
     try:
-        tariff = module.tariff_on(today)
-        period = module._period_info(today)[0]
-        out = {}
-        for z, cz in G13_ZONES.items():
-            r = tc.rates_per_kwh(tariff, period, cz)
-            out[f'{z}_gross'] = (r['energy'] + r['dist'] + r['fees']) * module.vat
-        return out
+        rates = module.zone_rates(today, tariff)
     except (LookupError, ValueError, KeyError) as exc:
         log.warning('Moduł taryf: brak stawek stref na %s (%s)', today, exc)
         return {}
+    return {f'{z}_gross': rates[cz] for z, cz in G13_ZONES.items() if cz in rates}
 
 
 def _catalog_layer_rates(module, today) -> dict:
@@ -877,9 +873,9 @@ def latest_invoice_rates(real: Optional[dict] = None, _today=None) -> dict:
     # 2. Faktura nadpisuje warstwę 1 (dla pól, które faktycznie sparsowała)
     latest = _latest_real_invoice(real)
     if latest is not None:
-        three_zone = _three_zone_today(module, today)
+        three_zone = _three_zone_tariff(module, today) is not None
         rates.update({k: latest[k] for k in _RATE_FIELDS
-                      if latest.get(k) is not None and (three_zone or k not in _G13_GROSS_FIELDS)})
+                      if latest.get(k) is not None and (three_zone or k not in _G13_RATE_FIELDS)})
 
     # 3. Korekta ręczna wygrywa w oknie luki (ogłoszona taryfa nowsza niż faktura)
     ov = _override_layer_rates(module, real, today)
