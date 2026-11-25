@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.61.1] — 2026-11-25
+
+### Naprawiono
+- **Widok faktur: szczegóły dla każdej faktury miesiąca rozliczonego kilkoma fakturami.** Wiersze „FAKTURA 1/2…” (części miesiąca) były nieklikalne i bez rozwinięcia — szczegóły (sprzedaż energii, dystrybucja, opłaty stałe, depozyt, import/eksport per strefa, ostrzeżenia parsera) miała tylko ostatnia faktura. Teraz każda część rozwija się po kliknięciu i ma przyciski „↻ PDF” oraz „Trenuj”.
+
 ## [0.61.0] — 2026-11-25
 
 ### Dodano

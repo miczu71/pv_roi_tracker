@@ -685,6 +685,13 @@ def _build_degradation(records, today):
 # Taryfa G13 (trzy strefy): pola stref przekazywane do UI (stawki brutto → kolumna tabeli faktur).
 _G13_RATE_FIELDS = tuple(f for f in _G13_ZONE_FIELDS if f.endswith('_gross'))
 
+# Pola panelu szczegółów faktury (wspólne dla faktury głównej i jej części)
+_INVOICE_DETAIL_FIELDS = (
+    'energy_peak_net', 'energy_offpeak_net', 'dist_var_peak_net', 'dist_var_offpeak_net',
+    'dist_jakosciowa_net', 'dist_oze_net', 'dist_kogeneracja_net',
+    'fixed_mocowa_net', 'fixed_abonament_net', 'fixed_stalysieciowy_net',
+)
+
 
 def _build_invoices_data(records, stored: dict):
     from . import invoice_store as _istore
@@ -759,6 +766,17 @@ def _build_invoices_data(records, stored: dict):
                         'has_pdf': bool(part.get('pdf_path')),
                         'warnings': part.get('warnings', []),
                         'warnings_count': len(part.get('warnings', [])),
+                        'doc_type': part.get('doc_type', 'rozliczeniowa'),
+                        'has_raw_text': bool(part.get('raw_text')),
+                        'deposit_current': part.get('deposit_current_pln'),
+                        'deposit_previous': part.get('deposit_previous_pln'),
+                        'imported_kwh_peak': part.get('imported_kwh_peak'),
+                        'imported_kwh_offpeak': part.get('imported_kwh_offpeak'),
+                        'blended_gross': part.get('blended_gross'),
+                        'fixed_total_net': part.get('fixed_total_net'),
+                        'avg_price': part.get('avg_price_pln_kwh'),
+                        **{f: part.get(f) for f in _INVOICE_DETAIL_FIELDS},
+                        **{f: part.get(f) for f in _G13_ZONE_FIELDS},
                     })
 
             # Miesiąc rozliczony kilkoma fakturami: sumy nagłówka (faktura główna + części)
@@ -806,16 +824,7 @@ def _build_invoices_data(records, stored: dict):
                 'warnings': inv_warnings,
                 'warnings_count': len(inv_warnings),
                 # Detail fields for expand panel
-                'energy_peak_net': inv.get('energy_peak_net'),
-                'energy_offpeak_net': inv.get('energy_offpeak_net'),
-                'dist_var_peak_net': inv.get('dist_var_peak_net'),
-                'dist_var_offpeak_net': inv.get('dist_var_offpeak_net'),
-                'dist_jakosciowa_net': inv.get('dist_jakosciowa_net'),
-                'dist_oze_net': inv.get('dist_oze_net'),
-                'dist_kogeneracja_net': inv.get('dist_kogeneracja_net'),
-                'fixed_mocowa_net': inv.get('fixed_mocowa_net'),
-                'fixed_abonament_net': inv.get('fixed_abonament_net'),
-                'fixed_stalysieciowy_net': inv.get('fixed_stalysieciowy_net'),
+                **{f: inv.get(f) for f in _INVOICE_DETAIL_FIELDS},
                 **{f: inv.get(f) for f in _G13_ZONE_FIELDS},
                 'corrections': corrections,
                 'parts': parts,

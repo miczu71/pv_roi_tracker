@@ -2862,6 +2862,47 @@ function _renderInvoiceTable(invoices) {
     return kb.localeCompare(ka);
   });
 
+  // Panel szczegółów faktury — wspólny dla faktury głównej i jej części (FAKTURA 1/2…)
+  const _invDetailHtml = function(inv) {
+    return '<div style="display:flex;gap:24px;flex-wrap:wrap;font-size:12px">' +
+        '<div><b>Sprzedaż energii (net zł/kWh)</b><br>' +
+          (_zoneLines(inv, 'energy_{z}_net', n4) ||
+        ('Szczyt: ' + n4(inv.energy_peak_net) + '<br>' + 'Poza szczytem: ' + n4(inv.energy_offpeak_net))) +
+        '</div>' +
+        '<div><b>Dystrybucja zmienna (net zł/kWh)</b><br>' +
+          (_zoneLines(inv, 'dist_var_{z}_net', n4) ||
+        ('Skł. zmienny szczyt: ' + n4(inv.dist_var_peak_net) + '<br>' + 'Skł. zmienny poza: ' + n4(inv.dist_var_offpeak_net))) + '<br>' +
+          'Jakościowa: ' + n4(inv.dist_jakosciowa_net) + '<br>' +
+          'OZE: ' + n4(inv.dist_oze_net) + '<br>' +
+          'Kogeneracja: ' + n4(inv.dist_kogeneracja_net) +
+        '</div>' +
+        '<div><b>Opłaty stałe (net zł/mc)</b><br>' +
+          'Mocowa: ' + n2(inv.fixed_mocowa_net) + '<br>' +
+          'Abonament: ' + n2(inv.fixed_abonament_net) + '<br>' +
+          'Skł. stały siec.: ' + n2(inv.fixed_stalysieciowy_net) +
+          (inv.fixed_total_net != null ? '<br><b>Suma: ' + inv.fixed_total_net.toFixed(2) + ' zł</b>' : '') +
+        '</div>' +
+        '<div><b>Depozyt prosumencki (zł)</b><br>' +
+          'Bieżący okres: ' + n2(inv.deposit_current) + '<br>' +
+          'Z poprzednich: ' + n2(inv.deposit_previous) + '<br>' +
+          'Rozliczony: ' + n2(inv.deposit_used) +
+        '</div>' +
+        '<div><b>' + (_isG13(inv) ? 'Import per strefa (kWh)' : 'Import szczyt/poza (kWh)') + '</b><br>' +
+          (_zoneLines(inv, 'imported_kwh_{z}', n0) ||
+        ('Szczyt: ' + n0(inv.imported_kwh_peak) + '<br>' + 'Poza: ' + n0(inv.imported_kwh_offpeak))) + '<br>' +
+          'Blended gross: ' + n4(inv.blended_gross) + ' zł/kWh<br>' +
+          'Śr. cena: ' + n4(inv.avg_price) + ' zł/kWh' +
+        '</div>' +
+        (_isG13(inv)
+          ? '<div><b>Eksport per strefa (kWh)</b><br>' + _zoneLines(inv, 'exported_kwh_{z}', n0) + '</div>'
+          : '') +
+        (inv.warnings && inv.warnings.length > 0
+          ? '<div><b style="color:#c0392b">Ostrzeżenia parsera</b><br>' +
+        inv.warnings.map(w => '⚠ ' + w).join('<br>') + '</div>'
+          : '') +
+      '</div>';
+  };
+
   let rows = '';
   sorted.forEach((inv, idx) => {
     const isStub = inv.is_stub || inv.needs_training;
@@ -2923,7 +2964,11 @@ function _renderInvoiceTable(invoices) {
             : '';
           const delBtn = '<button onclick="event.stopPropagation();removeInvoice(' + partKey + ')" ' +
             'style="font-size:11px;padding:2px 7px;background:#e53e3e;color:#fff;border:none;border-radius:3px;cursor:pointer">Usuń</button>';
-          return '<tr style="background:#fffef5">' +
+          const partDetailId = 'inv-detail-' + idx + '-p' + pi;
+          const partBtns = pdfBtn +
+            (part.has_pdf ? '<button onclick="event.stopPropagation();reparseInvoice(' + partKey + ')" style="font-size:11px;padding:2px 7px;margin-right:3px;background:#805ad5;color:#fff;border:none;border-radius:3px;cursor:pointer" title="Przelicz ponownie z zapisanego PDF">↻ PDF</button>' : '') +
+            '<button onclick="event.stopPropagation();openTrainModal(' + partKey + ')" style="font-size:11px;padding:2px 7px;margin-right:3px;background:#3182ce;color:#fff;border:none;border-radius:3px;cursor:pointer" title="Trenuj parser na tym układzie faktury">Trenuj</button>';
+          return '<tr onclick="toggleInvoiceDetail(\'' + idx + '-p' + pi + '\')" style="cursor:pointer;background:#fffef5">' +
             '<td style="' + _subCell + '">' + _badge(pi + 1, mt.invoices) +
               (part.billing_period_raw ? '<br><span style="font-size:10px;color:var(--muted)">' + _esc(String(part.billing_period_raw)) +
               (part.tariff ? ' · ' + _esc(part.tariff) : '') + '</span>' : '') + '</td>' +
@@ -2936,7 +2981,10 @@ function _renderInvoiceTable(invoices) {
             _zoneRatesCell(part) +
             '<td></td>' +
             '<td style="text-align:center">' + ((part.warnings_count || 0) > 0 ? '<span title="' + warnTip + '" style="cursor:help;color:#c0392b">⚠ ' + part.warnings_count + '</span>' : '') + '</td>' +
-            '<td style="text-align:right;white-space:nowrap">' + pdfBtn + delBtn + '</td>' +
+            '<td style="text-align:right;white-space:nowrap">' + partBtns + delBtn + '</td>' +
+          '</tr>' +
+          '<tr id="' + partDetailId + '" style="display:none;background:var(--bg)">' +
+            '<td colspan="12" style="padding:10px 14px">' + _invDetailHtml(part) + '</td>' +
           '</tr>';
         }).join('')
       : '');
@@ -2975,43 +3023,7 @@ function _renderInvoiceTable(invoices) {
         (isStub
           ? '<div style="font-size:12px;color:#c0392b"><b>Błąd parsowania:</b> ' + (inv.parse_error||'').replace(/</g,'&lt;') + '</div>' +
             '<div style="font-size:12px;color:var(--muted);margin-top:4px">Kliknij <b>Trenuj</b>, aby ręcznie uzupełnić dane i nauczyć parser tego układu.</div>'
-          : '<div style="display:flex;gap:24px;flex-wrap:wrap;font-size:12px">' +
-            '<div><b>Sprzedaż energii (net zł/kWh)</b><br>' +
-              (_zoneLines(inv, 'energy_{z}_net', n4) ||
-                ('Szczyt: ' + n4(inv.energy_peak_net) + '<br>' + 'Poza szczytem: ' + n4(inv.energy_offpeak_net))) +
-            '</div>' +
-            '<div><b>Dystrybucja zmienna (net zł/kWh)</b><br>' +
-              (_zoneLines(inv, 'dist_var_{z}_net', n4) ||
-                ('Skł. zmienny szczyt: ' + n4(inv.dist_var_peak_net) + '<br>' + 'Skł. zmienny poza: ' + n4(inv.dist_var_offpeak_net))) + '<br>' +
-              'Jakościowa: ' + n4(inv.dist_jakosciowa_net) + '<br>' +
-              'OZE: ' + n4(inv.dist_oze_net) + '<br>' +
-              'Kogeneracja: ' + n4(inv.dist_kogeneracja_net) +
-            '</div>' +
-            '<div><b>Opłaty stałe (net zł/mc)</b><br>' +
-              'Mocowa: ' + n2(inv.fixed_mocowa_net) + '<br>' +
-              'Abonament: ' + n2(inv.fixed_abonament_net) + '<br>' +
-              'Skł. stały siec.: ' + n2(inv.fixed_stalysieciowy_net) +
-              (inv.fixed_total_net != null ? '<br><b>Suma: ' + inv.fixed_total_net.toFixed(2) + ' zł</b>' : '') +
-            '</div>' +
-            '<div><b>Depozyt prosumencki (zł)</b><br>' +
-              'Bieżący okres: ' + n2(inv.deposit_current) + '<br>' +
-              'Z poprzednich: ' + n2(inv.deposit_previous) + '<br>' +
-              'Rozliczony: ' + n2(inv.deposit_used) +
-            '</div>' +
-            '<div><b>' + (_isG13(inv) ? 'Import per strefa (kWh)' : 'Import szczyt/poza (kWh)') + '</b><br>' +
-              (_zoneLines(inv, 'imported_kwh_{z}', n0) ||
-                ('Szczyt: ' + n0(inv.imported_kwh_peak) + '<br>' + 'Poza: ' + n0(inv.imported_kwh_offpeak))) + '<br>' +
-              'Blended gross: ' + n4(inv.blended_gross) + ' zł/kWh<br>' +
-              'Śr. cena: ' + n4(inv.avg_price) + ' zł/kWh' +
-            '</div>' +
-            (_isG13(inv)
-              ? '<div><b>Eksport per strefa (kWh)</b><br>' + _zoneLines(inv, 'exported_kwh_{z}', n0) + '</div>'
-              : '') +
-            (inv.warnings && inv.warnings.length > 0
-              ? '<div><b style="color:#c0392b">Ostrzeżenia parsera</b><br>' +
-                inv.warnings.map(w => '⚠ ' + w).join('<br>') + '</div>'
-              : '') +
-          '</div>') +
+          : _invDetailHtml(inv)) +
       '</td>' +
     '</tr>' +
     // Correction sub-rows (korekty / noty) nested under the billing month
