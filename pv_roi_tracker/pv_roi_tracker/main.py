@@ -549,8 +549,10 @@ def main() -> None:
 
     def _reconcile_month(month_key: str) -> bool:
         """Rekonsyliuje historic z danych miesiąca (części faktur); przy sukcesie oznacza miesiąc."""
-        reconciled = historic_store.reconcile_invoice(
-            invoice_store.month_data(invoice_store.load(INVOICE_PATH), month_key), HISTORIC_PATH)
+        stored = invoice_store.load(INVOICE_PATH)
+        if month_key not in stored:
+            return False
+        reconciled = historic_store.reconcile_invoice(invoice_store.month_data(stored, month_key), HISTORIC_PATH)
         if reconciled:
             invoice_store.mark_reconciled(month_key, INVOICE_PATH, clear_training=False)
         return reconciled
@@ -594,12 +596,19 @@ def main() -> None:
             invoice_store.promote_part(month_key, INVOICE_PATH)
             stored = invoice_store.load(INVOICE_PATH)
             if month_key in stored:
+                remaining = invoice_store.month_data(stored, month_key)
                 if _reconcile_month(month_key):
+                    record = {**record, 'pre_reconcile': None}
+                elif invoice_store.period_covers_month(remaining.billing_period_raw,
+                                                       remaining.year, remaining.month):
+                    # Reszta pełna, ale rekonsyliacja nic nie zmieniła (brak wiersza historic) — snapshot byłby nieaktualny.
+                    logger.warning('Invoice remove %s: rekonsyliacja %s nie zastosowana mimo pełnego okresu — bez przywracania snapshotu',
+                                   key, month_key)
                     record = {**record, 'pre_reconcile': None}
                 else:
                     # Pozostała część niepełna (guard) — sumy z usuniętej faktury wracają do stanu sprzed niej.
-                    logger.info('Invoice remove %s: pozostała część miesiąca %s niepełna — przywracam historic z snapshotu',
-                                key, month_key)
+                    logger.warning('Invoice remove %s: pozostała część miesiąca %s niepełna — przywracam historic z snapshotu',
+                                   key, month_key)
         if record and record.get('pre_reconcile') and record.get('year') and record.get('month'):
             historic_store.restore_month(record['year'], record['month'],
                                          record['pre_reconcile'], HISTORIC_PATH)
@@ -636,7 +645,9 @@ def main() -> None:
                               pre_reconcile=snap, path=INVOICE_PATH)
         # Rekonsyliacja z danych miesiąca (jak _invoice_reconcile): miesiąc z częściami nie bierze sum jednej faktury.
         month_key = f'{year}-{month:02d}'
-        reconciled = _reconcile_month(month_key)
+        # Korekta/nota nie rekonsyliuje historic (jak ingest) — nie ma też klucza bazowego YYYY-MM.
+        reconciled = (_reconcile_month(month_key)
+                      if getattr(data, 'doc_type', 'rozliczeniowa') == 'rozliczeniowa' else False)
         # Remove the stub if it was one
         if key.startswith('unparsed-'):
             invoice_store.remove(key, INVOICE_PATH)
