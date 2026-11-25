@@ -57,9 +57,11 @@ def _check_g13(module, ym: str, inv: dict, tolerance_pct: float):
             start, end = date(year, month, 1), date(year, month, calendar.monthrange(year, month)[1])
         tariff = module.tariff_on(start)
         if tariff != module.tariff_on(end) or tariff not in THREE_ZONE_TARIFFS:
+            logger.info('Faktura G13 %s: okres %s–%s nie jest w całości trzystrefowy — kontrola pominięta', ym, start, end)
             return None
         period, period_from = module._period_info(start)[:2]
         if module._period_info(end)[1] != period_from:
+            logger.info('Faktura G13 %s: okres obejmuje zmianę cennika — kontrola pominięta', ym)
             return None
         excise = tc._scalar(period, 'excise_net')
         scalars = {'dist_jakosciowa_net': tc._scalar(period, 'quality_net'),
@@ -68,6 +70,7 @@ def _check_g13(module, ym: str, inv: dict, tolerance_pct: float):
         rates = {z: tc.rates_per_kwh(tariff, period, cz) for z, cz in G13_ZONES.items()}
         network = module.fixed(start, tariff)['network']
     except (ValueError, LookupError, KeyError):
+        logger.warning('Faktura G13 %s: kontrola stawek pominięta (błąd cennika/okresu)', ym, exc_info=True)
         return None
     days = (end - start).days + 1
     fields: dict = {}

@@ -636,7 +636,7 @@ def main() -> None:
                               pre_reconcile=snap, path=INVOICE_PATH)
         # Rekonsyliacja z danych miesiąca (jak _invoice_reconcile): miesiąc z częściami nie bierze sum jednej faktury.
         month_key = f'{year}-{month:02d}'
-        _reconcile_month(month_key)
+        reconciled = _reconcile_month(month_key)
         # Remove the stub if it was one
         if key.startswith('unparsed-'):
             invoice_store.remove(key, INVOICE_PATH)
