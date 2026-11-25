@@ -187,3 +187,65 @@ def test_pending_drops_notified_months_missing_from_check(module):
                                           {'2026-10': 'peak_gross', '2025-01': 'peak_gross'})
     assert msgs == []
     assert new == {}
+
+
+# ── G13 (trzy strefy, okres faktury) ─────────────────────────────────────────
+
+_G13_PERIODS = [{'tariff': 'G12w', 'from': None}, {'tariff': 'G13', 'from': '2026-11-03'}]
+
+
+def _g13_invoice(module, period='03.11.2026 - 18.11.2026', **over):
+    """Faktura G13 = stawki katalogu okresu 5 (energia z akcyzą), stała sieciowa proporcjonalnie do dni."""
+    inv = {'tariff': 'G13', 'billing_period_raw': period,
+           'energy_morning_net': 0.4718, 'energy_evening_net': 0.783, 'energy_other_net': 0.426,
+           'dist_var_morning_net': 0.2203, 'dist_var_evening_net': 0.3898, 'dist_var_other_net': 0.0392,
+           'morning_gross': 0.9048, 'evening_gross': 1.496, 'other_gross': 0.6257,
+           'dist_jakosciowa_net': 0.0332, 'dist_oze_net': 0.0073, 'dist_kogeneracja_net': 0.003,
+           'fixed_stalysieciowy_net': 5.79}
+    inv.update(over)
+    return {'2026-11': inv}
+
+
+@pytest.fixture
+def g13_module(cat):
+    return TariffModule(cat, periods=_G13_PERIODS)
+
+
+def test_g13_partial_month_invoice_matches_catalog(g13_module):
+    m = tic.check_invoices(g13_module, _g13_invoice(g13_module))['2026-11']
+    assert m['ok'] is True
+    assert m['tariff'] == 'G13'
+    assert m['period_from'] == '2026-02-01'
+    assert m['diverged'] == []
+    assert 'fixed_stalysieciowy_net' in m['fields']
+
+
+def test_g13_diverged_zone_rate(g13_module):
+    m = tic.check_invoices(g13_module, _g13_invoice(g13_module, energy_evening_net=0.90))['2026-11']
+    assert m['ok'] is False
+    assert m['diverged'] == ['energy_evening_net']
+
+
+def test_g13_fixed_charge_is_prorated_by_days(g13_module):
+    full = tic.check_invoices(g13_module, _g13_invoice(g13_module, fixed_stalysieciowy_net=10.86))['2026-11']
+    assert full['diverged'] == ['fixed_stalysieciowy_net']
+
+
+def test_g13_period_spanning_tariff_change_is_skipped(g13_module):
+    inv = _g13_invoice(g13_module, period='01.11.2026 - 18.11.2026')
+    assert tic.check_invoices(g13_module, inv) == {}
+
+
+def test_g13_invoice_without_period_uses_whole_month(g13_module):
+    inv = _g13_invoice(g13_module, period=None)
+    assert tic.check_invoices(g13_module, inv) == {}      # 1.11 jest jeszcze G12w
+
+
+def test_g13_zone_field_with_bad_value_is_ignored(g13_module):
+    m = tic.check_invoices(g13_module, _g13_invoice(g13_module, energy_other_net='x'))['2026-11']
+    assert 'energy_other_net' not in m['fields']
+    assert m['ok'] is True
+
+
+def test_g12w_invoice_still_checked_with_two_zone_path(module):
+    assert tic.check_invoices(module, _invoice(module))['2026-10']['tariff'] == 'G12w'
