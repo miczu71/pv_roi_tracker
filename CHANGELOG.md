@@ -7,7 +7,7 @@ All notable changes to this project will be documented in this file.
 ## [0.60.3] — 2026-11-25
 
 ### Naprawiono
-- **Tabela faktur: stawki taryfy G13 (trzy strefy).** Faktura G13 (np. 2/2 za listopad) nie pokazywała stawek, bo tabela miała na sztywno kolumny „Szczyt” i „Poza szczytem”, a API nie wysyłało pól stref. Teraz jedna kolumna „Stawki brutto zł/kWh” pokazuje tyle stref, ile ma taryfa faktury (G13: przedpołudniowa / popołudniowa / pozostałe; G12W: szczyt / poza). Panel szczegółów faktury G13 podaje import, energię i dystrybucję zmienną per strefa. API: wiersz i `parts[]` mają `morning_gross`, `evening_gross`, `other_gross` oraz pola stref G13 wiersza głównego.
+- **Tabela faktur: stawki taryfy G13 (trzy strefy).** Faktura G13 (np. 2/2 za listopad) nie pokazywała stawek, bo tabela miała na sztywno kolumny „Szczyt” i „Poza szczytem”, a API nie wysyłało pól stref. Teraz jedna kolumna „Stawki brutto zł/kWh” pokazuje tyle stref, ile ma taryfa faktury (G13: przedpołudniowa / popołudniowa / pozostałe; G12W: szczyt / poza). Panel szczegółów faktury G13 podaje import, eksport, energię i dystrybucję zmienną per strefa; brakująca stawka strefy pokazuje „—”, a G13 rozpoznawane jest po taryfie faktury. API: wiersz i `parts[]` mają `morning_gross`, `evening_gross`, `other_gross` oraz pola stref G13 wiersza głównego.
 
 ## [0.60.2] — 2026-11-25
 

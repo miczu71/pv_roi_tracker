@@ -2816,17 +2816,17 @@ function renderDepositChart(invoices) {
 /* Invoice table with click-to-expand detail rows */
 /* Strefy taryfy faktury: G13 (3 strefy, pola *_gross stref) albo G12W/G11 (szczyt/poza). */
 const _G13_ZONES = [['morning', 'przedpoł.', 'przedpołudniowa'], ['evening', 'popoł.', 'popołudniowa'], ['other', 'pozost.', 'pozostałe godziny']];
-function _isG13(inv) { return _G13_ZONES.some(z => inv[z[0] + '_gross'] != null); }
+function _isG13(inv) { return String(inv.tariff || '').startsWith('G13') || _G13_ZONES.some(z => inv[z[0] + '_gross'] != null); }
 function _zoneRates(inv) {
-  if (_isG13(inv)) return _G13_ZONES.map(z => [z[1], inv[z[0] + '_gross']]).filter(r => r[1] != null);
+  if (_isG13(inv)) return _G13_ZONES.map(z => [z[1], inv[z[0] + '_gross']]);   // brakująca strefa → „—”, nie znika
   return [['szczyt', inv.peak_gross], ['poza', inv.offpeak_gross]].filter(r => r[1] != null);
 }
 function _zoneRatesCell(inv) {
   const rates = _zoneRates(inv);
   if (rates.length === 0) return '<td style="text-align:right;font-size:11px">—</td>';
-  return '<td style="text-align:right;font-size:11px"><table style="margin-left:auto;border-collapse:collapse;font-size:11px;line-height:1.45">' +
-    rates.map(r => '<tr><td style="color:var(--muted);padding:0 6px 0 0;border:none">' + r[0] +
-      '</td><td style="text-align:right;padding:0;border:none;font-variant-numeric:tabular-nums">' + r[1].toFixed(4) + '</td></tr>').join('') +
+  return '<td style="text-align:right;font-size:11px"><table style="width:auto;margin-left:auto;border-collapse:collapse;font-size:11px;line-height:1.45">' +
+    rates.map(r => '<tr><td style="color:var(--muted);padding:0 6px 0 0;border:none;font-weight:400;text-align:left">' + r[0] +
+      '</td><td style="text-align:right;padding:0;border:none;font-weight:400;font-variant-numeric:tabular-nums">' + (r[1] != null ? r[1].toFixed(4) : '—') + '</td></tr>').join('') +
     '</table></td>';
 }
 /* Panel szczegółów: wartości per strefa jako „etykieta: wartość” (G13: 3 strefy, inaczej szczyt/poza). */
@@ -2998,6 +2998,9 @@ function _renderInvoiceTable(invoices) {
               'Blended gross: ' + n4(inv.blended_gross) + ' zł/kWh<br>' +
               'Śr. cena: ' + n4(inv.avg_price) + ' zł/kWh' +
             '</div>' +
+            (_isG13(inv)
+              ? '<div><b>Eksport per strefa (kWh)</b><br>' + _zoneLines(inv, 'exported_kwh_{z}', n0) + '</div>'
+              : '') +
             (inv.warnings && inv.warnings.length > 0
               ? '<div><b style="color:#c0392b">Ostrzeżenia parsera</b><br>' +
                 inv.warnings.map(w => '⚠ ' + w).join('<br>') + '</div>'
